@@ -1,0 +1,468 @@
+#root {
+  min-height: 100dvh;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+svg {
+  display: block;
+}
+
+.hidden,
+[hidden] {
+  display: none !important;
+}
+
+.shell,
+.app-shell {
+  width: min(1420px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: clamp(22px, 3vw, 40px) 0 clamp(48px, 6vw, 84px);
+}
+
+.home-shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: clamp(36px, 7vw, 92px);
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: clamp(14px, 2vw, 24px);
+  margin-bottom: clamp(22px, 3vw, 38px);
+}
+
+.page-home .topbar {
+  margin-bottom: 0;
+}
+
+.brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.mark,
+.brand-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+
+.topbar-actions,
+.nav,
+.wallet,
+.actions,
+.action-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.topbar-actions {
+  justify-content: flex-end;
+}
+
+.nav {
+  justify-content: flex-end;
+}
+
+.home {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.hero {
+  width: 100%;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  align-items: start;
+  gap: clamp(18px, 2.2vw, 28px);
+}
+
+.batch-workspace {
+  grid-template-columns: minmax(0, 1.02fr) minmax(390px, 0.98fr);
+}
+
+.panel,
+.hero {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.form {
+  display: grid;
+  gap: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.amount-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.amount-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.transaction-options {
+  display: grid;
+  gap: 8px;
+}
+
+.route-card label,
+.route-count {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.route-fields {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.64fr) minmax(220px, 1.7fr) minmax(96px, 0.42fr);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.route-card {
+  min-width: 0;
+}
+
+.rpc-field {
+  min-width: 0;
+}
+
+.mode-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mode {
+  display: grid;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.mode-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode input {
+  width: auto;
+  margin: 0;
+}
+
+textarea,
+input,
+select {
+  width: 100%;
+  min-width: 0;
+}
+
+.wallet-select {
+  width: auto;
+  min-width: 140px;
+  max-width: 180px;
+  min-height: 46px;
+  flex: 0 1 160px;
+}
+
+.batch-command,
+.send-gate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.command-copy,
+.gate-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.send-gate {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.gate-checks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.gate-orb {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.actions {
+  justify-content: space-between;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.batch-workspace .stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric strong,
+.metric span {
+  display: block;
+}
+
+.metric span {
+  margin-top: 6px;
+}
+
+.review-list {
+  display: grid;
+  gap: 12px;
+}
+
+.review-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.icon,
+.review-icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.review-meta {
+  margin-top: 3px;
+  word-break: break-all;
+}
+
+.amount-chip {
+  width: fit-content;
+  white-space: nowrap;
+}
+
+.result {
+  min-height: 420px;
+  overflow: hidden;
+}
+
+.result pre {
+  margin: 0;
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.empty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.result .empty {
+  min-height: inherit;
+}
+
+.notice,
+.confirm {
+  display: grid;
+  gap: 8px;
+}
+
+.signature-list {
+  display: grid;
+  gap: 6px;
+}
+
+.signature-list a {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1060px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .panel.preview,
+  .review-panel,
+  .output-panel {
+    order: 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell,
+  .app-shell {
+    width: min(100% - 20px, 700px);
+    padding-top: 14px;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .topbar-actions,
+  .nav,
+  .wallet {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .nav a,
+  .wallet-select,
+  .wallet .button,
+  .wallet-status {
+    flex: 1 1 150px;
+    justify-content: center;
+  }
+
+  .amount-grid,
+  .transaction-options,
+  .mode-row,
+  .stats,
+  .batch-workspace .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .route-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr);
+  }
+
+  .network-field {
+    order: 1;
+  }
+
+  .route-count {
+    order: 2;
+  }
+
+  .rpc-field {
+    order: 3;
+    grid-column: 1 / -1;
+  }
+
+  .actions,
+  .action-group {
+    align-items: stretch;
+  }
+
+  .action-group,
+  .button {
+    width: 100%;
+  }
+
+  .review-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .amount-chip {
+    grid-column: 2;
+  }
+
+  .batch-command,
+  .send-gate {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .batch-command .wallet {
+    justify-content: stretch;
+  }
+
+  .gate-checks {
+    justify-content: flex-start;
+  }
+}
