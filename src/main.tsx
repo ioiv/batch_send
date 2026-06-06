@@ -74,6 +74,7 @@ declare global {
 }
 
 const solanaAddressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const evmAddressPattern = /^0x[a-fA-F0-9]{40}$/;
 const walletInstallUrl = "https://phantom.app/download";
 const walletConnectionTimeoutMs = 45_000;
 const fallbackTransfersPerTransaction = 8;
@@ -135,6 +136,16 @@ function isValidSolanaAddress(address: string) {
   } catch {
     return false;
   }
+}
+
+function getListAddressKind(address: string) {
+  if (isValidSolanaAddress(address)) return "solana";
+  if (evmAddressPattern.test(address)) return "evm";
+  return null;
+}
+
+function getDuplicateAddressKey(address: string, kind: "solana" | "evm") {
+  return kind === "evm" ? address.toLowerCase() : address;
 }
 
 function chunkRows<T>(rows: T[], chunkSize: number) {
@@ -647,9 +658,9 @@ function HomePage() {
         <section className="home" aria-labelledby="hero-title">
           <div className="hero">
             <p className="eyebrow">地址整理 / 钱包连接 / 批量分发</p>
-            <h2 id="hero-title">把 Solana 地址清单整理好，再进入分发。</h2>
+            <h2 id="hero-title">把地址清单整理好，再按需要进入分发。</h2>
             <p className="lead">
-              输入多行地址和统一金额，生成 <code>地址,金额</code> 格式；确认清单后再连接钱包处理分发。
+              输入多行地址和统一金额，生成 <code>地址,金额</code> 格式；Solana 清单可继续进入钱包分发。
             </p>
             <div className="actions">
               <a className="button primary" href="format-generator.html">
@@ -677,19 +688,25 @@ function FormatGeneratorPage() {
 
   const result = useMemo(() => {
     const rows = addresses.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-    const seen = new Map<string, boolean>();
+    const seen = new Set<string>();
     const issues: string[] = [];
     const generated: string[] = [];
     let total = 0;
     let duplicates = 0;
+    let evmCount = 0;
 
     rows.forEach((address, index) => {
-      if (!solanaAddressPattern.test(address)) {
+      const addressKind = getListAddressKind(address);
+      if (!addressKind) {
         issues.push(`第 ${index + 1} 行地址格式不正确`);
         return;
       }
-      if (seen.has(address)) duplicates += 1;
-      seen.set(address, true);
+
+      if (addressKind === "evm") evmCount += 1;
+
+      const duplicateKey = getDuplicateAddressKey(address, addressKind);
+      if (seen.has(duplicateKey)) duplicates += 1;
+      seen.add(duplicateKey);
 
       let amount = NaN;
       if (mode === "fixed") {
@@ -717,6 +734,7 @@ function FormatGeneratorPage() {
 
     return {
       duplicates,
+      evmCount,
       issues,
       output: generated.join("\n"),
       total,
@@ -738,7 +756,7 @@ function FormatGeneratorPage() {
   };
 
   const goToDistributor = () => {
-    if (!result.output) return;
+    if (!result.output || result.evmCount > 0) return;
     window.location.href = getDistributionTransferHref(result.output);
   };
 
@@ -758,9 +776,8 @@ function FormatGeneratorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="input-title">地址与金额</h2>
-                <p className="panel-note">每行一个 Solana 地址；空行会自动忽略。</p>
+                <p className="panel-note">每行一个地址；空行会自动忽略。</p>
               </div>
-              <span className="pill">无需下载</span>
             </div>
 
             <div className="form">
@@ -772,7 +789,7 @@ function FormatGeneratorPage() {
                   spellCheck={false}
                   value={addresses}
                   onChange={(event) => updateAndRegenerate(setAddresses, event.target.value)}
-                  placeholder={"7hQmJpYvKq2ms2uUpu2f4pCmJfM7m2HJ9dXkR4g3SxyQ\n9YcQwQ6kR4pYc5v2yAf9hWeXvX5gK2oA9rRk2mL3pZqE"}
+                  placeholder={"7hQmJpYvKq2ms2uUpu2f4pCmJfM7m2HJ9dXkR4g3SxyQ\n0x742d35Cc6634C0532925a3b844Bc454e4438f44e"}
                 />
               </div>
 
@@ -782,7 +799,7 @@ function FormatGeneratorPage() {
                     <input type="radio" name="amountMode" value="fixed" checked={mode === "fixed"} onChange={() => setMode("fixed")} />
                     固定金额
                   </span>
-                  <span className="hint">所有地址使用同一个 SOL 数量。</span>
+                  <span className="hint">所有地址使用同一个金额。</span>
                 </label>
                 <label className="mode">
                   <span className="mode-head">
@@ -792,7 +809,7 @@ function FormatGeneratorPage() {
                     }} />
                     随机区间
                   </span>
-                  <span className="hint">每个地址生成一个区间内随机金额。</span>
+                  <span className="hint">每个地址生成一个区间内的随机金额。</span>
                 </label>
               </div>
 
@@ -814,7 +831,15 @@ function FormatGeneratorPage() {
               <div className="actions">
                 <div className="action-group">
                   <button className="button primary" type="button" onClick={() => setGenerationNonce((current) => current + 1)}>生成清单</button>
-                  <button className="button" type="button" disabled={!result.output} onClick={goToDistributor}>去分发</button>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={!result.output || result.evmCount > 0}
+                    title={result.evmCount > 0 ? "分发页只支持 Solana 地址；EVM 清单请复制使用。" : undefined}
+                    onClick={goToDistributor}
+                  >
+                    去分发
+                  </button>
                   <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
                 </div>
                 <button className="button" type="button" disabled={!result.output} onClick={copyOutput}>{copyLabel}</button>
@@ -823,7 +848,7 @@ function FormatGeneratorPage() {
 
             <div className="stats" aria-label="生成统计">
               <Metric value={String(result.validCount)} label="有效地址" />
-              <Metric value={formatSol(result.total)} label="统计总额 SOL" />
+              <Metric value={formatSol(result.total)} label="统计总额" />
               <Metric value={String(result.duplicates)} label="重复地址" />
             </div>
           </section>
@@ -832,7 +857,7 @@ function FormatGeneratorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="result-title">生成结果</h2>
-                <p className="panel-note">复制后可直接粘贴到分发页。</p>
+                <p className="panel-note">{result.evmCount > 0 ? "EVM 清单可复制到外部流程使用。" : "复制后可直接粘贴到分发页。"}</p>
               </div>
               <span className="pill">{mode === "fixed" ? "固定金额" : "随机区间"}</span>
             </div>
