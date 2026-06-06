@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
@@ -20,6 +22,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "^5.8.3",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "vitest": "^4.1.8"
   }
 }

@@ -950,6 +950,40 @@ input[type="number"],
   text-underline-offset: 3px;
 }
 
+.summary-list {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.summary-list span,
+.send-progress span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.summary-list strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 720;
+}
+
+.send-progress {
+  border-radius: var(--radius-card);
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.54);
+  box-shadow: inset 0 0 0 1px rgba(56, 64, 54, 0.08);
+}
+
+.send-progress span {
+  border-radius: var(--radius-pill);
+  padding: 7px 9px;
+  background: rgba(237, 242, 230, 0.72);
+  color: #5f744f;
+  text-align: center;
+}
+
 .invalid-list {
   display: grid;
   gap: 8px;

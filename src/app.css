@@ -364,6 +364,33 @@ textarea {
   gap: 6px;
 }
 
+.summary-list,
+.send-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.summary-list > div,
+.send-progress {
+  min-width: 0;
+}
+
+.summary-list > div {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.summary-list strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.send-progress {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .signature-list a {
   width: fit-content;
   max-width: 100%;
@@ -456,6 +483,11 @@ textarea {
   .send-gate {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .summary-list > div,
+  .send-progress {
+    grid-template-columns: 1fr;
   }
 
   .batch-command .wallet {

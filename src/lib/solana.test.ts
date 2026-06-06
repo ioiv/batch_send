@@ -1,0 +1,48 @@
+import { describe, expect, it } from "vitest";
+import { PublicKey } from "@solana/web3.js";
+import type { DistributionRow } from "./distribution";
+import { planTransferChunks, transactionEstimateSenderAddress } from "./solana";
+
+function makeAddress(index: number) {
+  const bytes = new Uint8Array(32);
+  bytes[31] = index + 1;
+  return new PublicKey(bytes).toBase58();
+}
+
+function makeRow(index: number, address = makeAddress(index)): DistributionRow {
+  return {
+    address,
+    amount: 0.1,
+    amountRaw: "0.1",
+    lamports: 100_000_000n,
+    line: index + 1,
+    problems: [],
+    status: "valid"
+  };
+}
+
+describe("planTransferChunks", () => {
+  it("returns no chunks for an empty list", () => {
+    expect(planTransferChunks([], transactionEstimateSenderAddress)).toEqual([]);
+  });
+
+  it("keeps small lists in a single ordered chunk", () => {
+    const rows = Array.from({ length: 3 }, (_, index) => makeRow(index));
+    const chunks = planTransferChunks(rows, transactionEstimateSenderAddress);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual(rows);
+  });
+
+  it("splits rows before legacy transaction size is exceeded", () => {
+    const rows = Array.from({ length: 22 }, (_, index) => makeRow(index));
+    const chunks = planTransferChunks(rows, transactionEstimateSenderAddress);
+
+    expect(chunks.map((chunk) => chunk.length)).toEqual([21, 1]);
+    expect(chunks.flat()).toEqual(rows);
+  });
+
+  it("throws when a row cannot be converted into a transfer instruction", () => {
+    expect(() => planTransferChunks([makeRow(0, "not-an-address")], transactionEstimateSenderAddress)).toThrow();
+  });
+});
