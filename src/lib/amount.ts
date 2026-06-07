@@ -1,5 +1,5 @@
 export const LAMPORTS_PER_SOL_BIGINT = 1_000_000_000n;
-export const GENERATOR_AMOUNT_STEP_LAMPORTS = 100_000n;
+export const GENERATOR_AMOUNT_STEP_LAMPORTS = 100_000_000n;
 
 export function formatSol(value: number) {
   return Number(value.toFixed(4)).toString();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatLamports, formatLamportsForDisplay, parseSolToLamports } from "./amount";
+import { GENERATOR_AMOUNT_STEP_LAMPORTS, formatLamports, formatLamportsForDisplay, parseSolToLamports, randomLamportsInStepRange } from "./amount";
 
 describe("parseSolToLamports", () => {
   it("parses SOL strings into lamports", () => {
@@ -32,5 +32,13 @@ describe("formatLamports", () => {
     expect(formatLamportsForDisplay(1_234_567_890n)).toBe("1.23");
     expect(formatLamportsForDisplay(1_200_000_000n)).toBe("1.2");
     expect(formatLamportsForDisplay(42n)).toBe("0");
+  });
+});
+
+describe("randomLamportsInStepRange", () => {
+  it("uses 0.1 SOL as the default generator step", () => {
+    expect(GENERATOR_AMOUNT_STEP_LAMPORTS).toBe(100_000_000n);
+    expect(randomLamportsInStepRange(1n, 99_999_999n)).toBeNull();
+    expect(randomLamportsInStepRange(1n, 199_999_999n)).toBe(100_000_000n);
   });
 });

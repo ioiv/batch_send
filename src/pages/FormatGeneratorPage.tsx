@@ -10,8 +10,8 @@ export function FormatGeneratorPage() {
   const [addresses, setAddresses] = useState("");
   const [mode, setMode] = useState<"fixed" | "random">("fixed");
   const [fixedAmount, setFixedAmount] = useState("0.1");
-  const [minAmount, setMinAmount] = useState("0.08");
-  const [maxAmount, setMaxAmount] = useState("0.12");
+  const [minAmount, setMinAmount] = useState("0.1");
+  const [maxAmount, setMaxAmount] = useState("0.3");
   const [copyLabel, setCopyLabel] = useState("复制结果");
   const [generationNonce, setGenerationNonce] = useState(1);
 
@@ -51,7 +51,7 @@ export function FormatGeneratorPage() {
       }
 
       if (!amountLamports) {
-        issues.push(mode === "fixed" ? "固定金额需要大于 0，最多 9 位小数" : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖 0.0001 SOL 步进");
+        issues.push(mode === "fixed" ? "固定金额需要大于 0，最多 9 位小数" : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖 0.1 SOL 步进");
         return;
       }
 
@@ -153,15 +153,15 @@ export function FormatGeneratorPage() {
               <div className="amount-grid">
                 <div className="field">
                   <label htmlFor="fixedAmount">固定金额</label>
-                  <input id="fixedAmount" type="number" min="0" step="0.0001" value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
+                  <input id="fixedAmount" type="number" min="0" step="0.1" value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
                 </div>
                 <div className="field">
                   <label htmlFor="minAmount">随机最小值</label>
-                  <input id="minAmount" type="number" min="0" step="0.0001" value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
+                  <input id="minAmount" type="number" min="0" step="0.1" value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
                 </div>
                 <div className="field">
                   <label htmlFor="maxAmount">随机最大值</label>
-                  <input id="maxAmount" type="number" min="0" step="0.0001" value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
+                  <input id="maxAmount" type="number" min="0" step="0.1" value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
                 </div>
               </div>
 
@@ -201,10 +201,6 @@ export function FormatGeneratorPage() {
             <div className="form">
               <div className="result" aria-live="polite">
                 {result.output ? <pre>{result.output}</pre> : <div className="empty">生成后会显示为：<br />地址,金额</div>}
-              </div>
-              <div className="notice">
-                <strong>金额统计按 lamports 精确累加。</strong>
-                <span>随机金额使用浏览器安全随机数，并按 0.0001 SOL 步进生成。</span>
               </div>
               <div className="invalid-list">
                 {result.issues.slice(0, 5).map((issue) => (
