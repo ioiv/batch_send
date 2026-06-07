@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseDistribution } from "./distribution";
+import {
+  evmDistributionPage,
+  getDistributionTargetPage,
+  parseDistribution,
+  solanaDistributionPage
+} from "./distribution";
 
 const systemProgram = "11111111111111111111111111111111";
 const bpfLoader = "BPFLoader1111111111111111111111111111111111";
+const evmAddress = "0x00000000000000000000000000000000000000aa";
 
 describe("parseDistribution", () => {
   it("parses valid rows and totals lamports", () => {
@@ -54,5 +60,20 @@ describe("parseDistribution", () => {
 
     expect(parsed.rows.map((row) => row.line)).toEqual([1, 2]);
     expect(parsed.validRows).toHaveLength(2);
+  });
+});
+
+describe("getDistributionTargetPage", () => {
+  it("routes Solana rows to the Solana distributor", () => {
+    expect(getDistributionTargetPage(`${systemProgram},1\n${bpfLoader},0.5`)).toBe(solanaDistributionPage);
+  });
+
+  it("routes EVM rows to the EVM distributor", () => {
+    expect(getDistributionTargetPage(`${evmAddress},1`)).toBe(evmDistributionPage);
+  });
+
+  it("does not pick a distributor for mixed or empty lists", () => {
+    expect(getDistributionTargetPage(`${systemProgram},1\n${evmAddress},1`)).toBeNull();
+    expect(getDistributionTargetPage("")).toBeNull();
   });
 });

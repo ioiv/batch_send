@@ -1,4 +1,4 @@
-import { getDuplicateAddressKey, isValidSolanaAddress } from "./address";
+import { getDuplicateAddressKey, getListAddressKind, isValidSolanaAddress } from "./address";
 import { formatLamports, parseSolToLamports } from "./amount";
 
 export type ReviewStatus = "valid" | "warn" | "invalid";
@@ -28,6 +28,8 @@ export const distributionTransferQueryParam = "from";
 export const distributionTransferSource = "format-generator";
 export const distributionTransferStorageKey = "sol_batch_send.generated_distribution";
 export const maxDistributionUrlQueryLength = 1800;
+export const solanaDistributionPage = "batch-distributor.html";
+export const evmDistributionPage = "evm-batch-distributor.html";
 
 export function chunkRows<T>(rows: T[], chunkSize: number) {
   const chunks: T[][] = [];
@@ -105,6 +107,20 @@ export function getDistributionTransferHref(output: string, targetPage = "batch-
   } catch {
     return directHref;
   }
+}
+
+export function getDistributionTargetPage(output: string) {
+  const kinds = new Set(
+    output
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => getListAddressKind((line.split(",")[0] || "").trim()))
+      .filter((kind) => kind !== null)
+  );
+
+  if (kinds.size !== 1) return null;
+  return kinds.has("evm") ? evmDistributionPage : solanaDistributionPage;
 }
 
 export function getInitialDistributionInput() {

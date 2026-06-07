@@ -4,7 +4,7 @@ import { Metric } from "../components/Metric";
 import { copyText } from "../lib/clipboard";
 import { getDuplicateAddressKey, getListAddressKind } from "../lib/address";
 import { formatLamports, parseSolToLamports, randomLamportsInStepRange } from "../lib/amount";
-import { getDistributionTransferHref } from "../lib/distribution";
+import { getDistributionTargetPage, getDistributionTransferHref } from "../lib/distribution";
 
 export function FormatGeneratorPage() {
   const [addresses, setAddresses] = useState("");
@@ -72,7 +72,7 @@ export function FormatGeneratorPage() {
   }, [addresses, fixedAmount, generationNonce, maxAmount, minAmount, mode]);
 
   const isMixedList = result.solanaCount > 0 && result.evmCount > 0;
-  const distributorButtonLabel = result.evmCount > 0 && !isMixedList ? "去 EVM 分发" : "去 SOL 分发";
+  const distributionTargetPage = getDistributionTargetPage(result.output);
   const resultNote = isMixedList
     ? "请拆成 Solana 和 EVM 两份清单后分别进入对应分发页。"
     : result.evmCount > 0
@@ -93,9 +93,8 @@ export function FormatGeneratorPage() {
   };
 
   const goToDistributor = () => {
-    if (!result.output || isMixedList) return;
-    const targetPage = result.evmCount > 0 ? "evm-batch-distributor.html" : "batch-distributor.html";
-    window.location.href = getDistributionTransferHref(result.output, targetPage);
+    if (!result.output || !distributionTargetPage) return;
+    window.location.href = getDistributionTransferHref(result.output, distributionTargetPage);
   };
 
   return (
@@ -172,11 +171,11 @@ export function FormatGeneratorPage() {
                   <button
                     className="button"
                     type="button"
-                    disabled={!result.output || isMixedList}
+                    disabled={!result.output || !distributionTargetPage}
                     title={isMixedList ? "同一清单不能同时进入 SOL 和 EVM 分发页，请先拆分。" : undefined}
                     onClick={goToDistributor}
                   >
-                    {distributorButtonLabel}
+                    去分发
                   </button>
                   <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
                 </div>
