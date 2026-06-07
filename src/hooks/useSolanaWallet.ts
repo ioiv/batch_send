@@ -9,11 +9,20 @@ export type SolanaPublicKey = {
   toString: () => string;
 };
 
-export type WalletConnectResult = {
+type WalletAccountLike = {
+  address?: string | null;
+  publicKey?: SolanaPublicKey | string | null;
+  public_key?: string | null;
+};
+
+export type WalletConnectResult = WalletAccountLike & {
+  account?: WalletAccountLike | string | null;
+  accounts?: Array<WalletAccountLike | string> | null;
   publicKey?: SolanaPublicKey | string | null;
 };
 
 export type SolanaWalletProvider = {
+  isCoinbaseWallet?: boolean;
   isPhantom?: boolean;
   isSolflare?: boolean;
   isBackpack?: boolean;
@@ -22,6 +31,7 @@ export type SolanaWalletProvider = {
   publicKey?: SolanaPublicKey | string | null;
   connect: (options?: { onlyIfTrusted?: boolean }) => Promise<WalletConnectResult | void>;
   disconnect?: () => Promise<void> | void;
+  getAccount?: () => WalletAccountLike | string | null | Promise<WalletAccountLike | string | null>;
   signAndSendTransaction?: (transaction: Transaction, options?: SendOptions) => Promise<{ signature?: TransactionSignature } | TransactionSignature>;
   signAllTransactions?: (transactions: Transaction[]) => Promise<Transaction[]>;
   signTransaction?: (transaction: Transaction) => Promise<Transaction>;
@@ -32,10 +42,10 @@ export type SolanaWalletProvider = {
 
 export type DetectedWallet = {
   id: string;
-  name: string;
-  provider: SolanaWalletProvider;
-  priority: number;
   installUrl: string;
+  name: string;
+  priority: number;
+  provider: SolanaWalletProvider;
 };
 
 declare global {
@@ -56,6 +66,8 @@ declare global {
 
 const walletInstallUrl = "https://phantom.app/download";
 const walletConnectionTimeoutMs = 45_000;
+const walletAddressSettleMs = 1_500;
+const walletAddressPollIntervalMs = 100;
 
 function isSolanaProvider(provider?: SolanaWalletProvider | null): provider is SolanaWalletProvider {
   return Boolean(provider && typeof provider.connect === "function");
@@ -68,6 +80,7 @@ function addWalletCandidate(wallets: DetectedWallet[], candidate: DetectedWallet
 }
 
 function getBackpackProvider(): SolanaWalletProvider | undefined {
+  if (typeof window === "undefined") return undefined;
   const backpack = window.backpack;
   if (!backpack) return undefined;
   if (isSolanaProvider(backpack as SolanaWalletProvider)) return backpack as SolanaWalletProvider;
@@ -81,6 +94,17 @@ function getWalletsFromSolanaProvider(provider: SolanaWalletProvider, wallets: D
       installUrl: walletInstallUrl,
       name: "Phantom",
       priority: 10,
+      provider
+    });
+    return;
+  }
+
+  if (provider.isOkxWallet) {
+    addWalletCandidate(wallets, {
+      id: "okx",
+      installUrl: "https://www.okx.com/web3",
+      name: "OKX Wallet",
+      priority: 20,
       provider
     });
     return;
@@ -108,6 +132,17 @@ function getWalletsFromSolanaProvider(provider: SolanaWalletProvider, wallets: D
     return;
   }
 
+  if (provider.isCoinbaseWallet) {
+    addWalletCandidate(wallets, {
+      id: "coinbase",
+      installUrl: "https://www.coinbase.com/wallet/downloads",
+      name: "Coinbase Wallet",
+      priority: 50,
+      provider
+    });
+    return;
+  }
+
   addWalletCandidate(wallets, {
     id: "solana",
     installUrl: walletInstallUrl,
@@ -117,44 +152,41 @@ function getWalletsFromSolanaProvider(provider: SolanaWalletProvider, wallets: D
   });
 }
 
-function getSolanaWallets() {
+export function getSolanaWallets() {
   if (typeof window === "undefined") return null;
   const wallets: DetectedWallet[] = [];
-  const phantom = window.phantom?.solana;
-  const okx = window.okxwallet?.solana;
-  const solflare = window.solflare;
-  const backpack = getBackpackProvider();
 
-  if (phantom?.isPhantom) {
+  if (isSolanaProvider(window.phantom?.solana)) {
     addWalletCandidate(wallets, {
       id: "phantom",
       installUrl: walletInstallUrl,
       name: "Phantom",
       priority: 10,
-      provider: phantom
+      provider: window.phantom.solana
     });
   }
 
-  if (isSolanaProvider(okx)) {
+  if (isSolanaProvider(window.okxwallet?.solana)) {
     addWalletCandidate(wallets, {
       id: "okx",
       installUrl: "https://www.okx.com/web3",
       name: "OKX Wallet",
       priority: 20,
-      provider: okx
+      provider: window.okxwallet.solana
     });
   }
 
-  if (isSolanaProvider(solflare)) {
+  if (isSolanaProvider(window.solflare)) {
     addWalletCandidate(wallets, {
       id: "solflare",
       installUrl: "https://solflare.com/download",
       name: "Solflare",
       priority: 30,
-      provider: solflare
+      provider: window.solflare
     });
   }
 
+  const backpack = getBackpackProvider();
   if (isSolanaProvider(backpack)) {
     addWalletCandidate(wallets, {
       id: "backpack",
@@ -170,9 +202,10 @@ function getSolanaWallets() {
   return wallets.sort((left, right) => left.priority - right.priority);
 }
 
-function getPreferredWallet(wallets: DetectedWallet[], preferredWalletId?: string) {
+export function getPreferredWallet(wallets: DetectedWallet[], preferredWalletId?: string) {
   return wallets.find((wallet) => wallet.id === preferredWalletId)
-    || wallets.find((wallet) => getPublicKeyText(wallet.provider.publicKey) || wallet.provider.isConnected)
+    || wallets.find((wallet) => getWalletAddressText(wallet.provider.publicKey) || wallet.provider.isConnected)
+    || wallets.find((wallet) => wallet.id === "phantom")
     || wallets[0]
     || null;
 }
@@ -181,13 +214,41 @@ function getMissingWalletMessage() {
   if (typeof window === "undefined") return "未检测到浏览器钱包";
   const { hostname, protocol } = window.location;
   const canInject = protocol === "https:" || hostname === "localhost" || hostname === "127.0.0.1";
-  return canInject ? "未检测到 Phantom / OKX 钱包" : "请通过 localhost 或 HTTPS 打开页面";
+  return canInject ? "未检测到 Phantom / OKX / Solflare / Backpack 钱包" : "请通过 localhost 或 HTTPS 打开页面";
 }
 
-function getPublicKeyText(publicKey?: SolanaPublicKey | string | null) {
-  if (typeof publicKey === "string") return publicKey;
-  const text = publicKey?.toBase58?.() || publicKey?.toString?.() || "";
-  return text && text !== "[object Object]" ? text : "";
+export function getWalletAddressText(value?: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const address = getWalletAddressText(item);
+      if (address) return address;
+    }
+    return "";
+  }
+  if (typeof value !== "object") return "";
+
+  const candidate = value as WalletAccountLike & {
+    account?: unknown;
+    accounts?: unknown;
+    selectedAccount?: unknown;
+    toBase58?: unknown;
+    toString?: unknown;
+  };
+  const base58 = typeof candidate.toBase58 === "function" ? candidate.toBase58() : "";
+  if (typeof base58 === "string" && base58) return base58;
+
+  const nestedAddress = getWalletAddressText(candidate.publicKey)
+    || getWalletAddressText(candidate.address)
+    || getWalletAddressText(candidate.public_key)
+    || getWalletAddressText(candidate.account)
+    || getWalletAddressText(candidate.selectedAccount)
+    || getWalletAddressText(candidate.accounts);
+  if (nestedAddress) return nestedAddress;
+
+  const text = typeof candidate.toString === "function" ? candidate.toString() : "";
+  return typeof text === "string" && text && text !== "[object Object]" ? text : "";
 }
 
 function getWalletErrorMessage(error: unknown) {
@@ -196,19 +257,54 @@ function getWalletErrorMessage(error: unknown) {
 
   if (code === 4001 || /reject|declin|cancel/i.test(detail)) return "用户取消了钱包连接";
   if (/already pending/i.test(detail)) return "钱包正在处理上一次连接请求";
-  if (/timeout/i.test(detail)) return "钱包确认超时，请重新点击连接";
+  if (/disconnected port|service worker/i.test(detail)) return "Phantom 扩展通信中断，请关闭钱包弹窗、刷新页面后重试";
+  if (/returned no public key/i.test(detail)) return "钱包已响应但没有返回地址，请确认已选择 Solana 账户";
+  if (/timeout/i.test(detail)) return "钱包确认超时，请在 Phantom 弹窗中点击连接；若弹窗无响应，请关闭弹窗后刷新页面";
   return "钱包连接失败，请稍后重试";
 }
 
-function connectWithTimeout(provider: SolanaWalletProvider) {
+function connectWithTimeout(provider: SolanaWalletProvider, options?: { onlyIfTrusted?: boolean }) {
   let timeoutId: number | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = window.setTimeout(() => reject(new Error("Wallet connection timeout")), walletConnectionTimeoutMs);
   });
 
-  return Promise.race([provider.connect(), timeout]).finally(() => {
+  return Promise.race([provider.connect(options), timeout]).finally(() => {
     if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   });
+}
+
+function wait(delayMs: number) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, delayMs));
+}
+
+async function getProviderAccountText(provider: SolanaWalletProvider) {
+  const publicKeyAddress = getWalletAddressText(provider.publicKey);
+  if (publicKeyAddress) return publicKeyAddress;
+  if (!provider.getAccount) return "";
+
+  try {
+    return getWalletAddressText(await provider.getAccount());
+  } catch {
+    return "";
+  }
+}
+
+export async function waitForConnectedAddress(provider: SolanaWalletProvider, result?: WalletConnectResult | void) {
+  const resultAddress = getWalletAddressText(result);
+  if (resultAddress) return resultAddress;
+
+  const immediateProviderAddress = await getProviderAccountText(provider);
+  if (immediateProviderAddress) return immediateProviderAddress;
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < walletAddressSettleMs) {
+    await wait(walletAddressPollIntervalMs);
+    const nextAddress = await getProviderAccountText(provider);
+    if (nextAddress) return nextAddress;
+  }
+
+  return "";
 }
 
 export function useSolanaWallet() {
@@ -224,21 +320,31 @@ export function useSolanaWallet() {
 
   const refreshWallets = useCallback(() => {
     const detectedWallets = getSolanaWallets() || [];
+    const preferredWallet = getPreferredWallet(detectedWallets, selectedWalletId);
     setWallets(detectedWallets);
-    setSelectedWalletId((current) => getPreferredWallet(detectedWallets, current)?.id || "");
+    setSelectedWalletId((current) => getPreferredWallet(detectedWallets, current)?.id || preferredWallet?.id || "");
+    setProvider(preferredWallet?.provider || null);
+    setProviderName(preferredWallet?.name || "Solana 钱包");
+
     if (!detectedWallets.length) {
-      setProvider(null);
-      setProviderName("Solana 钱包");
+      setAddress("");
       setStatus("missing");
       setMessage(getMissingWalletMessage());
+    } else {
+      setStatus((current) => current === "missing" ? "idle" : current);
+      setMessage((current) => current === getMissingWalletMessage() ? "" : current);
     }
+
     return detectedWallets;
-  }, []);
+  }, [selectedWalletId]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
     refreshWallets();
     const timers = [250, 800, 1600].map((delay) => window.setTimeout(refreshWallets, delay));
     window.addEventListener("load", refreshWallets);
+
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
       window.removeEventListener("load", refreshWallets);
@@ -246,20 +352,31 @@ export function useSolanaWallet() {
   }, [refreshWallets]);
 
   useEffect(() => {
-    if (!selectedWallet) return;
+    setProvider(selectedWallet?.provider || null);
+    setProviderName(selectedWallet?.name || "Solana 钱包");
+  }, [selectedWallet]);
 
-    const { name, provider: walletProvider } = selectedWallet;
-    setProvider(walletProvider);
-    setProviderName(name);
+  useEffect(() => {
+    if (!provider) return;
 
-    const syncConnectedAddress = (publicKey?: SolanaPublicKey | string | null) => {
-      const nextAddress = getPublicKeyText(publicKey) || getPublicKeyText(walletProvider.publicKey);
+    let cancelled = false;
+    const syncConnectedAddress = (publicKey?: unknown) => {
+      const nextAddress = getWalletAddressText(publicKey) || getWalletAddressText(provider.publicKey);
       setAddress(nextAddress);
-      setStatus(nextAddress ? "connected" : "idle");
-      setMessage(nextAddress ? "钱包已连接" : "");
+      setStatus((current) => nextAddress ? "connected" : current === "connecting" ? current : "idle");
+      setMessage((current) => nextAddress ? "钱包已连接" : current.startsWith("请在 ") ? current : "");
+    };
+    const settleConnectedAddress = (publicKey?: unknown) => {
+      const immediateAddress = getWalletAddressText(publicKey) || getWalletAddressText(provider.publicKey);
+      syncConnectedAddress(immediateAddress);
+      if (immediateAddress) return;
+
+      void waitForConnectedAddress(provider).then((nextAddress) => {
+        if (!cancelled && nextAddress) syncConnectedAddress(nextAddress);
+      });
     };
     const handleConnect = (...args: unknown[]) => {
-      syncConnectedAddress(args[0] as SolanaPublicKey | null | undefined);
+      settleConnectedAddress(args[0] as SolanaPublicKey | null | undefined);
     };
     const handleDisconnect = () => {
       setAddress("");
@@ -267,37 +384,31 @@ export function useSolanaWallet() {
       setMessage("钱包已断开");
     };
     const handleAccountChanged = (...args: unknown[]) => {
-      const publicKey = args[0] as SolanaPublicKey | null | undefined;
-      const nextAddress = getPublicKeyText(publicKey);
+      const nextAddress = getWalletAddressText(args[0]);
       setAddress(nextAddress);
       setStatus(nextAddress ? "connected" : "idle");
       setMessage(nextAddress ? "已切换钱包账户" : "钱包账户已断开");
     };
 
-    syncConnectedAddress(walletProvider.publicKey);
-    walletProvider.on?.("connect", handleConnect);
-    walletProvider.on?.("disconnect", handleDisconnect);
-    walletProvider.on?.("accountChanged", handleAccountChanged);
-
-    if (walletProvider.isPhantom && !walletProvider.publicKey) {
-      walletProvider.connect({ onlyIfTrusted: true }).then((result) => {
-        syncConnectedAddress(result?.publicKey || walletProvider.publicKey);
-      }).catch(() => undefined);
-    }
+    settleConnectedAddress(provider.publicKey);
+    provider.on?.("connect", handleConnect);
+    provider.on?.("disconnect", handleDisconnect);
+    provider.on?.("accountChanged", handleAccountChanged);
 
     return () => {
-      walletProvider.off?.("connect", handleConnect);
-      walletProvider.off?.("disconnect", handleDisconnect);
-      walletProvider.off?.("accountChanged", handleAccountChanged);
-      walletProvider.removeListener?.("connect", handleConnect);
-      walletProvider.removeListener?.("disconnect", handleDisconnect);
-      walletProvider.removeListener?.("accountChanged", handleAccountChanged);
+      cancelled = true;
+      provider.off?.("connect", handleConnect);
+      provider.off?.("disconnect", handleDisconnect);
+      provider.off?.("accountChanged", handleAccountChanged);
+      provider.removeListener?.("connect", handleConnect);
+      provider.removeListener?.("disconnect", handleDisconnect);
+      provider.removeListener?.("accountChanged", handleAccountChanged);
     };
-  }, [selectedWallet?.id, selectedWallet?.name, selectedWallet?.provider]);
+  }, [provider]);
 
-  const connectWallet = useCallback(async () => {
+  const connectWallet = useCallback(async (walletId?: string) => {
     const detectedWallets = refreshWallets();
-    const wallet = getPreferredWallet(detectedWallets, selectedWalletId);
+    const wallet = getPreferredWallet(detectedWallets, walletId || selectedWalletId);
     if (!wallet) {
       setStatus("missing");
       setMessage(getMissingWalletMessage());
@@ -305,15 +416,16 @@ export function useSolanaWallet() {
       return;
     }
 
+    const { name, provider: walletProvider } = wallet;
     setSelectedWalletId(wallet.id);
-    setProvider(wallet.provider);
-    setProviderName(wallet.name);
+    setProvider(walletProvider);
+    setProviderName(name);
     setStatus("connecting");
-    setMessage(`请在 ${wallet.name} 中确认连接`);
+    setMessage(`请在 ${name} 中确认连接`);
 
     try {
-      const result = await connectWithTimeout(wallet.provider);
-      const nextAddress = getPublicKeyText(result?.publicKey) || getPublicKeyText(wallet.provider.publicKey);
+      const result = await connectWithTimeout(walletProvider);
+      const nextAddress = await waitForConnectedAddress(walletProvider, result);
       if (!nextAddress) throw new Error("Wallet returned no public key");
       setAddress(nextAddress);
       setStatus("connected");

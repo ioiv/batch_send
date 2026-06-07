@@ -42,17 +42,21 @@ export function BrandHeader({
   );
 }
 
-export function NavLinks({ current }: { current?: "home" | "format" | "distributor" }) {
+export function NavLinks({ current }: { current?: "home" | "format" | "distributor" | "evmDistributor" }) {
   return (
     <nav className="nav" aria-label="页面导航">
       <a aria-current={current === "home" ? "page" : undefined} href="index.html">
         入口
       </a>
-      {current !== "format" ? (
-        <a href="format-generator.html">去生成</a>
-      ) : (
-        <a href="batch-distributor.html">去分发</a>
-      )}
+      <a aria-current={current === "format" ? "page" : undefined} href="format-generator.html">
+        去生成
+      </a>
+      <a aria-current={current === "distributor" ? "page" : undefined} href="batch-distributor.html">
+        SOL 分发
+      </a>
+      <a aria-current={current === "evmDistributor" ? "page" : undefined} href="evm-batch-distributor.html">
+        EVM 分发
+      </a>
     </nav>
   );
 }

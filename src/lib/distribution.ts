@@ -93,15 +93,15 @@ export function parseDistribution(input: string): ParseDistributionResult {
   };
 }
 
-export function getDistributionTransferHref(output: string) {
+export function getDistributionTransferHref(output: string, targetPage = "batch-distributor.html") {
   const directParams = new URLSearchParams({ [distributionListQueryParam]: output });
-  const directHref = `batch-distributor.html?${directParams.toString()}`;
+  const directHref = `${targetPage}?${directParams.toString()}`;
   if (directParams.toString().length <= maxDistributionUrlQueryLength) return directHref;
 
   try {
     window.sessionStorage.setItem(distributionTransferStorageKey, output);
     const storageParams = new URLSearchParams({ [distributionTransferQueryParam]: distributionTransferSource });
-    return `batch-distributor.html?${storageParams.toString()}`;
+    return `${targetPage}?${storageParams.toString()}`;
   } catch {
     return directHref;
   }

@@ -23,6 +23,7 @@ export function FormatGeneratorPage() {
     let totalLamports = 0n;
     let duplicates = 0;
     let evmCount = 0;
+    let solanaCount = 0;
 
     rows.forEach((address, index) => {
       const addressKind = getListAddressKind(address);
@@ -32,6 +33,7 @@ export function FormatGeneratorPage() {
       }
 
       if (addressKind === "evm") evmCount += 1;
+      else solanaCount += 1;
 
       const duplicateKey = getDuplicateAddressKey(address, addressKind);
       if (seen.has(duplicateKey)) duplicates += 1;
@@ -63,10 +65,19 @@ export function FormatGeneratorPage() {
       evmCount,
       issues,
       output: generated.join("\n"),
+      solanaCount,
       total: formatLamports(totalLamports),
       validCount: generated.length
     };
   }, [addresses, fixedAmount, generationNonce, maxAmount, minAmount, mode]);
+
+  const isMixedList = result.solanaCount > 0 && result.evmCount > 0;
+  const distributorButtonLabel = result.evmCount > 0 && !isMixedList ? "去 EVM 分发" : "去 SOL 分发";
+  const resultNote = isMixedList
+    ? "请拆成 Solana 和 EVM 两份清单后分别进入对应分发页。"
+    : result.evmCount > 0
+      ? "复制后可直接粘贴到 EVM 分发页，也可以直接跳转。"
+      : "复制后可直接粘贴到 SOL 分发页，也可以直接跳转。";
 
   const updateAndRegenerate = (setter: (value: string) => void, value: string) => {
     setter(value);
@@ -82,8 +93,9 @@ export function FormatGeneratorPage() {
   };
 
   const goToDistributor = () => {
-    if (!result.output || result.evmCount > 0) return;
-    window.location.href = getDistributionTransferHref(result.output);
+    if (!result.output || isMixedList) return;
+    const targetPage = result.evmCount > 0 ? "evm-batch-distributor.html" : "batch-distributor.html";
+    window.location.href = getDistributionTransferHref(result.output, targetPage);
   };
 
   return (
@@ -160,11 +172,11 @@ export function FormatGeneratorPage() {
                   <button
                     className="button"
                     type="button"
-                    disabled={!result.output || result.evmCount > 0}
-                    title={result.evmCount > 0 ? "分发页只支持 Solana 地址；EVM 清单请复制使用。" : undefined}
+                    disabled={!result.output || isMixedList}
+                    title={isMixedList ? "同一清单不能同时进入 SOL 和 EVM 分发页，请先拆分。" : undefined}
                     onClick={goToDistributor}
                   >
-                    去分发
+                    {distributorButtonLabel}
                   </button>
                   <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
                 </div>
@@ -183,7 +195,7 @@ export function FormatGeneratorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="result-title">生成结果</h2>
-                <p className="panel-note">{result.evmCount > 0 ? "EVM 清单可复制到外部流程使用。" : "复制后可直接粘贴到分发页。"}</p>
+                <p className="panel-note">{resultNote}</p>
               </div>
               <span className="pill">{mode === "fixed" ? "固定金额" : "随机区间"}</span>
             </div>

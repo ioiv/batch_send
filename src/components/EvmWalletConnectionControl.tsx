@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import type { SolanaWalletState } from "../hooks/useSolanaWallet";
+import type { EvmWalletState } from "../hooks/useEvmWallet";
 
 function WalletIcon() {
   return (
@@ -19,14 +19,14 @@ function CloseIcon() {
   );
 }
 
-export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState }) {
+export function EvmWalletConnectionControl({ wallet }: { wallet: EvmWalletState }) {
   const [chooserOpen, setChooserOpen] = useState(false);
   const chooserTitleId = useId();
   const stateClass = wallet.connected ? "connected" : wallet.status === "connecting" ? "pending" : wallet.status === "error" ? "error" : "";
   const hasWalletChoices = wallet.wallets.length > 1 && !wallet.connected;
   const handleClick = () => {
     if (wallet.connected) {
-      void wallet.disconnectWallet();
+      wallet.disconnectWallet();
       return;
     }
     if (hasWalletChoices) {
@@ -61,7 +61,7 @@ export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState 
       </span>
       <button className="button primary" type="button" disabled={wallet.status === "connecting"} onClick={handleClick}>
         <WalletIcon />
-        <span>{wallet.buttonLabel}</span>
+        <span>{hasWalletChoices ? "选择钱包" : wallet.buttonLabel}</span>
       </button>
       {chooserOpen ? (
         <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -71,7 +71,7 @@ export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState 
             <div className="wallet-modal-header">
               <div>
                 <span className="eyebrow">wallet gate</span>
-                <h3 id={chooserTitleId}>选择 Solana 钱包</h3>
+                <h3 id={chooserTitleId}>选择 EVM 钱包</h3>
               </div>
               <button className="wallet-modal-close" type="button" aria-label="关闭钱包选择" onClick={() => setChooserOpen(false)}>
                 <CloseIcon />

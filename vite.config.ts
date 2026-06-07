@@ -17,7 +17,8 @@ export default defineConfig({
       input: {
         index: resolve(projectRoot, "index.html"),
         formatGenerator: resolve(projectRoot, "format-generator.html"),
-        batchDistributor: resolve(projectRoot, "batch-distributor.html")
+        batchDistributor: resolve(projectRoot, "batch-distributor.html"),
+        evmBatchDistributor: resolve(projectRoot, "evm-batch-distributor.html")
       }
     }
   },

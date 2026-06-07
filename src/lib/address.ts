@@ -37,9 +37,13 @@ export function isValidSolanaAddress(address: string) {
   return decodeBase58(address)?.length === 32;
 }
 
+export function isValidEvmAddress(address: string) {
+  return evmAddressPattern.test(address);
+}
+
 export function getListAddressKind(address: string): AddressKind | null {
   if (isValidSolanaAddress(address)) return "solana";
-  if (evmAddressPattern.test(address)) return "evm";
+  if (isValidEvmAddress(address)) return "evm";
   return null;
 }
 

@@ -186,7 +186,7 @@ svg {
 
 .route-fields {
   display: grid;
-  grid-template-columns: minmax(112px, 0.64fr) minmax(220px, 1.7fr) minmax(96px, 0.42fr);
+  grid-template-columns: minmax(104px, 0.56fr) minmax(132px, 0.7fr) minmax(220px, 1.7fr) minmax(96px, 0.42fr);
   align-items: stretch;
   gap: 8px;
 }
@@ -227,14 +227,6 @@ input,
 select {
   width: 100%;
   min-width: 0;
-}
-
-.wallet-select {
-  width: auto;
-  min-width: 140px;
-  max-width: 180px;
-  min-height: 46px;
-  flex: 0 1 160px;
 }
 
 .batch-command,
@@ -429,7 +421,6 @@ textarea {
   }
 
   .nav a,
-  .wallet-select,
   .wallet .button,
   .wallet-status {
     flex: 1 1 150px;
@@ -448,16 +439,20 @@ textarea {
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr);
   }
 
-  .network-field {
+  .chain-field {
     order: 1;
   }
 
-  .route-count {
+  .network-field {
     order: 2;
   }
 
-  .rpc-field {
+  .route-count {
     order: 3;
+  }
+
+  .rpc-field {
+    order: 4;
     grid-column: 1 / -1;
   }
 

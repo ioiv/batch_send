@@ -81,7 +81,7 @@ export function BatchDistributorPage() {
       ? "请核对右侧摘要，确认无误后再进入钱包签名。"
       : `${parsed.validRows.length} 个地址，${parsed.total} SOL，预计 ${transactionCount || 0} 笔交易；下一步会展示最终摘要。`
     : !wallet.connected
-      ? wallet.message || "连接钱包后才允许确认分发。"
+      ? wallet.message || "连接 Solana 钱包后才允许确认分发。"
       : !hasRows
         ? "粘贴清单后会在这里显示发送状态。"
         : parsed.invalid > 0
@@ -286,9 +286,9 @@ export function BatchDistributorPage() {
       <SkipLink />
       <main className="shell tool-shell page-distributor" id="main">
         <BrandHeader
-          eyebrow="batch distributor"
-          title="读取清单并准备分发"
-          subtitle="粘贴 `地址,金额` 格式，先校验总额、重复项和金额，再连接钱包进入确认。"
+          eyebrow="solana distributor"
+          title="Solana 批量分发"
+          subtitle="粘贴 `Solana地址,金额` 格式，先校验总额、重复项和金额，再连接 Solana 钱包进入确认。"
           nav={<NavLinks current="distributor" />}
         />
 
@@ -296,8 +296,8 @@ export function BatchDistributorPage() {
           <section className="panel input-panel" aria-labelledby="list-title">
             <div className="panel-header">
               <div>
-                <h2 className="panel-title" id="list-title">分发清单</h2>
-                <p className="panel-note">每行必须是 `地址,金额`，金额单位按 SOL 处理。</p>
+                <h2 className="panel-title" id="list-title">Solana 分发清单</h2>
+                <p className="panel-note">每行必须是 `地址,金额`，金额单位固定为 SOL。</p>
               </div>
               <span className="pill network-pill">{selectedNetwork.label}</span>
             </div>
@@ -306,7 +306,7 @@ export function BatchDistributorPage() {
               <div className="batch-command">
                 <div className="command-copy">
                   <span className="eyebrow">wallet gate</span>
-                  <strong>{wallet.connected ? "钱包已连接" : wallet.status === "connecting" ? "等待钱包确认" : "连接钱包"}</strong>
+                  <strong>{wallet.connected ? "钱包已连接" : wallet.status === "connecting" ? "等待钱包确认" : "连接 Solana 钱包"}</strong>
                   <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后会解锁确认分发。"}</span>
                 </div>
                 <WalletConnectionControl wallet={wallet} />
@@ -327,6 +327,10 @@ export function BatchDistributorPage() {
 
               <div className="transaction-options compact-route" aria-label="链路配置">
                 <div className="route-fields">
+                  <div className="route-card route-count">
+                    <span>链</span>
+                    <strong>Solana</strong>
+                  </div>
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络</label>
                     <select id="networkId" value={networkId} onChange={(event) => {
@@ -356,7 +360,7 @@ export function BatchDistributorPage() {
 
               <div className="field">
                 <label htmlFor="distributionInput">地址,金额</label>
-                <p className="hint">示例：7hQm...SxyQ,0.1。逗号前后有空格也可以。</p>
+                <p className="hint">示例：7hQm...SxyQ,0.1。逗号前后有空格也可以，当前单位：SOL。</p>
                 <textarea
                   id="distributionInput"
                   spellCheck={false}
@@ -404,10 +408,11 @@ export function BatchDistributorPage() {
                   <strong>{showFinalSummary ? "最终确认摘要" : sendState.status === "success" ? "分发交易已确认" : sendState.status === "error" ? "分发交易未完成" : `准备向 ${parsed.validRows.length} 个地址分发`}</strong>
                   {showFinalSummary ? (
                     <div className="summary-list">
+                      <div><span>链</span><strong>Solana</strong></div>
                       <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
-                      <div><span>总 SOL</span><strong>{parsed.total}</strong></div>
+                      <div><span>总额</span><strong>{parsed.total} SOL</strong></div>
                       <div><span>预计交易数</span><strong>{transactionCount || 0}</strong></div>
                       <div><span>前 3 个地址</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
                     </div>

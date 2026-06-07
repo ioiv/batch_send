@@ -1,7 +1,13 @@
 import type { DistributionRow } from "../lib/distribution";
 import { formatLamports } from "../lib/amount";
 
-export function DistributionReview({ rows }: { rows: DistributionRow[] }) {
+export function DistributionReview({
+  formatAmount,
+  rows
+}: {
+  formatAmount?: (row: DistributionRow) => string;
+  rows: DistributionRow[];
+}) {
   if (rows.length === 0) {
     return (
       <div className="review-list">
@@ -16,7 +22,7 @@ export function DistributionReview({ rows }: { rows: DistributionRow[] }) {
         const label = row.status === "valid" ? "✓" : row.status === "warn" ? "!" : "×";
         const title = row.status === "valid" ? `第 ${row.line} 行可发送` : `第 ${row.line} 行需要检查`;
         const problemText = row.problems.length ? row.problems.join(" / ") : row.address;
-        const amountText = row.lamports > 0n ? `${formatLamports(row.lamports)} SOL` : "金额无效";
+        const amountText = row.lamports > 0n ? formatAmount?.(row) || `${formatLamports(row.lamports)} SOL` : "金额无效";
         return (
           <div className={`review-item ${row.status === "valid" ? "" : row.status}`} key={`${row.line}-${row.address}-${row.amountRaw}`}>
             <span className="icon">{label}</span>
