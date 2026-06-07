@@ -1571,10 +1571,10 @@ code {
 
 .home-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.12fr) minmax(320px, 0.78fr);
-  gap: 34px;
-  align-items: end;
-  padding: 42px;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.34fr);
+  gap: clamp(18px, 2.4vw, 30px);
+  align-items: center;
+  padding: clamp(28px, 3.8vw, 46px);
   overflow: hidden;
 }
 
@@ -1591,12 +1591,28 @@ code {
   pointer-events: none;
 }
 
-.hero-copy {
-  min-width: 0;
-}
-
 .hero .actions {
   justify-content: flex-start;
+}
+
+.workflow-visual {
+  min-width: 0;
+  margin: 0;
+  border-radius: 22px;
+  overflow: hidden;
+  aspect-ratio: 1.78;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.08),
+    0 18px 44px rgba(47, 58, 67, 0.085);
+}
+
+.workflow-visual img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center;
 }
 
 .tool-grid {
@@ -1606,12 +1622,12 @@ code {
 }
 
 .tool-card {
-  min-height: 116px;
+  min-height: 108px;
   display: grid;
   align-content: space-between;
-  gap: 14px;
+  gap: 12px;
   border-radius: 20px;
-  padding: 18px;
+  padding: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(238, 243, 245, 0.58));
   box-shadow:
@@ -2042,6 +2058,12 @@ input[type="number"],
     font-size: 4rem;
   }
 
+  .workflow-visual {
+    width: min(100%, 820px);
+    justify-self: center;
+    aspect-ratio: 1.74;
+  }
+
   .tool-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2101,6 +2123,11 @@ input[type="number"],
 
   .lead {
     font-size: 1rem;
+  }
+
+  .workflow-visual {
+    border-radius: 18px;
+    aspect-ratio: 1.38;
   }
 
   .tool-grid {
@@ -2168,6 +2195,10 @@ input[type="number"],
 
   .home-hero {
     padding: 22px;
+  }
+
+  .workflow-visual {
+    aspect-ratio: 1.22;
   }
 
   .route-fields {

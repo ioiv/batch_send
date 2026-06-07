@@ -1,4 +1,5 @@
 import { BrandHeader, SkipLink } from "../components/BrandHeader";
+import batchWorkflowHero from "../assets/batch-workflow-hero.jpg";
 
 export function HomePage() {
   return (
@@ -6,20 +7,11 @@ export function HomePage() {
       <SkipLink />
       <main className="shell home-shell page-home" id="main">
         <BrandHeader eyebrow="chain tools" title="批量分发工作台" />
-        <section className="home" aria-labelledby="hero-title">
+        <section className="home" aria-label="批量分发工具入口">
           <div className="hero home-hero">
-            <div className="hero-copy">
-              <p className="eyebrow">地址整理 / SOL 分发 / EVM 分发</p>
-              <h2 id="hero-title">把地址清单整理好，再按需要进入分发。</h2>
-              <p className="lead">
-                输入多行地址和统一金额，生成 <code>地址,金额</code> 格式；Solana 和 EVM 分发分别进入独立页面。
-              </p>
-              <div className="actions">
-                <a className="button primary" href="format-generator.html">
-                  开始格式生成
-                </a>
-              </div>
-            </div>
+            <figure className="workflow-visual">
+              <img src={batchWorkflowHero} alt="地址清单整理后分流到两条批量分发路径的插图" />
+            </figure>
 
             <div className="tool-grid" aria-label="工具入口">
               <a className="tool-card primary-tool" href="format-generator.html">
