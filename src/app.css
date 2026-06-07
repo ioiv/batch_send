@@ -186,9 +186,9 @@ svg {
 
 .route-fields {
   display: grid;
-  grid-template-columns: minmax(104px, 0.56fr) minmax(132px, 0.7fr) minmax(220px, 1.7fr) minmax(96px, 0.42fr);
+  grid-template-columns: minmax(88px, 0.7fr) minmax(118px, 0.9fr) minmax(170px, 1.1fr) minmax(78px, 0.5fr);
   align-items: stretch;
-  gap: 8px;
+  gap: 7px;
 }
 
 .route-card {
