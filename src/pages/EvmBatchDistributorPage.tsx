@@ -109,6 +109,7 @@ export function EvmBatchDistributorPage() {
       : wallet.connected
         ? "--"
         : "未连接";
+  const hasPendingTokenAddress = assetMode === "token" && Boolean(tokenAddressInput) && !tokenDetails;
   const tokenBalanceDescription = tokenDetails
     ? tokenBalanceLookup.status === "success"
       ? tokenBalance
@@ -117,7 +118,26 @@ export function EvmBatchDistributorPage() {
         : tokenBalanceLookup.status === "error"
           ? "读取失败"
           : ""
-    : "";
+    : hasPendingTokenAddress && tokenLookup.status === "loading"
+      ? "识别中"
+      : hasPendingTokenAddress
+        ? "未识别 Token"
+        : "";
+  const tokenBalanceStatus = hasPendingTokenAddress && tokenLookup.status !== "loading"
+    ? "error"
+    : hasPendingTokenAddress && tokenLookup.status === "loading"
+      ? "loading"
+    : tokenLookup.status === "error"
+      ? "error"
+      : tokenBalanceLookup.status === "error"
+      ? "error"
+      : tokenBalanceLookup.status === "loading"
+        ? "loading"
+        : "";
+  const tokenBalanceHint = hasPendingTokenAddress
+    ? tokenLookup.message || "未识别出 ERC20 Token，请确认合约地址和网络是否匹配"
+    : tokenBalanceLookup.message;
+  const tokenBalanceClassName = `asset-mode-balance${tokenBalanceStatus ? ` ${tokenBalanceStatus}` : ""}`;
   const showFinalSummary = confirmVisible && sendState.status === "idle";
   const sendButtonLabel = sending
     ? sendState.status === "preparing"
@@ -488,7 +508,9 @@ export function EvmBatchDistributorPage() {
                     </span>
                     <span className="asset-mode-meta">
                       <span>{tokenDetails ? tokenDetails.symbol : "指定合约"}</span>
-                      {tokenBalanceDescription ? <span className="asset-mode-balance">{tokenBalanceDescription}</span> : null}
+                      {tokenBalanceDescription ? (
+                        <span className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription}</span>
+                      ) : null}
                     </span>
                   </label>
                 </div>

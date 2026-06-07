@@ -303,6 +303,10 @@ svg {
   text-align: right;
 }
 
+.asset-mode-balance.error {
+  color: #9c5b50;
+}
+
 .token-config {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

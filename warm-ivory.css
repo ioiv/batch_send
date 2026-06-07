@@ -2146,6 +2146,15 @@ input[type="number"],
   color: #61785c;
 }
 
+.asset-mode-balance.error,
+.mode:has(input:checked) .asset-mode-balance.error {
+  background: rgba(255, 250, 250, 0.76);
+  box-shadow:
+    inset 0 0 0 1px rgba(156, 91, 80, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  color: #9c5b50;
+}
+
 @media (min-width: 1180px) {
   .panel.input-panel {
     transform: translate3d(0, 8px, 0);
