@@ -28,8 +28,8 @@ export const distributionTransferQueryParam = "from";
 export const distributionTransferSource = "format-generator";
 export const distributionTransferStorageKey = "sol_batch_send.generated_distribution";
 export const maxDistributionUrlQueryLength = 1800;
-export const solanaDistributionPage = "batch-distributor.html";
-export const evmDistributionPage = "evm-batch-distributor.html";
+export const solanaDistributionPage = "/sol/";
+export const evmDistributionPage = "/evm/";
 
 export function chunkRows<T>(rows: T[], chunkSize: number) {
   const chunks: T[][] = [];
@@ -95,7 +95,7 @@ export function parseDistribution(input: string): ParseDistributionResult {
   };
 }
 
-export function getDistributionTransferHref(output: string, targetPage = "batch-distributor.html") {
+export function getDistributionTransferHref(output: string, targetPage = solanaDistributionPage) {
   const directParams = new URLSearchParams({ [distributionListQueryParam]: output });
   const directHref = `${targetPage}?${directParams.toString()}`;
   if (directParams.toString().length <= maxDistributionUrlQueryLength) return directHref;

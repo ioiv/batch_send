@@ -45,16 +45,16 @@ export function BrandHeader({
 export function NavLinks({ current }: { current?: "home" | "format" | "distributor" | "evmDistributor" }) {
   return (
     <nav className="nav" aria-label="页面导航">
-      <a aria-current={current === "home" ? "page" : undefined} href="index.html">
+      <a aria-current={current === "home" ? "page" : undefined} href="/">
         入口
       </a>
-      <a aria-current={current === "format" ? "page" : undefined} href="format-generator.html">
+      <a aria-current={current === "format" ? "page" : undefined} href="/format/">
         去生成
       </a>
-      <a aria-current={current === "distributor" ? "page" : undefined} href="batch-distributor.html">
+      <a aria-current={current === "distributor" ? "page" : undefined} href="/sol/">
         SOL 分发
       </a>
-      <a aria-current={current === "evmDistributor" ? "page" : undefined} href="evm-batch-distributor.html">
+      <a aria-current={current === "evmDistributor" ? "page" : undefined} href="/evm/">
         EVM 分发
       </a>
     </nav>

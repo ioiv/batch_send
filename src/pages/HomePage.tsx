@@ -14,17 +14,17 @@ export function HomePage() {
             </figure>
 
             <div className="tool-grid" aria-label="工具入口">
-              <a className="tool-card primary-tool" href="format-generator.html">
+              <a className="tool-card primary-tool" href="/format/">
                 <span>01</span>
                 <strong>格式生成</strong>
                 <small>地址清单整理</small>
               </a>
-              <a className="tool-card" href="batch-distributor.html">
+              <a className="tool-card" href="/sol/">
                 <span>02</span>
                 <strong>SOL 分发</strong>
                 <small>Solana 钱包确认</small>
               </a>
-              <a className="tool-card" href="evm-batch-distributor.html">
+              <a className="tool-card" href="/evm/">
                 <span>03</span>
                 <strong>EVM 分发</strong>
                 <small>原生币批量发送</small>
