@@ -229,38 +229,17 @@ select {
   min-width: 0;
 }
 
-.batch-command,
-.send-gate {
+.batch-command {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
 }
 
-.command-copy,
-.gate-copy {
+.command-copy {
   min-width: 0;
   display: grid;
   gap: 4px;
-}
-
-.send-gate {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-}
-
-.gate-checks {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.gate-orb {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
 }
 
 textarea {
@@ -474,8 +453,7 @@ textarea {
     grid-column: 2;
   }
 
-  .batch-command,
-  .send-gate {
+  .batch-command {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
@@ -487,9 +465,5 @@ textarea {
 
   .batch-command .wallet {
     justify-content: stretch;
-  }
-
-  .gate-checks {
-    justify-content: flex-start;
   }
 }

@@ -50,44 +50,6 @@ export function EvmBatchDistributorPage() {
     : confirmVisible
       ? "确认并签名"
       : "发送前确认";
-  const hasRows = parsed.rows.length > 0;
-  const gateClass = sendState.status === "success"
-    ? "success"
-    : sendState.status === "error"
-      ? "error"
-      : sending
-        ? "pending"
-        : readyToSend
-          ? "ready"
-          : "blocked";
-  const gateTitle = sendState.status === "success"
-    ? "交易已确认"
-    : sendState.status === "error"
-      ? "交易未完成"
-      : sending
-        ? sendButtonLabel
-        : readyToSend
-          ? confirmVisible
-            ? "等待最终确认"
-            : "已准备发送"
-          : !wallet.connected
-            ? "等待钱包"
-            : !hasRows
-              ? "等待清单"
-              : parsed.invalid > 0
-                ? "需要修正"
-                : "等待有效地址";
-  const gateMessage = sendState.message || (readyToSend
-    ? confirmVisible
-      ? "请核对右侧摘要，确认无误后再进入钱包签名。"
-      : `${parsed.validRows.length} 个地址，${parsed.total} ${selectedNetwork.nativeCurrency.symbol}，预计 1 笔合约分发交易；下一步会展示最终摘要。`
-    : !wallet.connected
-      ? wallet.message || "连接 EVM 钱包后才允许确认分发。"
-      : !hasRows
-        ? "粘贴清单后会在这里显示发送状态。"
-        : parsed.invalid > 0
-          ? `还有 ${parsed.invalid} 行需要修正。`
-          : "需要至少 1 个有效收款地址。");
 
   const resetConfirmation = () => {
     setConfirmVisible(false);
@@ -189,19 +151,6 @@ export function EvmBatchDistributorPage() {
                   <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后会解锁确认分发。"}</span>
                 </div>
                 <EvmWalletConnectionControl wallet={wallet} />
-              </div>
-
-              <div className={`send-gate ${gateClass}`} aria-live="polite">
-                <div className="gate-orb" aria-hidden="true" />
-                <div className="gate-copy">
-                  <strong>{gateTitle}</strong>
-                  <span>{gateMessage}</span>
-                </div>
-                <div className="gate-checks" aria-label="发送条件">
-                  <span className={wallet.connected ? "ready" : ""}>钱包</span>
-                  <span className={parsed.validRows.length ? "ready" : ""}>地址</span>
-                  <span className={parsed.invalid > 0 ? "error" : hasRows ? "ready" : ""}>校验</span>
-                </div>
               </div>
 
               <div className="transaction-options compact-route" aria-label="链路配置">
