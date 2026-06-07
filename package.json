@@ -1,5 +1,5 @@
 {
-  "name": "solana-batch-send-ui",
+  "name": "batch_send",
   "version": "1.0.0",
   "private": true,
   "type": "module",
