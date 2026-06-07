@@ -10,26 +10,72 @@ import {
   ensureEvmNetwork,
   evmNetworks,
   formatWei,
+  formatWeiForDisplay,
+  getEvmAssetSymbol,
+  getEvmBalanceLookupErrorMessage,
   getEvmExplorerUrl,
+  getEvmNativeBalance,
   getEvmNetworkConfig,
+  getEvmTokenBalance,
+  getEvmTokenDetails,
+  getEvmTokenLookupErrorMessage,
   getEvmTransactionErrorMessage,
+  isValidEvmAddress,
   parseEvmDistribution,
   sendEvmNativeDistribution,
-  type EvmNetworkId
+  sendEvmTokenDistribution,
+  type EvmAssetMode,
+  type EvmNetworkId,
+  type EvmTokenDetails,
+  type EvmTokenDistributionStep
 } from "../lib/evm";
 import { createSendProgress, initialSendState } from "../lib/solana";
 
+type TokenLookupState = {
+  details: EvmTokenDetails | null;
+  message: string;
+  status: "idle" | "loading" | "success" | "error";
+};
+
+type BalanceLookupState = {
+  message: string;
+  status: "idle" | "loading" | "success" | "error";
+  valueWei: bigint | null;
+};
+
+const initialTokenLookupState: TokenLookupState = {
+  details: null,
+  message: "",
+  status: "idle"
+};
+
+const initialBalanceLookupState: BalanceLookupState = {
+  message: "",
+  status: "idle",
+  valueWei: null
+};
+
 export function EvmBatchDistributorPage() {
   const [input, setInput] = useState(() => getInitialDistributionInput());
+  const [assetMode, setAssetMode] = useState<EvmAssetMode>("native");
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [networkId, setNetworkId] = useState<EvmNetworkId>("ethereum");
   const [rpcEndpoint, setRpcEndpoint] = useState(getEvmNetworkConfig("ethereum").rpcEndpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [tokenAddress, setTokenAddress] = useState("");
+  const [tokenLookup, setTokenLookup] = useState<TokenLookupState>(initialTokenLookupState);
+  const [nativeBalanceLookup, setNativeBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
+  const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
+  const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const wallet = useEvmWallet();
 
   const selectedNetwork = useMemo(() => getEvmNetworkConfig(networkId), [networkId]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
-  const parsed = useMemo(() => parseEvmDistribution(input, selectedNetwork.nativeCurrency.decimals), [input, selectedNetwork.nativeCurrency.decimals]);
+  const tokenDetails = assetMode === "token" ? tokenLookup.details : null;
+  const assetDecimals = assetMode === "token" ? tokenDetails?.decimals ?? selectedNetwork.nativeCurrency.decimals : selectedNetwork.nativeCurrency.decimals;
+  const assetSymbol = getEvmAssetSymbol(assetMode, selectedNetwork, tokenDetails);
+  const tokenAddressInput = tokenAddress.trim();
+  const parsed = useMemo(() => parseEvmDistribution(input, assetDecimals), [input, assetDecimals]);
   const reviewRows = useMemo<DistributionRow[]>(() => parsed.rows.map((row) => ({
     address: row.address,
     amount: Number(row.amountRaw),
@@ -40,10 +86,43 @@ export function EvmBatchDistributorPage() {
     status: row.status
   })), [parsed.rows]);
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
-  const readyToSend = wallet.connected && Boolean(wallet.getProvider()) && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
+  const assetReady = assetMode === "native" || (tokenLookup.status === "success" && Boolean(tokenDetails));
+  const readyToSend = wallet.connected && Boolean(wallet.getProvider()) && assetReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
+  const nativeBalance = nativeBalanceLookup.status === "success" && nativeBalanceLookup.valueWei !== null
+    ? formatWeiForDisplay(nativeBalanceLookup.valueWei, selectedNetwork.nativeCurrency.decimals)
+    : nativeBalanceLookup.status === "loading"
+      ? "读取中"
+      : wallet.connected
+        ? "--"
+        : "未连接";
+  const nativeBalanceDescription = nativeBalanceLookup.status === "success"
+    ? `${nativeBalance} ${selectedNetwork.nativeCurrency.symbol}`
+    : nativeBalanceLookup.status === "loading"
+      ? "读取中"
+      : nativeBalanceLookup.status === "error"
+        ? "读取失败"
+        : "";
+  const tokenBalance = tokenBalanceLookup.status === "success" && tokenBalanceLookup.valueWei !== null
+    ? formatWeiForDisplay(tokenBalanceLookup.valueWei, tokenDetails?.decimals ?? assetDecimals)
+    : tokenBalanceLookup.status === "loading"
+      ? "读取中"
+      : wallet.connected
+        ? "--"
+        : "未连接";
+  const tokenBalanceDescription = tokenDetails
+    ? tokenBalanceLookup.status === "success"
+      ? `${tokenBalance} ${tokenDetails.symbol}`
+      : tokenBalanceLookup.status === "loading"
+        ? "读取中"
+        : tokenBalanceLookup.status === "error"
+          ? "读取失败"
+          : ""
+    : "";
   const showFinalSummary = confirmVisible && sendState.status === "idle";
   const sendButtonLabel = sending
-    ? sendState.status === "confirming"
+    ? sendState.status === "preparing"
+      ? "准备中"
+      : sendState.status === "confirming"
       ? "链上确认中"
       : "等待钱包确认"
     : confirmVisible
@@ -59,12 +138,210 @@ export function EvmBatchDistributorPage() {
     resetConfirmation();
   }, [wallet.address, wallet.connected]);
 
+  useEffect(() => {
+    if (assetMode !== "token") {
+      setTokenLookup(initialTokenLookupState);
+      return;
+    }
+
+    if (!tokenAddressInput) {
+      setTokenLookup(initialTokenLookupState);
+      return;
+    }
+
+    if (!isValidEvmAddress(tokenAddressInput)) {
+      setTokenLookup({
+        details: null,
+        message: "Token 地址格式不正确",
+        status: "error"
+      });
+      return;
+    }
+
+    let active = true;
+    setTokenLookup({
+      details: null,
+      message: "正在读取 Token 信息",
+      status: "loading"
+    });
+
+    void getEvmTokenDetails({
+      network: selectedNetwork,
+      rpcEndpoint: effectiveRpcEndpoint,
+      tokenAddress: tokenAddressInput
+    }).then((details) => {
+      if (!active) return;
+      setTokenLookup({
+        details,
+        message: `${details.name} · ${details.decimals} decimals`,
+        status: "success"
+      });
+    }).catch((error) => {
+      if (!active) return;
+      setTokenLookup({
+        details: null,
+        message: getEvmTokenLookupErrorMessage(error),
+        status: "error"
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [assetMode, effectiveRpcEndpoint, selectedNetwork, tokenAddressInput]);
+
+  useEffect(() => {
+    if (!wallet.connected || !wallet.address) {
+      setNativeBalanceLookup({
+        message: "连接钱包后显示余额",
+        status: "idle",
+        valueWei: null
+      });
+      return;
+    }
+
+    let active = true;
+    setNativeBalanceLookup({
+      message: "正在读取钱包余额",
+      status: "loading",
+      valueWei: null
+    });
+
+    void getEvmNativeBalance({
+      address: wallet.address,
+      network: selectedNetwork,
+      rpcEndpoint: effectiveRpcEndpoint
+    }).then((valueWei) => {
+      if (!active) return;
+      setNativeBalanceLookup({
+        message: "",
+        status: "success",
+        valueWei
+      });
+    }).catch((error) => {
+      if (!active) return;
+      setNativeBalanceLookup({
+        message: getEvmBalanceLookupErrorMessage(error),
+        status: "error",
+        valueWei: null
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, selectedNetwork, wallet.address, wallet.connected]);
+
+  useEffect(() => {
+    if (!wallet.connected || !wallet.address) {
+      setTokenBalanceLookup({
+        message: "连接钱包后显示余额",
+        status: "idle",
+        valueWei: null
+      });
+      return;
+    }
+
+    if (!tokenDetails) {
+      setTokenBalanceLookup({
+        message: "Token 信息读取成功后显示余额",
+        status: "idle",
+        valueWei: null
+      });
+      return;
+    }
+
+    let active = true;
+    setTokenBalanceLookup({
+      message: "正在读取 Token 余额",
+      status: "loading",
+      valueWei: null
+    });
+
+    void getEvmTokenBalance({
+      address: wallet.address,
+      network: selectedNetwork,
+      rpcEndpoint: effectiveRpcEndpoint,
+      tokenAddress: tokenDetails.address
+    }).then((valueWei) => {
+      if (!active) return;
+      setTokenBalanceLookup({
+        message: "",
+        status: "success",
+        valueWei
+      });
+    }).catch((error) => {
+      if (!active) return;
+      setTokenBalanceLookup({
+        message: getEvmBalanceLookupErrorMessage(error),
+        status: "error",
+        valueWei: null
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, selectedNetwork, tokenDetails, wallet.address, wallet.connected]);
+
+  const handleTokenStep = (step: EvmTokenDistributionStep) => {
+    if (step.type === "allowance-checked") {
+      setSendState({
+        message: step.needsApproval
+          ? `请先授权 ${parsed.total} ${assetSymbol} 给分发合约`
+          : `Token 授权充足，请在钱包中确认 ${assetSymbol} 分发交易`,
+        progress: createSendProgress(step.totalTransactions),
+        signatures: [],
+        status: "awaiting-wallet"
+      });
+      return;
+    }
+
+    if (step.type === "approval-submitted") {
+      setSendState({
+        message: "Token 授权已提交，等待链上确认",
+        progress: createSendProgress(step.totalTransactions, 1, 1, 0),
+        signatures: [step.hash],
+        status: "confirming"
+      });
+      return;
+    }
+
+    if (step.type === "approval-confirmed") {
+      setSendState({
+        message: "Token 授权已确认，请在钱包中确认分发交易",
+        progress: createSendProgress(step.totalTransactions, 1, 1, 1),
+        signatures: [step.hash],
+        status: "awaiting-wallet"
+      });
+      return;
+    }
+
+    if (step.type === "distribution-submitted") {
+      const previouslyConfirmed = step.totalTransactions === 2 ? 1 : 0;
+      setSendState({
+        message: "Token 分发交易已提交，等待链上确认",
+        progress: createSendProgress(step.totalTransactions, step.totalTransactions, step.totalTransactions, previouslyConfirmed),
+        signatures: step.hashes,
+        status: "confirming"
+      });
+      return;
+    }
+
+    setSendState({
+      message: "Token 分发交易已确认",
+      progress: createSendProgress(step.totalTransactions, step.totalTransactions, step.totalTransactions, step.totalTransactions),
+      signatures: step.hashes,
+      status: "success"
+    });
+  };
+
   const sendDistribution = async () => {
     const walletProvider = wallet.getProvider();
     if (!readyToSend || !walletProvider || !wallet.address || !confirmVisible) return;
 
     setSendState({
-      message: "正在检查 EVM 网络和余额",
+      message: `正在检查 ${assetSymbol} 网络和余额`,
       progress: createSendProgress(1),
       signatures: [],
       status: "preparing"
@@ -74,11 +351,34 @@ export function EvmBatchDistributorPage() {
       await ensureEvmNetwork(walletProvider, selectedNetwork, effectiveRpcEndpoint);
 
       setSendState({
-        message: `请在 EVM 钱包中确认 ${selectedNetwork.label} 分发交易`,
+        message: `请在 EVM 钱包中确认 ${selectedNetwork.label} ${assetSymbol} 分发交易`,
         progress: createSendProgress(1),
         signatures: [],
         status: "awaiting-wallet"
       });
+
+      if (assetMode === "token") {
+        if (!tokenDetails) throw new Error("请先填写并读取 ERC20 Token 合约地址");
+
+        const { hashes } = await sendEvmTokenDistribution({
+          from: wallet.address,
+          network: selectedNetwork,
+          onStep: handleTokenStep,
+          provider: walletProvider,
+          rows: parsed.validRows,
+          rpcEndpoint: effectiveRpcEndpoint,
+          token: tokenDetails
+        });
+
+        setSendState({
+          message: "Token 分发交易已确认",
+          progress: createSendProgress(hashes.length, hashes.length, hashes.length, hashes.length),
+          signatures: hashes,
+          status: "success"
+        });
+        setBalanceRefreshNonce((value) => value + 1);
+        return;
+      }
 
       const { hash } = await sendEvmNativeDistribution({
         from: wallet.address,
@@ -96,11 +396,12 @@ export function EvmBatchDistributorPage() {
       });
 
       setSendState({
-        message: "EVM 分发交易已确认",
+        message: "EVM 原生币分发交易已确认",
         progress: createSendProgress(1, 1, 1, 1),
         signatures: [hash],
         status: "success"
       });
+      setBalanceRefreshNonce((value) => value + 1);
     } catch (error) {
       setSendState({
         message: getEvmTransactionErrorMessage(error),
@@ -127,8 +428,8 @@ export function EvmBatchDistributorPage() {
       <main className="shell tool-shell page-distributor" id="main">
         <BrandHeader
           eyebrow="evm distributor"
-          title="EVM 原生币批量分发"
-          subtitle="粘贴 `EVM地址,金额` 格式，先校验总额、重复项和金额，再连接 EVM 钱包进入确认。"
+          title="EVM 批量分发"
+          subtitle="粘贴 `EVM地址,金额` 格式，可分发原生币或指定 ERC20 Token，先校验总额、重复项和金额，再连接 EVM 钱包进入确认。"
           nav={<NavLinks current="evmDistributor" />}
         />
 
@@ -137,9 +438,9 @@ export function EvmBatchDistributorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="list-title">EVM 分发清单</h2>
-                <p className="panel-note">每行必须是 `地址,金额`，金额单位按当前网络原生币处理。</p>
+                <p className="panel-note">每行必须是 `地址,金额`，金额单位按当前选择的资产处理。</p>
               </div>
-              <span className="pill network-pill">{selectedNetwork.label}</span>
+              <span className="pill network-pill">{selectedNetwork.label} · {assetSymbol}</span>
             </div>
 
             <div className="form">
@@ -153,6 +454,44 @@ export function EvmBatchDistributorPage() {
               </div>
 
               <div className="transaction-options compact-route" aria-label="链路配置">
+                <div className="mode-row asset-mode-row" aria-label="资产类型">
+                  <label className={`mode asset-mode ${assetMode === "native" ? "selected" : ""}`}>
+                    <span className="mode-head">
+                      <input
+                        type="radio"
+                        name="assetMode"
+                        checked={assetMode === "native"}
+                        onChange={() => {
+                          setAssetMode("native");
+                          resetConfirmation();
+                        }}
+                      />
+                      原生币
+                    </span>
+                    <span className="asset-mode-meta">
+                      <span>{selectedNetwork.nativeCurrency.symbol}</span>
+                      {nativeBalanceDescription ? <span className="asset-mode-balance">{nativeBalanceDescription}</span> : null}
+                    </span>
+                  </label>
+                  <label className={`mode asset-mode ${assetMode === "token" ? "selected" : ""}`}>
+                    <span className="mode-head">
+                      <input
+                        type="radio"
+                        name="assetMode"
+                        checked={assetMode === "token"}
+                        onChange={() => {
+                          setAssetMode("token");
+                          resetConfirmation();
+                        }}
+                      />
+                      ERC20 Token
+                    </span>
+                    <span className="asset-mode-meta">
+                      <span>{tokenDetails ? tokenDetails.symbol : "指定合约"}</span>
+                      {tokenBalanceDescription ? <span className="asset-mode-balance">{tokenBalanceDescription}</span> : null}
+                    </span>
+                  </label>
+                </div>
                 <div className="route-fields evm-route-fields">
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
@@ -175,11 +514,28 @@ export function EvmBatchDistributorPage() {
                     }} />
                   </div>
                 </div>
+                {assetMode === "token" ? (
+                  <div className="token-config">
+                    <div className="field route-card token-address-field">
+                      <label htmlFor="tokenAddress">Token 合约地址</label>
+                      <input
+                        id="tokenAddress"
+                        type="text"
+                        value={tokenAddress}
+                        onChange={(event) => {
+                          setTokenAddress(event.target.value);
+                          resetConfirmation();
+                        }}
+                        placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="field">
                 <label htmlFor="distributionInput">地址,金额</label>
-                <p className="hint">示例：0x742d35Cc6634C0532925a3b844Bc454e4438f44e,0.1。当前单位：{selectedNetwork.nativeCurrency.symbol}。</p>
+                <p className="hint">示例：0x742d35Cc6634C0532925a3b844Bc454e4438f44e,0.1。当前单位：{assetSymbol}。</p>
                 <textarea
                   id="distributionInput"
                   spellCheck={false}
@@ -207,7 +563,7 @@ export function EvmBatchDistributorPage() {
 
             <div className="stats" aria-label="分发统计">
               <Metric value={String(parsed.validRows.length)} label="有效收款地址" />
-              <Metric value={parsed.total} label={`合计 ${selectedNetwork.nativeCurrency.symbol}`} />
+              <Metric value={parsed.total} label={`合计 ${assetSymbol}`} />
               <Metric value={String(parsed.invalid)} label="需修正" />
               <Metric value={String(parsed.duplicates)} label="重复地址" />
             </div>
@@ -223,7 +579,7 @@ export function EvmBatchDistributorPage() {
             <div className="form">
               <DistributionReview
                 rows={reviewRows}
-                formatAmount={(row) => `${formatWei(row.lamports, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`}
+                formatAmount={(row) => `${formatWei(row.lamports, assetDecimals)} ${assetSymbol}`}
               />
               {confirmVisible ? (
                 <div className={`confirm transaction-status ${sendState.status}`}>
@@ -231,13 +587,14 @@ export function EvmBatchDistributorPage() {
                   {showFinalSummary ? (
                     <div className="summary-list">
                       <div><span>网络选择</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>资产类型</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : selectedNetwork.nativeCurrency.symbol}</strong></div>
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
-                      <div><span>总额</span><strong>{parsed.total} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                      <div><span>总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
                       <div><span>前 3 个地址</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
                     </div>
                   ) : (
-                    <span>{sendState.message || `合计 ${parsed.total} ${selectedNetwork.nativeCurrency.symbol}，网络 ${selectedNetwork.label}。`}</span>
+                    <span>{sendState.message || `合计 ${parsed.total} ${assetSymbol}，网络 ${selectedNetwork.label}。`}</span>
                   )}
                   {!showFinalSummary && sendState.progress.total > 0 ? (
                     <div className="send-progress" aria-label="发送进度">
@@ -248,11 +605,14 @@ export function EvmBatchDistributorPage() {
                   ) : null}
                   {sendState.signatures.length > 0 ? (
                     <div className="signature-list">
-                      {sendState.signatures.map((signature, index) => (
-                        <a key={signature} href={getEvmExplorerUrl(signature, selectedNetwork)} target="_blank" rel="noreferrer">
-                          交易 {index + 1}: {shortenAddress(signature)}
-                        </a>
-                      ))}
+                      {sendState.signatures.map((signature, index) => {
+                        const label = sendState.signatures.length > 1 && index === 0 ? "授权" : "分发";
+                        return (
+                          <a key={signature} href={getEvmExplorerUrl(signature, selectedNetwork)} target="_blank" rel="noreferrer">
+                            {label}: {shortenAddress(signature)}
+                          </a>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </div>

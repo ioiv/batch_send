@@ -13,6 +13,14 @@ export function formatLamports(lamports: bigint) {
   return `${whole}.${fractionText}`;
 }
 
+export function formatLamportsForDisplay(lamports: bigint, maxFractionDigits = 2) {
+  const [integer, fraction = ""] = formatLamports(lamports).split(".");
+  if (maxFractionDigits <= 0 || !fraction) return integer;
+
+  const displayFraction = fraction.slice(0, maxFractionDigits).replace(/0+$/, "");
+  return displayFraction ? `${integer}.${displayFraction}` : integer;
+}
+
 export function parseSolToLamports(value: string) {
   const match = value.trim().match(/^(\d+)(?:\.(\d{0,9}))?$/);
   if (!match) return null;

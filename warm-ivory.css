@@ -898,7 +898,9 @@ input[type="number"],
 }
 
 .route-card label,
-.route-count > span {
+.route-count > span,
+.route-balance > span,
+.route-summary span {
   color: var(--ink);
   font-size: 11.5px;
   font-weight: 740;
@@ -917,16 +919,56 @@ input[type="number"],
   font-size: 11.5px;
 }
 
-.route-count {
+.route-count,
+.route-balance,
+.route-summary {
   align-content: center;
 }
 
-.route-count strong {
+.route-summary {
+  padding: 5px;
+}
+
+.route-summary > div {
+  border-radius: 8px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.route-count strong,
+.route-balance strong {
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 1.35rem;
   font-weight: 780;
   line-height: 1;
+}
+
+.route-summary strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.route-balance small,
+.route-summary small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
+}
+
+.route-balance.error strong,
+.route-balance.error small,
+.route-summary.error strong,
+.route-summary.error small {
+  color: #9c5b50;
 }
 
 .page-distributor .transaction-options .metric {
@@ -1862,13 +1904,21 @@ textarea {
 }
 
 .route-card label,
-.route-count > span {
+.route-count > span,
+.route-balance > span,
+.route-summary span {
   font-size: 11.5px;
 }
 
-.route-count strong {
+.route-count strong,
+.route-balance strong {
   font-size: 1.35rem;
   font-weight: 780;
+}
+
+.route-summary strong {
+  font-size: 11.5px;
+  font-weight: 560;
 }
 
 .stats {
@@ -2030,6 +2080,70 @@ textarea {
 input[type="number"],
 .result pre {
   font-variant-numeric: tabular-nums;
+}
+
+.asset-status {
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(239, 244, 246, 0.54));
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.085),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  color: var(--muted);
+}
+
+.asset-status strong {
+  color: var(--ink);
+  font-weight: 760;
+  line-height: 1.12;
+}
+
+.asset-status span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.asset-status.success {
+  background: linear-gradient(180deg, #f8fff5, #e8f0e2);
+  color: #54704f;
+}
+
+.asset-status.success span {
+  color: #61785c;
+}
+
+.asset-status.error {
+  background: linear-gradient(180deg, #fffafa, #f3e8e6);
+}
+
+.asset-status.error strong {
+  color: #9c5b50;
+}
+
+.asset-status.loading {
+  background: linear-gradient(180deg, #fffdf7, #f1e8d7);
+}
+
+.asset-mode-balance {
+  display: block;
+  border-radius: 10px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.52);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.065),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  font-weight: 560;
+}
+
+.mode:has(input:checked) .asset-mode-balance {
+  background: rgba(248, 255, 244, 0.74);
+  box-shadow:
+    inset 0 0 0 1px rgba(89, 107, 80, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  color: #61785c;
 }
 
 @media (min-width: 1180px) {

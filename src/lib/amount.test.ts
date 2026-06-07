@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatLamports, parseSolToLamports } from "./amount";
+import { formatLamports, formatLamportsForDisplay, parseSolToLamports } from "./amount";
 
 describe("parseSolToLamports", () => {
   it("parses SOL strings into lamports", () => {
@@ -26,5 +26,11 @@ describe("formatLamports", () => {
     expect(formatLamports(1_000_000_000n)).toBe("1");
     expect(formatLamports(1_234_567_890n)).toBe("1.23456789");
     expect(formatLamports(1_500_000_000n)).toBe("1.5");
+  });
+
+  it("formats displayed balances to at most 2 decimal places", () => {
+    expect(formatLamportsForDisplay(1_234_567_890n)).toBe("1.23");
+    expect(formatLamportsForDisplay(1_200_000_000n)).toBe("1.2");
+    expect(formatLamportsForDisplay(42n)).toBe("0");
   });
 });

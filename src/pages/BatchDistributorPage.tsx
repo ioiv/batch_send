@@ -5,7 +5,7 @@ import { Metric } from "../components/Metric";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { shortenAddress } from "../lib/address";
-import { formatLamports } from "../lib/amount";
+import { formatLamports, formatLamportsForDisplay } from "../lib/amount";
 import { getInitialDistributionInput, parseDistribution } from "../lib/distribution";
 import {
   Connection,
@@ -26,12 +26,33 @@ import {
   type TransactionSignature
 } from "../lib/solana";
 
+type BalanceLookupState = {
+  message: string;
+  status: "idle" | "loading" | "success" | "error";
+  valueLamports: bigint | null;
+};
+
+const initialBalanceLookupState: BalanceLookupState = {
+  message: "",
+  status: "idle",
+  valueLamports: null
+};
+
+function getBalanceLookupErrorMessage(error: unknown) {
+  const detail = error && typeof error === "object" && "message" in error ? String((error as { message?: unknown }).message || "") : String(error || "");
+
+  if (/403|429|failed to fetch|network|fetch|timeout/i.test(detail)) return "余额读取失败，请更换 RPC 后重试";
+  return detail ? `余额读取失败：${detail}` : "余额读取失败，请稍后重试";
+}
+
 export function BatchDistributorPage() {
   const [input, setInput] = useState(() => getInitialDistributionInput());
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [networkId, setNetworkId] = useState<SolanaNetworkId>("mainnet-beta");
   const [rpcEndpoint, setRpcEndpoint] = useState(getNetworkConfig("mainnet-beta").endpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [balanceLookup, setBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
+  const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const wallet = useSolanaWallet();
 
   const parsed = useMemo(() => parseDistribution(input), [input]);
@@ -41,6 +62,13 @@ export function BatchDistributorPage() {
   const transactionCount = estimatedChunks.length;
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
   const readyToSend = wallet.connected && Boolean(wallet.provider) && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
+  const walletBalance = balanceLookup.status === "success" && balanceLookup.valueLamports !== null
+    ? formatLamportsForDisplay(balanceLookup.valueLamports)
+    : balanceLookup.status === "loading"
+      ? "读取中"
+      : wallet.connected
+        ? "--"
+        : "未连接";
   const showFinalSummary = confirmVisible && sendState.status === "idle";
   const sendButtonLabel = sending
     ? sendState.status === "confirming"
@@ -58,6 +86,45 @@ export function BatchDistributorPage() {
   useEffect(() => {
     resetConfirmation();
   }, [wallet.address, wallet.connected]);
+
+  useEffect(() => {
+    if (!wallet.connected || !wallet.address) {
+      setBalanceLookup({
+        message: "连接钱包后显示余额",
+        status: "idle",
+        valueLamports: null
+      });
+      return;
+    }
+
+    let active = true;
+    setBalanceLookup({
+      message: "正在读取钱包余额",
+      status: "loading",
+      valueLamports: null
+    });
+
+    const connection = new Connection(effectiveRpcEndpoint, "confirmed");
+    void getBalanceLamports(connection, wallet.address).then((valueLamports) => {
+      if (!active) return;
+      setBalanceLookup({
+        message: "",
+        status: "success",
+        valueLamports
+      });
+    }).catch((error) => {
+      if (!active) return;
+      setBalanceLookup({
+        message: getBalanceLookupErrorMessage(error),
+        status: "error",
+        valueLamports: null
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, wallet.address, wallet.connected]);
 
   const sendDistribution = async () => {
     if (!readyToSend || !wallet.provider || !wallet.address || !confirmVisible) return;
@@ -218,6 +285,7 @@ export function BatchDistributorPage() {
         signatures,
         status: "success"
       });
+      setBalanceRefreshNonce((value) => value + 1);
     } catch (error) {
       const baseMessage = getTransactionErrorMessage(error);
       const partialMessage = signatures.length > 0
@@ -275,7 +343,7 @@ export function BatchDistributorPage() {
               </div>
 
               <div className="transaction-options compact-route" aria-label="链路配置">
-                <div className="route-fields">
+                <div className="route-fields sol-route-fields">
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
                     <select id="networkId" value={networkId} onChange={(event) => {
@@ -296,9 +364,21 @@ export function BatchDistributorPage() {
                       resetConfirmation();
                     }} />
                   </div>
-                  <div className="route-card route-count">
-                    <span>交易数</span>
-                    <strong>{transactionCount || 0}</strong>
+                  <div className={`route-card route-summary ${balanceLookup.status}`} title={balanceLookup.message || undefined}>
+                    <div>
+                      <span>余额</span>
+                      <span className="route-summary-value">
+                        <strong>{walletBalance}</strong>
+                        <small>{balanceLookup.status === "error" ? "读取失败" : "SOL"}</small>
+                      </span>
+                    </div>
+                    <div>
+                      <span>交易数</span>
+                      <span className="route-summary-value">
+                        <strong>{transactionCount || 0}</strong>
+                        <small>笔</small>
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

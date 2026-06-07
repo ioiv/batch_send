@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evmNetworks, getEvmTransactionErrorMessage, parseEvmDistribution } from "./evm";
+import { evmNetworks, formatWeiForDisplay, getEvmAssetSymbol, getEvmBalanceLookupErrorMessage, getEvmTransactionErrorMessage, isValidEvmAddress, parseEvmDistribution } from "./evm";
 
 const addressOne = "0x00000000000000000000000000000000000000aa";
 const addressOneMixedCase = "0x00000000000000000000000000000000000000AA";
@@ -14,6 +14,15 @@ describe("parseEvmDistribution", () => {
     expect(parsed.duplicates).toBe(0);
     expect(parsed.totalWei).toBe(1_000_000_000_000_000_001n);
     expect(parsed.total).toBe("1.000000000000000001");
+  });
+
+  it("parses token rows using the selected token decimals", () => {
+    const parsed = parseEvmDistribution(`${addressOne},1.234567\n${addressTwo},0.000001`, 6);
+
+    expect(parsed.validRows).toHaveLength(2);
+    expect(parsed.invalid).toBe(0);
+    expect(parsed.totalWei).toBe(1_234_568n);
+    expect(parsed.total).toBe("1.234568");
   });
 
   it("rejects invalid addresses, malformed rows, and bad amounts", () => {
@@ -45,6 +54,12 @@ describe("parseEvmDistribution", () => {
 });
 
 describe("evm network config", () => {
+  it("formats displayed balances to at most 4 decimal places", () => {
+    expect(formatWeiForDisplay(1_234_567_890_000_000_000n, 18)).toBe("1.2345");
+    expect(formatWeiForDisplay(1_200_000n, 6)).toBe("1.2");
+    expect(formatWeiForDisplay(42n, 0)).toBe("42");
+  });
+
   it("orders mainnet options by current chain heat and keeps testnet last", () => {
     expect(evmNetworks.map((network) => network.id)).toEqual([
       "ethereum",
@@ -68,5 +83,20 @@ describe("evm network config", () => {
   it("keeps actionable messages for config and reverted transaction failures", () => {
     expect(getEvmTransactionErrorMessage(new Error("RPC 网络不匹配：当前 RPC 是 chainId 1"))).toContain("RPC 网络不匹配");
     expect(getEvmTransactionErrorMessage(new Error("EVM 分发交易已上链但执行失败"))).toBe("EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对");
+    expect(getEvmBalanceLookupErrorMessage(new Error("failed to fetch"))).toBe("余额读取失败，请更换 RPC 后重试");
+  });
+
+  it("labels native and token assets for the EVM page", () => {
+    const ethereum = evmNetworks[0];
+
+    expect(getEvmAssetSymbol("native", ethereum, null)).toBe("ETH");
+    expect(getEvmAssetSymbol("token", ethereum, {
+      address: "0x0000000000000000000000000000000000000001",
+      decimals: 6,
+      name: "USD Coin",
+      symbol: "USDC"
+    })).toBe("USDC");
+    expect(isValidEvmAddress(addressOne)).toBe(true);
+    expect(isValidEvmAddress("not-an-address")).toBe(false);
   });
 });
