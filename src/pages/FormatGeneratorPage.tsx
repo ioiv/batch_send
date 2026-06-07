@@ -3,23 +3,30 @@ import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
 import { Metric } from "../components/Metric";
 import { copyText } from "../lib/clipboard";
 import { getDuplicateAddressKey, getListAddressKind } from "../lib/address";
-import { formatLamports, parseSolToLamports, randomLamportsInStepRange } from "../lib/amount";
+import { formatLamports, formatLamportsForDisplay, getSolAmountFractionDigits, getSolAmountStepLamports, parseSolToLamports, randomLamportsInStepRange } from "../lib/amount";
 import { getDistributionTargetPage, getDistributionTransferHref } from "../lib/distribution";
 
 export function FormatGeneratorPage() {
   const [addresses, setAddresses] = useState("");
   const [mode, setMode] = useState<"fixed" | "random">("fixed");
   const [fixedAmount, setFixedAmount] = useState("0.1");
-  const [minAmount, setMinAmount] = useState("0.1");
-  const [maxAmount, setMaxAmount] = useState("0.3");
+  const [minAmount, setMinAmount] = useState("0.5");
+  const [maxAmount, setMaxAmount] = useState("1");
   const [copyLabel, setCopyLabel] = useState("复制结果");
   const [generationNonce, setGenerationNonce] = useState(1);
+  const fixedAmountStep = formatLamports(getSolAmountStepLamports(fixedAmount));
+  const randomAmountStepLamports = getSolAmountStepLamports(minAmount, maxAmount);
+  const randomAmountStep = formatLamports(randomAmountStepLamports);
 
   const result = useMemo(() => {
     const rows = addresses.split(/\n+/).map((line) => line.trim()).filter(Boolean);
     const seen = new Set<string>();
     const issues: string[] = [];
     const generated: string[] = [];
+    let invalid = 0;
+    const totalFractionDigits = mode === "fixed"
+      ? getSolAmountFractionDigits(fixedAmount)
+      : Math.max(getSolAmountFractionDigits(minAmount), getSolAmountFractionDigits(maxAmount));
     let totalLamports = 0n;
     let duplicates = 0;
     let evmCount = 0;
@@ -29,6 +36,7 @@ export function FormatGeneratorPage() {
       const addressKind = getListAddressKind(address);
       if (!addressKind) {
         issues.push(`第 ${index + 1} 行地址格式不正确`);
+        invalid += 1;
         return;
       }
 
@@ -46,12 +54,13 @@ export function FormatGeneratorPage() {
         const minLamports = parseSolToLamports(minAmount);
         const maxLamports = parseSolToLamports(maxAmount);
         amountLamports = minLamports && maxLamports && maxLamports >= minLamports
-          ? randomLamportsInStepRange(minLamports, maxLamports)
+          ? randomLamportsInStepRange(minLamports, maxLamports, randomAmountStepLamports)
           : null;
       }
 
       if (!amountLamports) {
-        issues.push(mode === "fixed" ? "固定金额需要大于 0，最多 9 位小数" : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖 0.1 SOL 步进");
+        issues.push(mode === "fixed" ? "固定金额需要大于 0，最多 9 位小数" : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖当前金额精度");
+        invalid += 1;
         return;
       }
 
@@ -63,13 +72,14 @@ export function FormatGeneratorPage() {
     return {
       duplicates,
       evmCount,
+      invalid,
       issues,
       output: generated.join("\n"),
       solanaCount,
-      total: formatLamports(totalLamports),
+      total: formatLamportsForDisplay(totalLamports, totalFractionDigits),
       validCount: generated.length
     };
-  }, [addresses, fixedAmount, generationNonce, maxAmount, minAmount, mode]);
+  }, [addresses, fixedAmount, generationNonce, maxAmount, minAmount, mode, randomAmountStepLamports]);
 
   const isMixedList = result.solanaCount > 0 && result.evmCount > 0;
   const distributionTargetPage = getDistributionTargetPage(result.output);
@@ -83,6 +93,19 @@ export function FormatGeneratorPage() {
     setter(value);
     setGenerationNonce((current) => current + 1);
     setCopyLabel("复制结果");
+  };
+
+  const dedupeAddresses = () => {
+    const seen = new Set<string>();
+    const deduped = addresses.split(/\n+/).map((line) => line.trim()).filter(Boolean).filter((address) => {
+      const addressKind = getListAddressKind(address);
+      const duplicateKey = addressKind ? `${addressKind}:${getDuplicateAddressKey(address, addressKind)}` : `unknown:${address}`;
+      if (seen.has(duplicateKey)) return false;
+      seen.add(duplicateKey);
+      return true;
+    });
+
+    updateAndRegenerate(setAddresses, deduped.join("\n"));
   };
 
   const copyOutput = async () => {
@@ -104,7 +127,6 @@ export function FormatGeneratorPage() {
         <BrandHeader
           eyebrow="format generator"
           title="生成地址,金额清单"
-          subtitle="输入多行地址，给每个地址分配固定金额，或在指定区间内生成随机金额。"
           nav={<NavLinks current="format" />}
         />
 
@@ -136,7 +158,6 @@ export function FormatGeneratorPage() {
                     <input type="radio" name="amountMode" value="fixed" checked={mode === "fixed"} onChange={() => setMode("fixed")} />
                     固定金额
                   </span>
-                  <span className="hint">所有地址使用同一个金额。</span>
                 </label>
                 <label className="mode">
                   <span className="mode-head">
@@ -146,30 +167,28 @@ export function FormatGeneratorPage() {
                     }} />
                     随机区间
                   </span>
-                  <span className="hint">每个地址生成一个区间内的随机金额。</span>
                 </label>
               </div>
 
               <div className="amount-grid">
                 <div className="field">
                   <label htmlFor="fixedAmount">固定金额</label>
-                  <input id="fixedAmount" type="number" min="0" step="0.1" value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
+                  <input id="fixedAmount" type="number" min="0" step={fixedAmountStep} value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
                 </div>
                 <div className="field">
                   <label htmlFor="minAmount">随机最小值</label>
-                  <input id="minAmount" type="number" min="0" step="0.1" value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
+                  <input id="minAmount" type="number" min="0" step={randomAmountStep} value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
                 </div>
                 <div className="field">
                   <label htmlFor="maxAmount">随机最大值</label>
-                  <input id="maxAmount" type="number" min="0" step="0.1" value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
+                  <input id="maxAmount" type="number" min="0" step={randomAmountStep} value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
                 </div>
               </div>
 
               <div className="actions">
                 <div className="action-group">
-                  <button className="button primary" type="button" onClick={() => setGenerationNonce((current) => current + 1)}>生成清单</button>
                   <button
-                    className="button"
+                    className="button primary"
                     type="button"
                     disabled={!result.output || !distributionTargetPage}
                     title={isMixedList ? "同一清单不能同时进入 SOL 和 EVM 分发页，请先拆分。" : undefined}
@@ -177,6 +196,7 @@ export function FormatGeneratorPage() {
                   >
                     去分发
                   </button>
+                  <button className="button ghost" type="button" disabled={!addresses.trim()} onClick={dedupeAddresses}>去重</button>
                   <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
                 </div>
                 <button className="button" type="button" disabled={!result.output} onClick={copyOutput}>{copyLabel}</button>
@@ -184,8 +204,9 @@ export function FormatGeneratorPage() {
             </div>
 
             <div className="stats" aria-label="生成统计">
-              <Metric value={String(result.validCount)} label="有效地址" />
-              <Metric value={result.total} label="统计总额" />
+              <Metric value={String(result.validCount)} label="有效收款地址" />
+              <Metric value={result.total} label="合计金额" />
+              <Metric value={String(result.invalid)} label="需修正" />
               <Metric value={String(result.duplicates)} label="重复地址" />
             </div>
           </section>

@@ -449,7 +449,6 @@ export function EvmBatchDistributorPage() {
         <BrandHeader
           eyebrow="evm distributor"
           title="EVM 批量分发"
-          subtitle="粘贴 `EVM地址,金额` 格式，可分发原生币或指定 ERC20 Token，先校验总额、重复项和金额，再连接 EVM 钱包进入确认。"
           nav={<NavLinks current="evmDistributor" />}
         />
 

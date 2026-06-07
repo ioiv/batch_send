@@ -2579,12 +2579,14 @@ input[type="number"],
     inset 0 1px 0 rgba(255, 255, 255, 0.86);
 }
 
-.page-distributor .batch-workspace .stats {
+.page-distributor .batch-workspace .stats,
+.page-format .flow-workspace .stats {
   gap: 8px;
   padding: 0 26px 18px;
 }
 
-.page-distributor .batch-workspace .metric {
+.page-distributor .batch-workspace .metric,
+.page-format .flow-workspace .metric {
   min-height: 58px;
   display: flex;
   align-items: center;
@@ -2598,7 +2600,8 @@ input[type="number"],
     inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
-.page-distributor .batch-workspace .metric strong {
+.page-distributor .batch-workspace .metric strong,
+.page-format .flow-workspace .metric strong {
   flex: 0 0 auto;
   color: #252b31;
   font-size: 1.18rem;
@@ -2606,7 +2609,8 @@ input[type="number"],
   line-height: 1;
 }
 
-.page-distributor .batch-workspace .metric span {
+.page-distributor .batch-workspace .metric span,
+.page-format .flow-workspace .metric span {
   margin-top: 0;
   color: var(--muted);
   font-size: 12px;
@@ -2695,33 +2699,39 @@ input[type="number"],
     text-align: right;
   }
 
-  .page-distributor .batch-workspace .stats {
+  .page-distributor .batch-workspace .stats,
+  .page-format .flow-workspace .stats {
     gap: 8px;
     padding: 0 20px 18px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .page-distributor .batch-workspace .metric {
+  .page-distributor .batch-workspace .metric,
+  .page-format .flow-workspace .metric {
     min-height: 52px;
     padding: 10px 12px;
   }
 }
 
 @media (max-width: 420px) {
-  .page-distributor .batch-workspace .stats {
+  .page-distributor .batch-workspace .stats,
+  .page-format .flow-workspace .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .page-distributor .batch-workspace .metric {
+  .page-distributor .batch-workspace .metric,
+  .page-format .flow-workspace .metric {
     gap: 8px;
     padding-inline: 10px;
   }
 
-  .page-distributor .batch-workspace .metric strong {
+  .page-distributor .batch-workspace .metric strong,
+  .page-format .flow-workspace .metric strong {
     font-size: 1.05rem;
   }
 
-  .page-distributor .batch-workspace .metric span {
+  .page-distributor .batch-workspace .metric span,
+  .page-format .flow-workspace .metric span {
     font-size: 11.5px;
   }
 }

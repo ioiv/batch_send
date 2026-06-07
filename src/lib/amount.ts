@@ -21,6 +21,16 @@ export function formatLamportsForDisplay(lamports: bigint, maxFractionDigits = 2
   return displayFraction ? `${integer}.${displayFraction}` : integer;
 }
 
+export function getSolAmountFractionDigits(value: string) {
+  const match = value.trim().match(/^\d+(?:\.(\d*))?$/);
+  return Math.min(match?.[1]?.length || 0, 9);
+}
+
+export function getSolAmountStepLamports(...values: string[]) {
+  const fractionDigits = values.reduce((highest, value) => Math.max(highest, getSolAmountFractionDigits(value)), 0);
+  return 10n ** BigInt(9 - fractionDigits);
+}
+
 export function parseSolToLamports(value: string) {
   const match = value.trim().match(/^(\d+)(?:\.(\d{0,9}))?$/);
   if (!match) return null;

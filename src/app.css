@@ -365,7 +365,8 @@ textarea {
   gap: 12px;
 }
 
-.batch-workspace .stats {
+.batch-workspace .stats,
+.page-format .flow-workspace .stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -620,6 +621,22 @@ textarea {
   .actions,
   .action-group {
     align-items: stretch;
+  }
+
+  .page-format .actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    width: 100%;
+  }
+
+  .page-format .action-group {
+    display: contents;
+  }
+
+  .page-format .actions .button {
+    min-width: 0;
+    white-space: nowrap;
+    width: auto;
   }
 
   .action-group,

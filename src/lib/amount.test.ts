@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GENERATOR_AMOUNT_STEP_LAMPORTS, formatLamports, formatLamportsForDisplay, parseSolToLamports, randomLamportsInStepRange } from "./amount";
+import { GENERATOR_AMOUNT_STEP_LAMPORTS, formatLamports, formatLamportsForDisplay, getSolAmountFractionDigits, getSolAmountStepLamports, parseSolToLamports, randomLamportsInStepRange } from "./amount";
 
 describe("parseSolToLamports", () => {
   it("parses SOL strings into lamports", () => {
@@ -32,6 +32,30 @@ describe("formatLamports", () => {
     expect(formatLamportsForDisplay(1_234_567_890n)).toBe("1.23");
     expect(formatLamportsForDisplay(1_200_000_000n)).toBe("1.2");
     expect(formatLamportsForDisplay(42n)).toBe("0");
+  });
+
+  it("formats displayed totals to a requested SOL precision", () => {
+    expect(formatLamportsForDisplay(1_234_567_890n, 3)).toBe("1.234");
+    expect(formatLamportsForDisplay(1_230_000_000n, 3)).toBe("1.23");
+    expect(formatLamportsForDisplay(999_999n, 3)).toBe("0");
+  });
+});
+
+describe("getSolAmountFractionDigits", () => {
+  it("reads the typed SOL amount precision", () => {
+    expect(getSolAmountFractionDigits("1")).toBe(0);
+    expect(getSolAmountFractionDigits("0.5")).toBe(1);
+    expect(getSolAmountFractionDigits("0.001")).toBe(3);
+    expect(getSolAmountFractionDigits("0.0100")).toBe(4);
+    expect(getSolAmountFractionDigits("0.1234567891")).toBe(9);
+  });
+});
+
+describe("getSolAmountStepLamports", () => {
+  it("uses the highest typed precision across amount inputs", () => {
+    expect(getSolAmountStepLamports("0.5", "1")).toBe(100_000_000n);
+    expect(getSolAmountStepLamports("0.01", "1")).toBe(10_000_000n);
+    expect(getSolAmountStepLamports("0.1", "0.001")).toBe(1_000_000n);
   });
 });
 

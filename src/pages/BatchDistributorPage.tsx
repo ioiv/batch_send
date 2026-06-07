@@ -318,7 +318,6 @@ export function BatchDistributorPage() {
         <BrandHeader
           eyebrow="solana distributor"
           title="Solana 批量分发"
-          subtitle="粘贴 `Solana地址,金额` 格式，先校验总额、重复项和金额，再连接 Solana 钱包进入确认。"
           nav={<NavLinks current="distributor" />}
         />
 
