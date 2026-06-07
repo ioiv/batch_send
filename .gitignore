@@ -6,7 +6,6 @@ dist/
 
 .env
 .env.*
-!.env.example
 
 redesign-screenshots/
 wallet-ui-check.png

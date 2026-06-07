@@ -12,6 +12,7 @@ import {
   type Chain,
   type Hash
 } from "viem";
+import { rpcConfig } from "../config/rpc";
 import type { EvmWalletProvider } from "../hooks/useEvmWallet";
 import { getDuplicateAddressKey } from "./address";
 
@@ -77,7 +78,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "ethereum",
     label: "Ethereum",
     nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://ethereum.publicnode.com"
+    rpcEndpoint: rpcConfig.evm.ethereum
   },
   {
     blockExplorerUrl: "https://bscscan.com",
@@ -86,7 +87,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "bsc",
     label: "BNB Chain",
     nativeCurrency: { decimals: 18, name: "BNB", symbol: "BNB" },
-    rpcEndpoint: "https://bsc-dataseed.binance.org"
+    rpcEndpoint: rpcConfig.evm.bsc
   },
   {
     blockExplorerUrl: "https://basescan.org",
@@ -95,7 +96,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "base",
     label: "Base",
     nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://mainnet.base.org"
+    rpcEndpoint: rpcConfig.evm.base
   },
   {
     blockExplorerUrl: "https://arbiscan.io",
@@ -104,7 +105,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "arbitrum",
     label: "Arbitrum",
     nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://arb1.arbitrum.io/rpc"
+    rpcEndpoint: rpcConfig.evm.arbitrum
   },
   {
     blockExplorerUrl: "https://polygonscan.com",
@@ -113,7 +114,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "polygon",
     label: "Polygon",
     nativeCurrency: { decimals: 18, name: "POL", symbol: "POL" },
-    rpcEndpoint: "https://polygon-bor-rpc.publicnode.com"
+    rpcEndpoint: rpcConfig.evm.polygon
   },
   {
     blockExplorerUrl: "https://optimistic.etherscan.io",
@@ -122,7 +123,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "optimism",
     label: "Optimism",
     nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://mainnet.optimism.io"
+    rpcEndpoint: rpcConfig.evm.optimism
   },
   {
     blockExplorerUrl: "https://gnosisscan.io",
@@ -131,7 +132,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "gnosis",
     label: "Gnosis",
     nativeCurrency: { decimals: 18, name: "xDAI", symbol: "xDAI" },
-    rpcEndpoint: "https://rpc.gnosischain.com"
+    rpcEndpoint: rpcConfig.evm.gnosis
   },
   {
     blockExplorerUrl: "https://ftmscan.com",
@@ -140,7 +141,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "fantom",
     label: "Fantom",
     nativeCurrency: { decimals: 18, name: "Fantom", symbol: "FTM" },
-    rpcEndpoint: "https://rpcapi.fantom.network"
+    rpcEndpoint: rpcConfig.evm.fantom
   },
   {
     blockExplorerUrl: "https://moonriver.moonscan.io",
@@ -149,7 +150,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "moonriver",
     label: "Moonriver",
     nativeCurrency: { decimals: 18, name: "Moonriver", symbol: "MOVR" },
-    rpcEndpoint: "https://rpc.api.moonriver.moonbeam.network"
+    rpcEndpoint: rpcConfig.evm.moonriver
   },
   {
     blockExplorerUrl: "https://moonbeam.moonscan.io",
@@ -158,7 +159,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "moonbeam",
     label: "Moonbeam",
     nativeCurrency: { decimals: 18, name: "Glimmer", symbol: "GLMR" },
-    rpcEndpoint: "https://rpc.api.moonbeam.network"
+    rpcEndpoint: rpcConfig.evm.moonbeam
   },
   {
     blockExplorerUrl: "https://sepolia.etherscan.io",
@@ -167,7 +168,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "sepolia",
     label: "Sepolia",
     nativeCurrency: { decimals: 18, name: "Sepolia Ether", symbol: "ETH" },
-    rpcEndpoint: "https://ethereum-sepolia-rpc.publicnode.com"
+    rpcEndpoint: rpcConfig.evm.sepolia
   }
 ];
 

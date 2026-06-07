@@ -1,6 +1,5 @@
 import { Buffer } from "buffer";
 import {
-  clusterApiUrl,
   Connection,
   PublicKey,
   SystemProgram,
@@ -8,6 +7,7 @@ import {
   type SendOptions,
   type TransactionSignature
 } from "@solana/web3.js";
+import { rpcConfig } from "../config/rpc";
 import type { SolanaWalletProvider } from "../hooks/useSolanaWallet";
 import type { DistributionRow } from "./distribution";
 
@@ -37,9 +37,9 @@ export const transactionEstimateBlockhash = "11111111111111111111111111111111";
 export const defaultSignatureFeeLamports = 5_000n;
 
 export const solanaNetworks: Array<{ endpoint: string; id: SolanaNetworkId; label: string }> = [
-  { endpoint: import.meta.env.VITE_MAINNET_RPC_URL || clusterApiUrl("mainnet-beta"), id: "mainnet-beta", label: "Mainnet" },
-  { endpoint: import.meta.env.VITE_DEVNET_RPC_URL || clusterApiUrl("devnet"), id: "devnet", label: "Devnet" },
-  { endpoint: import.meta.env.VITE_TESTNET_RPC_URL || clusterApiUrl("testnet"), id: "testnet", label: "Testnet" }
+  { endpoint: rpcConfig.solana.mainnetBeta, id: "mainnet-beta", label: "Mainnet" },
+  { endpoint: rpcConfig.solana.devnet, id: "devnet", label: "Devnet" },
+  { endpoint: rpcConfig.solana.testnet, id: "testnet", label: "Testnet" }
 ];
 
 export const initialSendProgress: SendProgress = {
