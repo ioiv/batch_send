@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  distributionTransferQueryParam,
+  distributionTransferSource,
+  distributionTransferStorageKey,
   evmDistributionPage,
   getDistributionTargetPage,
+  getDistributionTransferHref,
   parseDistribution,
   solanaDistributionPage
 } from "./distribution";
@@ -9,6 +13,10 @@ import {
 const systemProgram = "11111111111111111111111111111111";
 const bpfLoader = "BPFLoader1111111111111111111111111111111111";
 const evmAddress = "0x00000000000000000000000000000000000000aa";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("parseDistribution", () => {
   it("parses valid rows and totals lamports", () => {
@@ -60,6 +68,43 @@ describe("parseDistribution", () => {
 
     expect(parsed.rows.map((row) => row.line)).toEqual([1, 2]);
     expect(parsed.validRows).toHaveLength(2);
+  });
+});
+
+describe("getDistributionTransferHref", () => {
+  it("stores the generated list in sessionStorage instead of the URL", () => {
+    const output = `${systemProgram},1\n${bpfLoader},0.5`;
+    const setItem = vi.fn();
+    vi.stubGlobal("window", {
+      sessionStorage: {
+        setItem
+      }
+    });
+
+    const href = getDistributionTransferHref(output, solanaDistributionPage);
+    const params = new URLSearchParams({ [distributionTransferQueryParam]: distributionTransferSource });
+
+    expect(href).toBe(`${solanaDistributionPage}?${params.toString()}`);
+    expect(href).not.toContain(output);
+    expect(href).not.toContain("list=");
+    expect(setItem).toHaveBeenCalledWith(distributionTransferStorageKey, output);
+  });
+
+  it("does not fall back to exposing the list when sessionStorage is unavailable", () => {
+    const output = `${evmAddress},1`;
+    vi.stubGlobal("window", {
+      sessionStorage: {
+        setItem: () => {
+          throw new Error("Storage disabled");
+        }
+      }
+    });
+
+    const href = getDistributionTransferHref(output, evmDistributionPage);
+
+    expect(href).toBe(evmDistributionPage);
+    expect(href).not.toContain(output);
+    expect(href).not.toContain("list=");
   });
 });
 

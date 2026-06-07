@@ -27,7 +27,6 @@ export const distributionListQueryParam = "list";
 export const distributionTransferQueryParam = "from";
 export const distributionTransferSource = "format-generator";
 export const distributionTransferStorageKey = "sol_batch_send.generated_distribution";
-export const maxDistributionUrlQueryLength = 1800;
 export const solanaDistributionPage = "/sol/";
 export const evmDistributionPage = "/evm/";
 
@@ -96,17 +95,14 @@ export function parseDistribution(input: string): ParseDistributionResult {
 }
 
 export function getDistributionTransferHref(output: string, targetPage = solanaDistributionPage) {
-  const directParams = new URLSearchParams({ [distributionListQueryParam]: output });
-  const directHref = `${targetPage}?${directParams.toString()}`;
-  if (directParams.toString().length <= maxDistributionUrlQueryLength) return directHref;
-
   try {
     window.sessionStorage.setItem(distributionTransferStorageKey, output);
-    const storageParams = new URLSearchParams({ [distributionTransferQueryParam]: distributionTransferSource });
-    return `${targetPage}?${storageParams.toString()}`;
   } catch {
-    return directHref;
+    return targetPage;
   }
+
+  const storageParams = new URLSearchParams({ [distributionTransferQueryParam]: distributionTransferSource });
+  return `${targetPage}?${storageParams.toString()}`;
 }
 
 export function getDistributionTargetPage(output: string) {
