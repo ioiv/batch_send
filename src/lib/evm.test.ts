@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEvmDistribution } from "./evm";
+import { evmNetworks, getEvmTransactionErrorMessage, parseEvmDistribution } from "./evm";
 
 const addressOne = "0x00000000000000000000000000000000000000aa";
 const addressOneMixedCase = "0x00000000000000000000000000000000000000AA";
@@ -41,5 +41,32 @@ describe("parseEvmDistribution", () => {
     expect(parsed.invalid).toBe(1);
     expect(parsed.validRows.map((row) => row.address)).toEqual([addressOne, addressTwo]);
     expect(parsed.totalWei).toBe(4_000_000_000_000_000_000n);
+  });
+});
+
+describe("evm network config", () => {
+  it("orders mainnet options by current chain heat and keeps testnet last", () => {
+    expect(evmNetworks.map((network) => network.id)).toEqual([
+      "ethereum",
+      "bsc",
+      "base",
+      "arbitrum",
+      "polygon",
+      "optimism",
+      "gnosis",
+      "fantom",
+      "moonriver",
+      "moonbeam",
+      "sepolia"
+    ]);
+  });
+
+  it("does not expose networks without the native disperse contract", () => {
+    expect(evmNetworks.map((network) => network.id)).not.toContain("avalanche");
+  });
+
+  it("keeps actionable messages for config and reverted transaction failures", () => {
+    expect(getEvmTransactionErrorMessage(new Error("RPC 网络不匹配：当前 RPC 是 chainId 1"))).toContain("RPC 网络不匹配");
+    expect(getEvmTransactionErrorMessage(new Error("EVM 分发交易已上链但执行失败"))).toBe("EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对");
   });
 });

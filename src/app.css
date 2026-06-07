@@ -186,9 +186,13 @@ svg {
 
 .route-fields {
   display: grid;
-  grid-template-columns: minmax(88px, 0.7fr) minmax(118px, 0.9fr) minmax(170px, 1.1fr) minmax(78px, 0.5fr);
+  grid-template-columns: minmax(140px, 0.9fr) minmax(190px, 1.25fr) minmax(78px, 0.5fr);
   align-items: stretch;
   gap: 7px;
+}
+
+.page-distributor .evm-route-fields {
+  grid-template-columns: minmax(140px, 0.9fr) minmax(190px, 1.25fr);
 }
 
 .route-card {
@@ -418,20 +422,16 @@ textarea {
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr);
   }
 
-  .chain-field {
+  .network-field {
     order: 1;
   }
 
-  .network-field {
+  .route-count {
     order: 2;
   }
 
-  .route-count {
-    order: 3;
-  }
-
   .rpc-field {
-    order: 4;
+    order: 3;
     grid-column: 1 / -1;
   }
 

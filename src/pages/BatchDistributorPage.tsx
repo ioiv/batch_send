@@ -276,12 +276,8 @@ export function BatchDistributorPage() {
 
               <div className="transaction-options compact-route" aria-label="链路配置">
                 <div className="route-fields">
-                  <div className="route-card route-count">
-                    <span>链</span>
-                    <strong>Solana</strong>
-                  </div>
                   <div className="field route-card network-field">
-                    <label htmlFor="networkId">网络</label>
+                    <label htmlFor="networkId">网络选择</label>
                     <select id="networkId" value={networkId} onChange={(event) => {
                       const nextNetworkId = event.target.value as SolanaNetworkId;
                       setNetworkId(nextNetworkId);
@@ -357,8 +353,7 @@ export function BatchDistributorPage() {
                   <strong>{showFinalSummary ? "最终确认摘要" : sendState.status === "success" ? "分发交易已确认" : sendState.status === "error" ? "分发交易未完成" : `准备向 ${parsed.validRows.length} 个地址分发`}</strong>
                   {showFinalSummary ? (
                     <div className="summary-list">
-                      <div><span>链</span><strong>Solana</strong></div>
-                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>网络选择</span><strong>{selectedNetwork.label}</strong></div>
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
                       <div><span>总额</span><strong>{parsed.total} SOL</strong></div>

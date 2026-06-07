@@ -39,7 +39,6 @@ export function EvmBatchDistributorPage() {
     problems: row.problems,
     status: row.status
   })), [parsed.rows]);
-  const transactionCount = parsed.validRows.length ? 1 : 0;
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
   const readyToSend = wallet.connected && Boolean(wallet.getProvider()) && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
   const showFinalSummary = confirmVisible && sendState.status === "idle";
@@ -154,13 +153,9 @@ export function EvmBatchDistributorPage() {
               </div>
 
               <div className="transaction-options compact-route" aria-label="链路配置">
-                <div className="route-fields">
-                  <div className="route-card route-count">
-                    <span>链</span>
-                    <strong>EVM</strong>
-                  </div>
+                <div className="route-fields evm-route-fields">
                   <div className="field route-card network-field">
-                    <label htmlFor="networkId">网络</label>
+                    <label htmlFor="networkId">网络选择</label>
                     <select id="networkId" value={networkId} onChange={(event) => {
                       const nextNetworkId = event.target.value as EvmNetworkId;
                       setNetworkId(nextNetworkId);
@@ -178,10 +173,6 @@ export function EvmBatchDistributorPage() {
                       setRpcEndpoint(event.target.value);
                       resetConfirmation();
                     }} />
-                  </div>
-                  <div className="route-card route-count">
-                    <span>交易数</span>
-                    <strong>{transactionCount}</strong>
                   </div>
                 </div>
               </div>
@@ -239,16 +230,14 @@ export function EvmBatchDistributorPage() {
                   <strong>{showFinalSummary ? "最终确认摘要" : sendState.status === "success" ? "分发交易已确认" : sendState.status === "error" ? "分发交易未完成" : `准备向 ${parsed.validRows.length} 个地址分发`}</strong>
                   {showFinalSummary ? (
                     <div className="summary-list">
-                      <div><span>链</span><strong>EVM</strong></div>
-                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>网络选择</span><strong>{selectedNetwork.label}</strong></div>
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
                       <div><span>总额</span><strong>{parsed.total} {selectedNetwork.nativeCurrency.symbol}</strong></div>
-                      <div><span>预计交易数</span><strong>{transactionCount}</strong></div>
                       <div><span>前 3 个地址</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
                     </div>
                   ) : (
-                    <span>{sendState.message || `合计 ${parsed.total} ${selectedNetwork.nativeCurrency.symbol}，网络 ${selectedNetwork.label}，共 ${transactionCount} 笔交易。`}</span>
+                    <span>{sendState.message || `合计 ${parsed.total} ${selectedNetwork.nativeCurrency.symbol}，网络 ${selectedNetwork.label}。`}</span>
                   )}
                   {!showFinalSummary && sendState.progress.total > 0 ? (
                     <div className="send-progress" aria-label="发送进度">

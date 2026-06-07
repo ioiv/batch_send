@@ -26,7 +26,6 @@ export type EvmNetworkId =
   | "moonriver"
   | "base"
   | "arbitrum"
-  | "avalanche"
   | "sepolia";
 
 export type EvmDistributionRow = {
@@ -78,16 +77,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "ethereum",
     label: "Ethereum",
     nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://rpc.ankr.com/eth"
-  },
-  {
-    blockExplorerUrl: "https://optimistic.etherscan.io",
-    chainId: 10,
-    disperseContractAddress,
-    id: "optimism",
-    label: "Optimism",
-    nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
-    rpcEndpoint: "https://mainnet.optimism.io"
+    rpcEndpoint: "https://ethereum.publicnode.com"
   },
   {
     blockExplorerUrl: "https://bscscan.com",
@@ -97,51 +87,6 @@ export const evmNetworks: EvmNetworkConfig[] = [
     label: "BNB Chain",
     nativeCurrency: { decimals: 18, name: "BNB", symbol: "BNB" },
     rpcEndpoint: "https://bsc-dataseed.binance.org"
-  },
-  {
-    blockExplorerUrl: "https://gnosisscan.io",
-    chainId: 100,
-    disperseContractAddress,
-    id: "gnosis",
-    label: "Gnosis",
-    nativeCurrency: { decimals: 18, name: "xDAI", symbol: "xDAI" },
-    rpcEndpoint: "https://rpc.gnosischain.com"
-  },
-  {
-    blockExplorerUrl: "https://polygonscan.com",
-    chainId: 137,
-    disperseContractAddress,
-    id: "polygon",
-    label: "Polygon",
-    nativeCurrency: { decimals: 18, name: "POL", symbol: "POL" },
-    rpcEndpoint: "https://polygon-rpc.com"
-  },
-  {
-    blockExplorerUrl: "https://ftmscan.com",
-    chainId: 250,
-    disperseContractAddress,
-    id: "fantom",
-    label: "Fantom",
-    nativeCurrency: { decimals: 18, name: "Fantom", symbol: "FTM" },
-    rpcEndpoint: "https://rpcapi.fantom.network"
-  },
-  {
-    blockExplorerUrl: "https://moonbeam.moonscan.io",
-    chainId: 1284,
-    disperseContractAddress,
-    id: "moonbeam",
-    label: "Moonbeam",
-    nativeCurrency: { decimals: 18, name: "Glimmer", symbol: "GLMR" },
-    rpcEndpoint: "https://rpc.api.moonbeam.network"
-  },
-  {
-    blockExplorerUrl: "https://moonriver.moonscan.io",
-    chainId: 1285,
-    disperseContractAddress,
-    id: "moonriver",
-    label: "Moonriver",
-    nativeCurrency: { decimals: 18, name: "Moonriver", symbol: "MOVR" },
-    rpcEndpoint: "https://rpc.api.moonriver.moonbeam.network"
   },
   {
     blockExplorerUrl: "https://basescan.org",
@@ -162,13 +107,58 @@ export const evmNetworks: EvmNetworkConfig[] = [
     rpcEndpoint: "https://arb1.arbitrum.io/rpc"
   },
   {
-    blockExplorerUrl: "https://snowtrace.io",
-    chainId: 43114,
+    blockExplorerUrl: "https://polygonscan.com",
+    chainId: 137,
     disperseContractAddress,
-    id: "avalanche",
-    label: "Avalanche",
-    nativeCurrency: { decimals: 18, name: "Avalanche", symbol: "AVAX" },
-    rpcEndpoint: "https://api.avax.network/ext/bc/C/rpc"
+    id: "polygon",
+    label: "Polygon",
+    nativeCurrency: { decimals: 18, name: "POL", symbol: "POL" },
+    rpcEndpoint: "https://polygon-bor-rpc.publicnode.com"
+  },
+  {
+    blockExplorerUrl: "https://optimistic.etherscan.io",
+    chainId: 10,
+    disperseContractAddress,
+    id: "optimism",
+    label: "Optimism",
+    nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
+    rpcEndpoint: "https://mainnet.optimism.io"
+  },
+  {
+    blockExplorerUrl: "https://gnosisscan.io",
+    chainId: 100,
+    disperseContractAddress,
+    id: "gnosis",
+    label: "Gnosis",
+    nativeCurrency: { decimals: 18, name: "xDAI", symbol: "xDAI" },
+    rpcEndpoint: "https://rpc.gnosischain.com"
+  },
+  {
+    blockExplorerUrl: "https://ftmscan.com",
+    chainId: 250,
+    disperseContractAddress,
+    id: "fantom",
+    label: "Fantom",
+    nativeCurrency: { decimals: 18, name: "Fantom", symbol: "FTM" },
+    rpcEndpoint: "https://rpcapi.fantom.network"
+  },
+  {
+    blockExplorerUrl: "https://moonriver.moonscan.io",
+    chainId: 1285,
+    disperseContractAddress,
+    id: "moonriver",
+    label: "Moonriver",
+    nativeCurrency: { decimals: 18, name: "Moonriver", symbol: "MOVR" },
+    rpcEndpoint: "https://rpc.api.moonriver.moonbeam.network"
+  },
+  {
+    blockExplorerUrl: "https://moonbeam.moonscan.io",
+    chainId: 1284,
+    disperseContractAddress,
+    id: "moonbeam",
+    label: "Moonbeam",
+    nativeCurrency: { decimals: 18, name: "Glimmer", symbol: "GLMR" },
+    rpcEndpoint: "https://rpc.api.moonbeam.network"
   },
   {
     blockExplorerUrl: "https://sepolia.etherscan.io",
@@ -177,7 +167,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
     id: "sepolia",
     label: "Sepolia",
     nativeCurrency: { decimals: 18, name: "Sepolia Ether", symbol: "ETH" },
-    rpcEndpoint: "https://rpc.sepolia.org"
+    rpcEndpoint: "https://ethereum-sepolia-rpc.publicnode.com"
   }
 ];
 
@@ -290,6 +280,8 @@ export function getEvmTransactionErrorMessage(error: unknown) {
 
   if (code === 4001 || /reject|declin|cancel/i.test(detail)) return "用户取消了交易确认";
   if (/insufficient|exceeds balance|not enough funds/i.test(detail)) return "钱包余额不足，无法完成本次分发";
+  if (/RPC 网络不匹配|分发合约未部署/i.test(detail)) return detail;
+  if (/revert|execution reverted|执行失败/i.test(detail)) return "EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对";
   if (/chain|network|unsupported/i.test(detail)) return "钱包网络切换失败，请检查网络配置";
   if (/failed to fetch|network|fetch|timeout/i.test(detail)) return "RPC 请求失败，请更换 RPC 后重试";
   return detail ? `EVM 分发失败：${detail}` : "EVM 分发失败，请稍后重试";
@@ -346,6 +338,17 @@ export async function sendEvmNativeDistribution({
   const recipients = rows.map((row) => getAddress(row.address));
   const values = rows.map((row) => row.valueWei);
   const totalWei = values.reduce((total, value) => total + value, 0n);
+  const rpcChainId = await publicClient.getChainId();
+
+  if (rpcChainId !== network.chainId) {
+    throw new Error(`RPC 网络不匹配：当前 RPC 是 chainId ${rpcChainId}，请选择 ${network.label} 的 RPC（chainId ${network.chainId}）`);
+  }
+
+  const contractCode = await publicClient.getCode({ address: network.disperseContractAddress });
+  if (!contractCode || contractCode === "0x") {
+    throw new Error(`${network.label} 分发合约未部署，无法在该网络分发`);
+  }
+
   const balance = await publicClient.getBalance({ address: account });
 
   if (balance < totalWei) {
@@ -361,5 +364,8 @@ export async function sendEvmNativeDistribution({
     value: totalWei
   });
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") {
+    throw new Error("EVM 分发交易已上链但执行失败");
+  }
   return { hash, receipt };
 }
