@@ -96,7 +96,7 @@ export function EvmBatchDistributorPage() {
         ? "--"
         : "未连接";
   const nativeBalanceDescription = nativeBalanceLookup.status === "success"
-    ? `${nativeBalance} ${selectedNetwork.nativeCurrency.symbol}`
+    ? nativeBalance
     : nativeBalanceLookup.status === "loading"
       ? "读取中"
       : nativeBalanceLookup.status === "error"
@@ -111,7 +111,7 @@ export function EvmBatchDistributorPage() {
         : "未连接";
   const tokenBalanceDescription = tokenDetails
     ? tokenBalanceLookup.status === "success"
-      ? `${tokenBalance} ${tokenDetails.symbol}`
+      ? tokenBalance
       : tokenBalanceLookup.status === "loading"
         ? "读取中"
         : tokenBalanceLookup.status === "error"
@@ -484,7 +484,7 @@ export function EvmBatchDistributorPage() {
                           resetConfirmation();
                         }}
                       />
-                      ERC20 Token
+                      Token
                     </span>
                     <span className="asset-mode-meta">
                       <span>{tokenDetails ? tokenDetails.symbol : "指定合约"}</span>

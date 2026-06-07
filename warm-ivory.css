@@ -2338,6 +2338,405 @@ input[type="number"],
   }
 }
 
+/* Targeted premium refresh for /main/section/section/div[2]/div[2] */
+.page-distributor .input-panel > .form > .transaction-options.compact-route {
+  position: relative;
+  isolation: isolate;
+  gap: 10px;
+  border-radius: 28px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 249, 250, 0.62)),
+    linear-gradient(135deg, rgba(120, 136, 107, 0.12), rgba(90, 113, 132, 0.08) 54%, rgba(255, 255, 255, 0));
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.86),
+    0 0 0 2px rgba(31, 39, 47, 0.035),
+    0 24px 56px rgba(47, 58, 67, 0.085),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  overflow: hidden;
+}
+
+.page-distributor .input-panel > .form > .transaction-options.compact-route::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: -1;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0)),
+    linear-gradient(115deg, rgba(120, 136, 107, 0.08), transparent 42%),
+    linear-gradient(245deg, rgba(90, 113, 132, 0.065), transparent 48%);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -28px 52px rgba(90, 113, 132, 0.04);
+}
+
+.page-distributor .input-panel > .form > .transaction-options.compact-route::after {
+  content: "";
+  position: absolute;
+  right: 24px;
+  bottom: 12px;
+  left: 24px;
+  height: 1px;
+  z-index: -1;
+  background: linear-gradient(90deg, transparent, rgba(31, 39, 47, 0.12), transparent);
+}
+
+.page-distributor .input-panel > .form > .transaction-options.compact-route > * {
+  position: relative;
+  z-index: 1;
+}
+
+.page-distributor .compact-route .mode-row {
+  gap: 10px;
+}
+
+.page-distributor .compact-route .route-fields {
+  gap: 10px;
+}
+
+.page-distributor .compact-route .sol-route-fields {
+  grid-template-columns: minmax(130px, 0.86fr) minmax(190px, 1.22fr) minmax(116px, 0.48fr);
+}
+
+.page-distributor .compact-route .sol-route-fields .route-summary {
+  grid-column: auto;
+  grid-template-columns: 1fr;
+}
+
+.page-distributor .compact-route .mode,
+.page-distributor .compact-route .route-card {
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(239, 244, 246, 0.58));
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 12px 24px rgba(47, 58, 67, 0.045);
+  transition:
+    transform 560ms var(--ease),
+    box-shadow 560ms var(--ease),
+    background 560ms var(--ease);
+}
+
+.page-distributor .compact-route .mode {
+  min-height: 86px;
+  padding: 17px;
+}
+
+.page-distributor .compact-route .mode:hover,
+.page-distributor .compact-route .route-card:hover {
+  transform: translate3d(0, -2px, 0);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 18px 34px rgba(47, 58, 67, 0.075);
+}
+
+.page-distributor .compact-route .mode:has(input:checked) {
+  background:
+    linear-gradient(180deg, rgba(250, 255, 247, 0.98), rgba(228, 237, 228, 0.84));
+  box-shadow:
+    inset 0 0 0 1px rgba(89, 107, 80, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 20px 38px rgba(80, 97, 73, 0.095);
+}
+
+.page-distributor .compact-route .mode-head {
+  color: var(--ink);
+  font-weight: 760;
+  line-height: 1.1;
+}
+
+.page-distributor .compact-route .mode-head::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  background: rgba(154, 163, 173, 0.42);
+  box-shadow:
+    0 0 0 5px rgba(255, 255, 255, 0.68),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.page-distributor .compact-route .mode:has(input:checked) .mode-head::before {
+  background: #617653;
+  box-shadow:
+    0 0 0 5px rgba(120, 136, 107, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+.page-distributor .compact-route .asset-mode .mode-head::before {
+  content: none !important;
+  display: none !important;
+  width: 0;
+  height: 0;
+  box-shadow: none;
+}
+
+.page-distributor .compact-route .asset-mode .mode-head input {
+  display: none !important;
+}
+
+.page-distributor .compact-route .asset-mode-meta > span:not(.asset-mode-balance),
+.page-distributor .compact-route .mode > .hint {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.page-distributor .compact-route .asset-mode-balance {
+  border-radius: 14px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.64);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.page-distributor .compact-route .route-card {
+  padding: 10px;
+}
+
+.page-distributor .compact-route .route-card label,
+.page-distributor .compact-route .route-summary span {
+  color: #4a535b;
+  font-size: 12px;
+  font-weight: 740;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.page-distributor .compact-route .route-card input,
+.page-distributor .compact-route .route-card select {
+  min-height: 40px;
+  border-radius: 14px;
+  padding: 9px 11px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 250, 0.92));
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.105),
+    inset 0 1px 2px rgba(47, 58, 67, 0.045),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.page-distributor .compact-route .route-card input {
+  font-size: 12px;
+}
+
+.page-distributor .compact-route .route-summary {
+  gap: 6px;
+  padding: 8px;
+}
+
+.page-distributor .compact-route .route-summary > div {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 14px;
+  padding: 8px 9px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.page-distributor .compact-route .route-summary-value {
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.page-distributor .compact-route .route-summary strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.page-distributor .compact-route .route-summary small {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.page-distributor .compact-route .route-summary.error > div {
+  background: rgba(255, 250, 250, 0.76);
+  box-shadow:
+    inset 0 0 0 1px rgba(180, 100, 88, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.page-distributor .batch-workspace .stats {
+  gap: 8px;
+  padding: 0 26px 18px;
+}
+
+.page-distributor .batch-workspace .metric {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 14px;
+  padding: 11px 13px;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.065),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.page-distributor .batch-workspace .metric strong {
+  flex: 0 0 auto;
+  color: #252b31;
+  font-size: 1.18rem;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.page-distributor .batch-workspace .metric span {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  .page-distributor .input-panel > .form > .transaction-options.compact-route {
+    border-radius: 24px;
+    padding: 8px;
+  }
+
+  .page-distributor .input-panel > .form > .transaction-options.compact-route::before {
+    inset: 5px;
+    border-radius: 19px;
+  }
+
+  .page-distributor .compact-route .mode-row,
+  .page-distributor .compact-route .route-fields {
+    gap: 8px;
+  }
+
+  .page-distributor .compact-route .mode,
+  .page-distributor .compact-route .route-card {
+    border-radius: 18px;
+  }
+
+  .page-distributor .compact-route .sol-route-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(118px, 0.48fr);
+  }
+
+  .page-distributor .compact-route .sol-route-fields .network-field,
+  .page-distributor .compact-route .sol-route-fields .route-summary {
+    grid-column: auto;
+    order: 1;
+  }
+
+  .page-distributor .compact-route .sol-route-fields .rpc-field {
+    grid-column: 1 / -1;
+    order: 2;
+  }
+
+  .page-distributor .compact-route .asset-mode-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-distributor .compact-route .asset-mode {
+    min-height: 82px;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    align-content: center;
+    padding: 14px 13px;
+  }
+
+  .page-distributor .compact-route .asset-mode .mode-head {
+    gap: 0;
+    font-size: 13px;
+  }
+
+  .page-distributor .compact-route .asset-mode:has(.asset-mode-balance) {
+    grid-template-columns: minmax(0, 1fr) minmax(58px, auto);
+    grid-template-rows: auto auto;
+    column-gap: 8px;
+  }
+
+  .page-distributor .compact-route .asset-mode-meta {
+    min-width: 0;
+    display: contents;
+  }
+
+  .page-distributor .compact-route .asset-mode-meta > span:not(.asset-mode-balance) {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .page-distributor .compact-route .asset-mode-balance {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    justify-self: end;
+    max-width: 74px;
+    padding: 6px 8px;
+    text-align: right;
+  }
+
+  .page-distributor .batch-workspace .stats {
+    gap: 8px;
+    padding: 0 20px 18px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-distributor .batch-workspace .metric {
+    min-height: 52px;
+    padding: 10px 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .page-distributor .batch-workspace .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-distributor .batch-workspace .metric {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+
+  .page-distributor .batch-workspace .metric strong {
+    font-size: 1.05rem;
+  }
+
+  .page-distributor .batch-workspace .metric span {
+    font-size: 11.5px;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-distributor .compact-route .asset-mode-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-distributor .compact-route .mode {
+    min-height: auto;
+  }
+
+  .page-distributor .compact-route .evm-route-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .page-distributor .compact-route .evm-route-fields .network-field,
+  .page-distributor .compact-route .evm-route-fields .rpc-field {
+    grid-column: 1 / -1;
+  }
+
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
