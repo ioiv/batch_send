@@ -20,13 +20,25 @@ import { getDuplicateAddressKey } from "./address";
 
 export type EvmNetworkId =
   | "ethereum"
-  | "optimism"
   | "bsc"
-  | "gnosis"
-  | "polygon"
   | "base"
+  | "robinhood"
   | "arbitrum"
-  | "sepolia";
+  | "polygon"
+  | "optimism"
+  | "avalanche"
+  | "hyperliquid"
+  | "monad"
+  | "gnosis"
+  | "sepolia"
+  | "hoodi"
+  | "bscTestnet"
+  | "baseSepolia"
+  | "arbitrumSepolia"
+  | "optimismSepolia"
+  | "polygonAmoy"
+  | "avalancheFuji"
+  | "monadTestnet";
 
 export type EvmDistributionRow = {
   address: string;
@@ -115,6 +127,15 @@ export const evmNetworks: EvmNetworkConfig[] = [
     rpcEndpoint: rpcConfig.evm.base
   },
   {
+    blockExplorerUrl: "https://robinhoodchain.blockscout.com",
+    chainId: 4663,
+    disperseContractAddress,
+    id: "robinhood",
+    label: "Robinhood Chain",
+    nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
+    rpcEndpoint: rpcConfig.evm.robinhood
+  },
+  {
     blockExplorerUrl: "https://arbiscan.io",
     chainId: 42161,
     disperseContractAddress,
@@ -142,6 +163,33 @@ export const evmNetworks: EvmNetworkConfig[] = [
     rpcEndpoint: rpcConfig.evm.optimism
   },
   {
+    blockExplorerUrl: "https://snowtrace.io",
+    chainId: 43114,
+    disperseContractAddress,
+    id: "avalanche",
+    label: "Avalanche",
+    nativeCurrency: { decimals: 18, name: "Avalanche", symbol: "AVAX" },
+    rpcEndpoint: rpcConfig.evm.avalanche
+  },
+  {
+    blockExplorerUrl: "https://hyperevmscan.io",
+    chainId: 999,
+    disperseContractAddress,
+    id: "hyperliquid",
+    label: "Hyperliquid",
+    nativeCurrency: { decimals: 18, name: "HYPE", symbol: "HYPE" },
+    rpcEndpoint: rpcConfig.evm.hyperliquid
+  },
+  {
+    blockExplorerUrl: "https://monadvision.com",
+    chainId: 143,
+    disperseContractAddress,
+    id: "monad",
+    label: "Monad",
+    nativeCurrency: { decimals: 18, name: "Monad", symbol: "MON" },
+    rpcEndpoint: rpcConfig.evm.monad
+  },
+  {
     blockExplorerUrl: "https://gnosisscan.io",
     chainId: 100,
     disperseContractAddress,
@@ -155,9 +203,81 @@ export const evmNetworks: EvmNetworkConfig[] = [
     chainId: 11155111,
     disperseContractAddress,
     id: "sepolia",
-    label: "Sepolia",
+    label: "Ethereum Sepolia",
     nativeCurrency: { decimals: 18, name: "Sepolia Ether", symbol: "ETH" },
     rpcEndpoint: rpcConfig.evm.sepolia
+  },
+  {
+    blockExplorerUrl: "https://hoodi.etherscan.io",
+    chainId: 560048,
+    disperseContractAddress,
+    id: "hoodi",
+    label: "Ethereum Hoodi",
+    nativeCurrency: { decimals: 18, name: "Hoodi Ether", symbol: "ETH" },
+    rpcEndpoint: rpcConfig.evm.hoodi
+  },
+  {
+    blockExplorerUrl: "https://testnet.bscscan.com",
+    chainId: 97,
+    disperseContractAddress,
+    id: "bscTestnet",
+    label: "BNB Chain Testnet",
+    nativeCurrency: { decimals: 18, name: "Testnet BNB", symbol: "tBNB" },
+    rpcEndpoint: rpcConfig.evm.bscTestnet
+  },
+  {
+    blockExplorerUrl: "https://sepolia.basescan.org",
+    chainId: 84532,
+    disperseContractAddress,
+    id: "baseSepolia",
+    label: "Base Sepolia",
+    nativeCurrency: { decimals: 18, name: "Sepolia Ether", symbol: "ETH" },
+    rpcEndpoint: rpcConfig.evm.baseSepolia
+  },
+  {
+    blockExplorerUrl: "https://sepolia.arbiscan.io",
+    chainId: 421614,
+    disperseContractAddress,
+    id: "arbitrumSepolia",
+    label: "Arbitrum Sepolia",
+    nativeCurrency: { decimals: 18, name: "Arbitrum Sepolia Ether", symbol: "ETH" },
+    rpcEndpoint: rpcConfig.evm.arbitrumSepolia
+  },
+  {
+    blockExplorerUrl: "https://optimism-sepolia.blockscout.com",
+    chainId: 11155420,
+    disperseContractAddress,
+    id: "optimismSepolia",
+    label: "Optimism Sepolia",
+    nativeCurrency: { decimals: 18, name: "Sepolia Ether", symbol: "ETH" },
+    rpcEndpoint: rpcConfig.evm.optimismSepolia
+  },
+  {
+    blockExplorerUrl: "https://amoy.polygonscan.com",
+    chainId: 80002,
+    disperseContractAddress,
+    id: "polygonAmoy",
+    label: "Polygon Amoy",
+    nativeCurrency: { decimals: 18, name: "POL", symbol: "POL" },
+    rpcEndpoint: rpcConfig.evm.polygonAmoy
+  },
+  {
+    blockExplorerUrl: "https://testnet.snowtrace.io",
+    chainId: 43113,
+    disperseContractAddress,
+    id: "avalancheFuji",
+    label: "Avalanche Fuji",
+    nativeCurrency: { decimals: 18, name: "Avalanche Fuji", symbol: "AVAX" },
+    rpcEndpoint: rpcConfig.evm.avalancheFuji
+  },
+  {
+    blockExplorerUrl: "https://testnet.monadexplorer.com",
+    chainId: 10143,
+    disperseContractAddress,
+    id: "monadTestnet",
+    label: "Monad Testnet",
+    nativeCurrency: { decimals: 18, name: "Testnet MON Token", symbol: "MON" },
+    rpcEndpoint: rpcConfig.evm.monadTestnet
   }
 ];
 

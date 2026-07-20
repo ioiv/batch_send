@@ -65,11 +65,23 @@ describe("evm network config", () => {
       "ethereum",
       "bsc",
       "base",
+      "robinhood",
       "arbitrum",
       "polygon",
       "optimism",
+      "avalanche",
+      "hyperliquid",
+      "monad",
       "gnosis",
-      "sepolia"
+      "sepolia",
+      "hoodi",
+      "bscTestnet",
+      "baseSepolia",
+      "arbitrumSepolia",
+      "optimismSepolia",
+      "polygonAmoy",
+      "avalancheFuji",
+      "monadTestnet"
     ]);
   });
 
@@ -80,7 +92,23 @@ describe("evm network config", () => {
   });
 
   it("does not expose networks where the new Disperse contract is absent", () => {
-    expect(evmNetworks.map((network) => network.id)).not.toEqual(expect.arrayContaining(["fantom", "moonriver", "moonbeam"]));
+    const configuredNetworkIds = evmNetworks.map((network) => network.id) as string[];
+    const unavailableNetworkIds = [
+      "fantom",
+      "moonriver",
+      "moonbeam",
+      "robinhoodTestnet",
+      "hyperliquidTestnet"
+    ];
+
+    unavailableNetworkIds.forEach((networkId) => {
+      expect(configuredNetworkIds).not.toContain(networkId);
+    });
+  });
+
+  it("uses public HTTPS RPC endpoints only", () => {
+    expect(evmNetworks.every((network) => network.rpcEndpoint.startsWith("https://"))).toBe(true);
+    expect(evmNetworks.some((network) => network.rpcEndpoint.includes("192.168."))).toBe(false);
   });
 
   it("rejects empty or unexpected Disperse runtime bytecode", () => {
