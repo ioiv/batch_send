@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evmNetworks, formatWeiForDisplay, getEvmAssetSymbol, getEvmBalanceLookupErrorMessage, getEvmTransactionErrorMessage, isValidEvmAddress, parseEvmDistribution } from "./evm";
+import { disperseContractAddress, disperseContractRuntimeCodeHash, evmNetworks, formatWeiForDisplay, getEvmAssetSymbol, getEvmBalanceLookupErrorMessage, getEvmTransactionErrorMessage, hasExpectedDisperseContractCode, isValidEvmAddress, parseEvmDistribution } from "./evm";
 
 const addressOne = "0x00000000000000000000000000000000000000aa";
 const addressOneMixedCase = "0x00000000000000000000000000000000000000AA";
@@ -69,19 +69,28 @@ describe("evm network config", () => {
       "polygon",
       "optimism",
       "gnosis",
-      "fantom",
-      "moonriver",
-      "moonbeam",
       "sepolia"
     ]);
   });
 
-  it("does not expose networks without the native disperse contract", () => {
-    expect(evmNetworks.map((network) => network.id)).not.toContain("avalanche");
+  it("uses only the new deterministic Disperse contract", () => {
+    expect(disperseContractAddress).toBe("0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3");
+    expect(disperseContractRuntimeCodeHash).toBe("0xc0a38c227d2c70248fc51ed0dd3a72df3adf5b41494c7f3cc19c16c38523244d");
+    expect(new Set(evmNetworks.map((network) => network.disperseContractAddress))).toEqual(new Set([disperseContractAddress]));
+  });
+
+  it("does not expose networks where the new Disperse contract is absent", () => {
+    expect(evmNetworks.map((network) => network.id)).not.toEqual(expect.arrayContaining(["fantom", "moonriver", "moonbeam"]));
+  });
+
+  it("rejects empty or unexpected Disperse runtime bytecode", () => {
+    expect(hasExpectedDisperseContractCode("0x")).toBe(false);
+    expect(hasExpectedDisperseContractCode("0x00")).toBe(false);
   });
 
   it("keeps actionable messages for config and reverted transaction failures", () => {
     expect(getEvmTransactionErrorMessage(new Error("RPC 网络不匹配：当前 RPC 是 chainId 1"))).toContain("RPC 网络不匹配");
+    expect(getEvmTransactionErrorMessage(new Error("Ethereum 分发合约字节码不匹配，已阻止交易"))).toBe("Ethereum 分发合约字节码不匹配，已阻止交易");
     expect(getEvmTransactionErrorMessage(new Error("EVM 分发交易已上链但执行失败"))).toBe("EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对");
     expect(getEvmBalanceLookupErrorMessage(new Error("failed to fetch"))).toBe("余额读取失败，请更换 RPC 后重试");
   });

@@ -12,9 +12,6 @@ export const rpcConfig = {
     polygon: "https://polygon-bor-rpc.publicnode.com",
     optimism: "https://mainnet.optimism.io",
     gnosis: "https://rpc.gnosischain.com",
-    fantom: "https://rpcapi.fantom.network",
-    moonriver: "https://rpc.api.moonriver.moonbeam.network",
-    moonbeam: "https://rpc.api.moonbeam.network",
     sepolia: "https://ethereum-sepolia-rpc.publicnode.com"
   }
 } as const;

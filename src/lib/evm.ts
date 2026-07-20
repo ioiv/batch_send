@@ -6,11 +6,13 @@ import {
   getAddress,
   http,
   isAddress,
+  keccak256,
   parseAbi,
   parseUnits,
   type Address,
   type Chain,
-  type Hash
+  type Hash,
+  type Hex
 } from "viem";
 import { rpcConfig } from "../config/rpc";
 import type { EvmWalletProvider } from "../hooks/useEvmWallet";
@@ -22,9 +24,6 @@ export type EvmNetworkId =
   | "bsc"
   | "gnosis"
   | "polygon"
-  | "fantom"
-  | "moonbeam"
-  | "moonriver"
   | "base"
   | "arbitrum"
   | "sepolia";
@@ -84,7 +83,8 @@ export type EvmSendState = {
   status: "idle" | "preparing" | "awaiting-wallet" | "confirming" | "success" | "error";
 };
 
-export const disperseContractAddress = "0xd152f549545093347a162dce210e7293f1452150";
+export const disperseContractAddress = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+export const disperseContractRuntimeCodeHash = "0xc0a38c227d2c70248fc51ed0dd3a72df3adf5b41494c7f3cc19c16c38523244d";
 
 export const evmNetworks: EvmNetworkConfig[] = [
   {
@@ -149,33 +149,6 @@ export const evmNetworks: EvmNetworkConfig[] = [
     label: "Gnosis",
     nativeCurrency: { decimals: 18, name: "xDAI", symbol: "xDAI" },
     rpcEndpoint: rpcConfig.evm.gnosis
-  },
-  {
-    blockExplorerUrl: "https://ftmscan.com",
-    chainId: 250,
-    disperseContractAddress,
-    id: "fantom",
-    label: "Fantom",
-    nativeCurrency: { decimals: 18, name: "Fantom", symbol: "FTM" },
-    rpcEndpoint: rpcConfig.evm.fantom
-  },
-  {
-    blockExplorerUrl: "https://moonriver.moonscan.io",
-    chainId: 1285,
-    disperseContractAddress,
-    id: "moonriver",
-    label: "Moonriver",
-    nativeCurrency: { decimals: 18, name: "Moonriver", symbol: "MOVR" },
-    rpcEndpoint: rpcConfig.evm.moonriver
-  },
-  {
-    blockExplorerUrl: "https://moonbeam.moonscan.io",
-    chainId: 1284,
-    disperseContractAddress,
-    id: "moonbeam",
-    label: "Moonbeam",
-    nativeCurrency: { decimals: 18, name: "Glimmer", symbol: "GLMR" },
-    rpcEndpoint: rpcConfig.evm.moonbeam
   },
   {
     blockExplorerUrl: "https://sepolia.etherscan.io",
@@ -323,7 +296,7 @@ export function getEvmTransactionErrorMessage(error: unknown) {
 
   if (code === 4001 || /reject|declin|cancel/i.test(detail)) return "用户取消了交易确认";
   if (/insufficient|exceeds balance|not enough funds/i.test(detail)) return "钱包余额不足，无法完成本次分发";
-  if (/RPC 网络不匹配|分发合约未部署|Token 合约未部署|Token 余额不足|Token 授权交易已上链但执行失败/i.test(detail)) return detail;
+  if (/RPC 网络不匹配|分发合约未部署|分发合约字节码不匹配|Token 合约未部署|Token 余额不足|Token 授权交易已上链但执行失败/i.test(detail)) return detail;
   if (/revert|execution reverted|执行失败/i.test(detail)) return "EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对";
   if (/chain|network|unsupported/i.test(detail)) return "钱包网络切换失败，请检查网络配置";
   if (/failed to fetch|network|fetch|timeout/i.test(detail)) return "RPC 请求失败，请更换 RPC 后重试";
@@ -392,6 +365,13 @@ async function ensureDisperseContract(publicClient: ReturnType<typeof createEvmP
   if (!contractCode || contractCode === "0x") {
     throw new Error(`${network.label} 分发合约未部署，无法在该网络分发`);
   }
+  if (!hasExpectedDisperseContractCode(contractCode)) {
+    throw new Error(`${network.label} 分发合约字节码不匹配，已阻止交易`);
+  }
+}
+
+export function hasExpectedDisperseContractCode(contractCode: Hex) {
+  return contractCode !== "0x" && keccak256(contractCode) === disperseContractRuntimeCodeHash;
 }
 
 async function ensureTokenContract(publicClient: ReturnType<typeof createEvmPublicClient>, network: EvmNetworkConfig, tokenAddress: Address) {
