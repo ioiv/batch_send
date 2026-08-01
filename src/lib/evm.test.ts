@@ -1,9 +1,32 @@
-import { describe, expect, it } from "vitest";
-import { disperseContractAddress, disperseContractRuntimeCodeHash, evmNetworks, formatWeiForDisplay, getEvmAssetSymbol, getEvmBalanceLookupErrorMessage, getEvmTransactionErrorMessage, hasExpectedDisperseContractCode, isValidEvmAddress, parseEvmDistribution } from "./evm";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createEvmDistributionNetwork,
+  disperseContractAddress,
+  disperseContractRuntimeCodeHash,
+  evmNetworks,
+  formatWeiForDisplay,
+  getEvmAssetSymbol,
+  getEvmBalanceLookupErrorMessage,
+  getEvmDistributionNetworks,
+  getEvmExplorerUrl,
+  getEvmTransactionErrorMessage,
+  getPreferredEvmDistributionNetwork,
+  getVerifiedEvmDistributionChainIds,
+  hasExpectedDisperseContractCode,
+  isValidEvmAddress,
+  mergeEvmDistributionNetworks,
+  parseEvmDistribution,
+  registerVerifiedEvmDistributionNetwork,
+  removeVerifiedEvmDistributionNetwork
+} from "./evm";
 
 const addressOne = "0x00000000000000000000000000000000000000aa";
 const addressOneMixedCase = "0x00000000000000000000000000000000000000AA";
 const addressTwo = "0x0000000000000000000000000000000000000002";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("parseEvmDistribution", () => {
   it("parses EVM rows and totals wei with 18 decimals", () => {
@@ -89,6 +112,105 @@ describe("evm network config", () => {
     expect(disperseContractAddress).toBe("0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3");
     expect(disperseContractRuntimeCodeHash).toBe("0xc0a38c227d2c70248fc51ed0dd3a72df3adf5b41494c7f3cc19c16c38523244d");
     expect(new Set(evmNetworks.map((network) => network.disperseContractAddress))).toEqual(new Set([disperseContractAddress]));
+  });
+
+  it("merges a verified custom chain into the distribution network list", () => {
+    const customNetwork = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "EVM Chain 7777777",
+      nativeCurrency: { decimals: 18, name: "Native currency", symbol: "NATIVE" },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    const networks = mergeEvmDistributionNetworks([customNetwork]);
+
+    expect(networks.at(-1)).toEqual(customNetwork);
+    expect(customNetwork).toMatchObject({
+      disperseContractAddress,
+      id: "custom-7777777"
+    });
+  });
+
+  it("normalizes a custom explorer URL and builds transaction links", () => {
+    const customNetwork = createEvmDistributionNetwork({
+      blockExplorerUrl: "https://scan.example.test///",
+      chainId: 7777777,
+      label: "Custom EVM",
+      nativeCurrency: { decimals: 18, name: "Native currency", symbol: "NATIVE" },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    expect(customNetwork.blockExplorerUrl).toBe("https://scan.example.test");
+    expect(getEvmExplorerUrl("0xabc", customNetwork)).toBe("https://scan.example.test/tx/0xabc");
+  });
+
+  it("deduplicates the final distribution list by numeric chain ID and keeps the latest verified RPC", () => {
+    const first = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "Custom EVM",
+      nativeCurrency: { decimals: 18, name: "Native currency", symbol: "NATIVE" },
+      rpcEndpoint: "https://old.example.test"
+    });
+    const latest = { ...first, rpcEndpoint: "https://latest.example.test" };
+
+    const networks = mergeEvmDistributionNetworks([first, latest]);
+    const matchingNetworks = networks.filter((network) => network.chainId === 7777777);
+
+    expect(matchingNetworks).toHaveLength(1);
+    expect(matchingNetworks[0].rpcEndpoint).toBe("https://latest.example.test");
+    expect(new Set(networks.map((network) => network.chainId)).size).toBe(networks.length);
+  });
+
+  it("persists a verified existing chain RPC and selects it on the distribution page", () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => values.get(key) || null,
+        setItem: (key: string, value: string) => values.set(key, value)
+      }
+    });
+    const avalanche = evmNetworks.find((network) => network.id === "avalanche");
+    expect(avalanche).toBeDefined();
+
+    const deploymentNetwork = {
+      ...avalanche!,
+      rpcEndpoint: "https://verified-avalanche.example.test"
+    };
+    const registered = registerVerifiedEvmDistributionNetwork(deploymentNetwork);
+    const networks = getEvmDistributionNetworks();
+    const preferred = getPreferredEvmDistributionNetwork(networks);
+
+    expect(registered).toMatchObject({ id: "avalanche" });
+    expect(networks.find((network) => network.id === "avalanche")?.rpcEndpoint).toBe("https://verified-avalanche.example.test");
+    expect(preferred.id).toBe("avalanche");
+  });
+
+  it("removes a manually registered custom chain and resets the preferred network", () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => values.get(key) || null,
+        setItem: (key: string, value: string) => values.set(key, value)
+      }
+    });
+    const customNetwork = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 59144,
+      label: "Linea",
+      nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" },
+      rpcEndpoint: "https://linea.example.test"
+    });
+
+    expect(registerVerifiedEvmDistributionNetwork(customNetwork)).not.toBeNull();
+    expect(getVerifiedEvmDistributionChainIds()).toContain(59144);
+    expect(removeVerifiedEvmDistributionNetwork(59144)).toBe(true);
+
+    const networks = getEvmDistributionNetworks();
+    expect(networks.some((network) => network.chainId === 59144)).toBe(false);
+    expect(getVerifiedEvmDistributionChainIds()).not.toContain(59144);
+    expect(getPreferredEvmDistributionNetwork(networks).id).toBe("ethereum");
   });
 
   it("does not expose networks where the new Disperse contract is absent", () => {

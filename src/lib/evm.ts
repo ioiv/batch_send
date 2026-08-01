@@ -40,6 +40,8 @@ export type EvmNetworkId =
   | "avalancheFuji"
   | "monadTestnet";
 
+export type EvmDistributionNetworkId = EvmNetworkId | `custom-${number}`;
+
 export type EvmDistributionRow = {
   address: string;
   amountRaw: string;
@@ -59,11 +61,9 @@ export type ParseEvmDistributionResult = {
   validRows: EvmDistributionRow[];
 };
 
-export type EvmNetworkConfig = {
+export type EvmChainConfig = {
   blockExplorerUrl: string;
   chainId: number;
-  disperseContractAddress: Address;
-  id: EvmNetworkId;
   label: string;
   nativeCurrency: {
     decimals: number;
@@ -71,6 +71,11 @@ export type EvmNetworkConfig = {
     symbol: string;
   };
   rpcEndpoint: string;
+};
+
+export type EvmNetworkConfig = EvmChainConfig & {
+  disperseContractAddress: Address;
+  id: EvmDistributionNetworkId;
 };
 
 export type EvmAssetMode = "native" | "token";
@@ -281,6 +286,147 @@ export const evmNetworks: EvmNetworkConfig[] = [
   }
 ];
 
+const verifiedEvmNetworksStorageKey = "batch-send.verified-evm-networks.v1";
+const preferredEvmNetworkStorageKey = "batch-send.preferred-evm-network.v1";
+
+function getHttpsRpcHostname(rpcEndpoint: string) {
+  try {
+    const url = new URL(rpcEndpoint);
+    return url.protocol === "https:" ? url.hostname.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+}
+
+function isStoredEvmNetwork(value: unknown): value is EvmNetworkConfig {
+  if (!value || typeof value !== "object") return false;
+  const network = value as Partial<EvmNetworkConfig>;
+  return typeof network.id === "string"
+    && typeof network.chainId === "number"
+    && Number.isSafeInteger(network.chainId)
+    && network.chainId > 0
+    && typeof network.label === "string"
+    && Boolean(network.label.trim())
+    && typeof network.rpcEndpoint === "string"
+    && Boolean(getHttpsRpcHostname(network.rpcEndpoint))
+    && typeof network.blockExplorerUrl === "string"
+    && (!network.blockExplorerUrl || network.blockExplorerUrl.startsWith("https://"))
+    && network.disperseContractAddress?.toLowerCase() === disperseContractAddress.toLowerCase()
+    && typeof network.nativeCurrency?.name === "string"
+    && typeof network.nativeCurrency?.symbol === "string"
+    && typeof network.nativeCurrency?.decimals === "number"
+    && Number.isInteger(network.nativeCurrency.decimals);
+}
+
+function readStoredEvmNetworks() {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(verifiedEvmNetworksStorageKey) || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isStoredEvmNetwork) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function createEvmDistributionNetwork(network: EvmChainConfig): EvmNetworkConfig {
+  const configuredNetwork = evmNetworks.find((item) => item.chainId === network.chainId);
+  return {
+    blockExplorerUrl: (network.blockExplorerUrl || configuredNetwork?.blockExplorerUrl || "").trim().replace(/\/+$/, ""),
+    chainId: network.chainId,
+    disperseContractAddress,
+    id: configuredNetwork?.id || `custom-${network.chainId}`,
+    label: network.label || configuredNetwork?.label || `EVM Chain ${network.chainId}`,
+    nativeCurrency: network.nativeCurrency || configuredNetwork?.nativeCurrency || {
+      decimals: 18,
+      name: "Native currency",
+      symbol: "NATIVE"
+    },
+    rpcEndpoint: network.rpcEndpoint.trim()
+  };
+}
+
+export function mergeEvmDistributionNetworks(verifiedNetworks: EvmNetworkConfig[]): EvmNetworkConfig[] {
+  const verifiedByChainId = new Map<number, EvmNetworkConfig>();
+  verifiedNetworks.forEach((network) => verifiedByChainId.set(network.chainId, network));
+  const uniqueVerifiedNetworks = [...verifiedByChainId.values()];
+  const configuredChainIds = new Set(evmNetworks.map((network) => network.chainId));
+  const configuredNetworks: EvmNetworkConfig[] = evmNetworks.map((network) => {
+    const verifiedNetwork = verifiedByChainId.get(network.chainId);
+    return verifiedNetwork
+      ? { ...network, ...verifiedNetwork, disperseContractAddress: network.disperseContractAddress, id: network.id }
+      : network;
+  });
+  const customNetworks = uniqueVerifiedNetworks.filter((network) => !configuredChainIds.has(network.chainId));
+  const seenChainIds = new Set<number>();
+  return [...configuredNetworks, ...customNetworks].filter((network) => {
+    if (seenChainIds.has(network.chainId)) return false;
+    seenChainIds.add(network.chainId);
+    return true;
+  });
+}
+
+export function getEvmDistributionNetworks() {
+  return mergeEvmDistributionNetworks(readStoredEvmNetworks());
+}
+
+export function getVerifiedEvmDistributionChainIds() {
+  return readStoredEvmNetworks().map((network) => network.chainId);
+}
+
+export function getPreferredEvmDistributionNetwork(networks: EvmNetworkConfig[]) {
+  if (typeof window === "undefined") return networks[0] || evmNetworks[0];
+  try {
+    const preferredNetworkId = window.localStorage.getItem(preferredEvmNetworkStorageKey) || "";
+    return networks.find((network) => network.id === preferredNetworkId) || networks[0] || evmNetworks[0];
+  } catch {
+    return networks[0] || evmNetworks[0];
+  }
+}
+
+export function rememberPreferredEvmDistributionNetwork(networkId: EvmDistributionNetworkId) {
+  if (typeof window === "undefined") return false;
+  try {
+    window.localStorage.setItem(preferredEvmNetworkStorageKey, networkId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function registerVerifiedEvmDistributionNetwork(network: EvmChainConfig) {
+  if (typeof window === "undefined") return null;
+  try {
+    const distributionNetwork = createEvmDistributionNetwork(network);
+    const storedNetworks = readStoredEvmNetworks();
+    const nextStoredNetworks = [
+      ...storedNetworks.filter((item) => item.chainId !== distributionNetwork.chainId),
+      distributionNetwork
+    ];
+    window.localStorage.setItem(verifiedEvmNetworksStorageKey, JSON.stringify(nextStoredNetworks));
+    window.localStorage.setItem(preferredEvmNetworkStorageKey, distributionNetwork.id);
+    return distributionNetwork;
+  } catch {
+    return null;
+  }
+}
+
+export function removeVerifiedEvmDistributionNetwork(chainId: number) {
+  if (typeof window === "undefined") return false;
+  try {
+    const storedNetworks = readStoredEvmNetworks();
+    const removedNetwork = storedNetworks.find((network) => network.chainId === chainId);
+    if (!removedNetwork) return false;
+    const nextStoredNetworks = storedNetworks.filter((network) => network.chainId !== chainId);
+    window.localStorage.setItem(verifiedEvmNetworksStorageKey, JSON.stringify(nextStoredNetworks));
+    if (window.localStorage.getItem(preferredEvmNetworkStorageKey) === removedNetwork.id) {
+      window.localStorage.setItem(preferredEvmNetworkStorageKey, evmNetworks[0].id);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const initialEvmSendState: EvmSendState = {
   hash: "",
   message: "",
@@ -301,7 +447,7 @@ const erc20Abi = parseAbi([
   "function symbol() view returns (string)"
 ]);
 
-function toChain(config: EvmNetworkConfig, rpcEndpoint: string): Chain {
+export function toEvmChain(config: EvmChainConfig, rpcEndpoint: string): Chain {
   return {
     blockExplorers: {
       default: {
@@ -320,8 +466,8 @@ function toChain(config: EvmNetworkConfig, rpcEndpoint: string): Chain {
   };
 }
 
-export function getEvmNetworkConfig(networkId: EvmNetworkId) {
-  return evmNetworks.find((network) => network.id === networkId) || evmNetworks[0];
+export function getEvmNetworkConfig(networkId: EvmDistributionNetworkId, networks = evmNetworks) {
+  return networks.find((network) => network.id === networkId) || networks[0] || evmNetworks[0];
 }
 
 export function formatWei(value: bigint, decimals = 18) {
@@ -407,7 +553,8 @@ export function parseEvmDistribution(input: string, decimals = 18): ParseEvmDist
 }
 
 export function getEvmExplorerUrl(hash: string, network: EvmNetworkConfig) {
-  return `${network.blockExplorerUrl}/tx/${hash}`;
+  if (!network.blockExplorerUrl) return "";
+  return `${network.blockExplorerUrl.replace(/\/+$/, "")}/tx/${hash}`;
 }
 
 export function getEvmTransactionErrorMessage(error: unknown) {
@@ -440,7 +587,7 @@ export function getEvmBalanceLookupErrorMessage(error: unknown) {
   return detail ? `余额读取失败：${detail}` : "余额读取失败，请稍后重试";
 }
 
-export async function ensureEvmNetwork(provider: EvmWalletProvider, network: EvmNetworkConfig, rpcEndpoint: string) {
+export async function ensureEvmNetwork(provider: EvmWalletProvider, network: EvmChainConfig, rpcEndpoint: string) {
   const chainIdHex = `0x${network.chainId.toString(16)}`;
 
   try {
@@ -455,7 +602,7 @@ export async function ensureEvmNetwork(provider: EvmWalletProvider, network: Evm
     await provider.request({
       method: "wallet_addEthereumChain",
       params: [{
-        blockExplorerUrls: [network.blockExplorerUrl],
+        ...(network.blockExplorerUrl ? { blockExplorerUrls: [network.blockExplorerUrl] } : {}),
         chainId: chainIdHex,
         chainName: network.label,
         nativeCurrency: network.nativeCurrency,
@@ -465,14 +612,14 @@ export async function ensureEvmNetwork(provider: EvmWalletProvider, network: Evm
   }
 }
 
-function createEvmPublicClient(network: EvmNetworkConfig, rpcEndpoint: string) {
+export function createEvmPublicClient(network: EvmChainConfig, rpcEndpoint: string) {
   return createPublicClient({
-    chain: toChain(network, rpcEndpoint),
+    chain: toEvmChain(network, rpcEndpoint),
     transport: http(rpcEndpoint)
   });
 }
 
-async function assertEvmRpcNetwork(publicClient: ReturnType<typeof createEvmPublicClient>, network: EvmNetworkConfig) {
+export async function assertEvmRpcNetwork(publicClient: ReturnType<typeof createEvmPublicClient>, network: EvmChainConfig) {
   const rpcChainId = await publicClient.getChainId();
 
   if (rpcChainId !== network.chainId) {
@@ -611,7 +758,7 @@ export async function sendEvmNativeDistribution({
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
 }) {
-  const chain = toChain(network, rpcEndpoint);
+  const chain = toEvmChain(network, rpcEndpoint);
   const publicClient = createEvmPublicClient(network, rpcEndpoint);
   const walletClient = createWalletClient({
     chain,
@@ -663,7 +810,7 @@ export async function sendEvmTokenDistribution({
   rpcEndpoint: string;
   token: EvmTokenDetails;
 }) {
-  const chain = toChain(network, rpcEndpoint);
+  const chain = toEvmChain(network, rpcEndpoint);
   const publicClient = createEvmPublicClient(network, rpcEndpoint);
   const walletClient = createWalletClient({
     chain,

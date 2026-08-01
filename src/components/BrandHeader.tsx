@@ -42,7 +42,7 @@ export function BrandHeader({
   );
 }
 
-export function NavLinks({ current }: { current?: "home" | "format" | "distributor" | "evmDistributor" }) {
+export function NavLinks({ current }: { current?: "home" | "format" | "distributor" | "evmDistributor" | "evmDeploy" }) {
   return (
     <nav className="nav" aria-label="页面导航">
       <a aria-current={current === "home" ? "page" : undefined} href="/">
@@ -56,6 +56,9 @@ export function NavLinks({ current }: { current?: "home" | "format" | "distribut
       </a>
       <a aria-current={current === "evmDistributor" ? "page" : undefined} href="/evm/">
         EVM 分发
+      </a>
+      <a aria-current={current === "evmDeploy" ? "page" : undefined} href="/evm/deploy/">
+        合约部署
       </a>
     </nav>
   );

@@ -29,6 +29,11 @@ export function HomePage() {
                 <strong>EVM 分发</strong>
                 <small>原生币批量发送</small>
               </a>
+              <a className="tool-card" href="/evm/deploy/">
+                <span>04</span>
+                <strong>合约部署</strong>
+                <small>CreateX 校验部署</small>
+              </a>
             </div>
           </div>
         </section>

@@ -140,6 +140,10 @@ svg {
   grid-template-columns: minmax(0, 1.02fr) minmax(390px, 0.98fr);
 }
 
+.deploy-workspace {
+  grid-template-columns: minmax(0, 1.08fr) minmax(390px, 0.92fr);
+}
+
 .panel,
 .hero {
   min-width: 0;
@@ -199,6 +203,10 @@ svg {
 
 .page-distributor .sol-route-fields {
   grid-template-columns: minmax(130px, 0.86fr) minmax(190px, 1.22fr) minmax(112px, 0.42fr);
+}
+
+.deploy-route-fields {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .route-card {
@@ -468,11 +476,54 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.deployment-contract-card,
+.deployment-check-list,
+.deployment-check-copy,
+.deployment-safety-note {
+  min-width: 0;
+}
+
+.deployment-check-list {
+  display: grid;
+  gap: 10px;
+}
+
+.deployment-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.deployment-check-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.deployment-check-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.deployment-check-copy strong,
+.deployment-check-copy span,
+.deployment-safety-note span {
+  overflow-wrap: anywhere;
+}
+
+.deployment-estimate {
+  margin-top: 2px;
+}
+
 .send-progress {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.signature-list a {
+.signature-list a,
+.signature-list span {
   width: fit-content;
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -527,6 +578,14 @@ textarea {
 
   .route-fields {
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr);
+  }
+
+  .deploy-route-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .deploy-route-fields .rpc-field {
+    grid-column: 1;
   }
 
   .asset-mode {

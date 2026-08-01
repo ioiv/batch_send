@@ -1120,6 +1120,109 @@ input[type="number"],
   color: #985a51;
 }
 
+.deployment-status.ready,
+.deployment-status.already-deployed {
+  background: linear-gradient(180deg, #f5fbef, #e4eddc);
+  box-shadow:
+    inset 0 0 0 1px rgba(111, 133, 101, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  color: #506542;
+}
+
+.deployment-status.validating,
+.deployment-status.awaiting-wallet,
+.deployment-status.confirming {
+  background: linear-gradient(180deg, #fffaf1, #f1e7d4);
+  box-shadow:
+    inset 0 0 0 1px rgba(173, 128, 67, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  color: #86662f;
+}
+
+.deployment-contract-card {
+  border-radius: var(--radius-card);
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(238, 243, 235, 0.58));
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 64, 54, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.deployment-rpc-hint {
+  padding: 0 8px 5px;
+}
+
+.hint.error {
+  color: #985a51;
+}
+
+.deployment-check {
+  border-radius: var(--radius-card);
+  padding: 13px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(239, 242, 234, 0.52));
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 64, 54, 0.085),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.deployment-check.pass {
+  background: linear-gradient(180deg, #f7fcf2, #e6eedf);
+  box-shadow: inset 0 0 0 1px rgba(111, 133, 101, 0.18);
+}
+
+.deployment-check.fail {
+  background: linear-gradient(180deg, #fff7f4, #f2e4df);
+  box-shadow: inset 0 0 0 1px rgba(181, 106, 94, 0.2);
+}
+
+.deployment-check.skipped {
+  opacity: 0.76;
+}
+
+.deployment-check-mark {
+  border-radius: 50%;
+  background: rgba(225, 230, 222, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(56, 64, 54, 0.08);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.deployment-check.pass .deployment-check-mark {
+  background: #dfead7;
+  color: #58724d;
+}
+
+.deployment-check.fail .deployment-check-mark {
+  background: #f1dfda;
+  color: #9c5b50;
+}
+
+.deployment-check-copy strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 730;
+}
+
+.deployment-check-copy span,
+.deployment-safety-note span {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.deployment-check-copy span,
+.deployment-contract-card strong,
+.deployment-estimate strong {
+  font-family: var(--font-mono);
+}
+
+.deployment-safety-note {
+  gap: 6px;
+}
+
 .signature-list a {
   color: var(--ink);
   font-family: var(--font-mono);
@@ -2188,7 +2291,7 @@ input[type="number"],
   }
 
   .tool-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

@@ -18,7 +18,8 @@ export default defineConfig({
         index: resolve(projectRoot, "index.html"),
         formatGenerator: resolve(projectRoot, "format/index.html"),
         batchDistributor: resolve(projectRoot, "sol/index.html"),
-        evmBatchDistributor: resolve(projectRoot, "evm/index.html")
+        evmBatchDistributor: resolve(projectRoot, "evm/index.html"),
+        evmContractDeploy: resolve(projectRoot, "evm/deploy/index.html")
       }
     }
   },

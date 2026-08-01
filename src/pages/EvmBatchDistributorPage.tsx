@@ -8,24 +8,28 @@ import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
 import {
   ensureEvmNetwork,
-  evmNetworks,
   formatWei,
   formatWeiForDisplay,
   getEvmAssetSymbol,
   getEvmBalanceLookupErrorMessage,
+  getEvmDistributionNetworks,
   getEvmExplorerUrl,
   getEvmNativeBalance,
   getEvmNetworkConfig,
+  getPreferredEvmDistributionNetwork,
+  getVerifiedEvmDistributionChainIds,
   getEvmTokenBalance,
   getEvmTokenDetails,
   getEvmTokenLookupErrorMessage,
   getEvmTransactionErrorMessage,
   isValidEvmAddress,
   parseEvmDistribution,
+  rememberPreferredEvmDistributionNetwork,
+  removeVerifiedEvmDistributionNetwork,
   sendEvmNativeDistribution,
   sendEvmTokenDistribution,
   type EvmAssetMode,
-  type EvmNetworkId,
+  type EvmDistributionNetworkId,
   type EvmTokenDetails,
   type EvmTokenDistributionStep
 } from "../lib/evm";
@@ -56,11 +60,19 @@ const initialBalanceLookupState: BalanceLookupState = {
 };
 
 export function EvmBatchDistributorPage() {
+  const [networkState, setNetworkState] = useState(() => {
+    const networks = getEvmDistributionNetworks();
+    return {
+      networks,
+      selected: getPreferredEvmDistributionNetwork(networks),
+      verifiedChainIds: getVerifiedEvmDistributionChainIds()
+    };
+  });
   const [input, setInput] = useState(() => getInitialDistributionInput());
   const [assetMode, setAssetMode] = useState<EvmAssetMode>("native");
   const [confirmVisible, setConfirmVisible] = useState(false);
-  const [networkId, setNetworkId] = useState<EvmNetworkId>("ethereum");
-  const [rpcEndpoint, setRpcEndpoint] = useState(getEvmNetworkConfig("ethereum").rpcEndpoint);
+  const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(networkState.selected.id);
+  const [rpcEndpoint, setRpcEndpoint] = useState(networkState.selected.rpcEndpoint);
   const [sendState, setSendState] = useState(initialSendState);
   const [tokenAddress, setTokenAddress] = useState("");
   const [tokenLookup, setTokenLookup] = useState<TokenLookupState>(initialTokenLookupState);
@@ -69,7 +81,10 @@ export function EvmBatchDistributorPage() {
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const wallet = useEvmWallet();
 
-  const selectedNetwork = useMemo(() => getEvmNetworkConfig(networkId), [networkId]);
+  const selectedNetwork = useMemo(
+    () => getEvmNetworkConfig(networkId, networkState.networks),
+    [networkId, networkState.networks]
+  );
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
   const tokenDetails = assetMode === "token" ? tokenLookup.details : null;
   const assetDecimals = assetMode === "token" ? tokenDetails?.decimals ?? selectedNetwork.nativeCurrency.decimals : selectedNetwork.nativeCurrency.decimals;
@@ -87,7 +102,12 @@ export function EvmBatchDistributorPage() {
   })), [parsed.rows]);
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
   const assetReady = assetMode === "native" || (tokenLookup.status === "success" && Boolean(tokenDetails));
-  const readyToSend = wallet.connected && Boolean(wallet.getProvider()) && assetReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
+  const readyToSend = wallet.connected
+    && Boolean(wallet.getProvider())
+    && assetReady
+    && parsed.validRows.length > 0
+    && parsed.invalid === 0
+    && !sending;
   const nativeBalance = nativeBalanceLookup.status === "success" && nativeBalanceLookup.valueWei !== null
     ? formatWeiForDisplay(nativeBalanceLookup.valueWei, selectedNetwork.nativeCurrency.decimals)
     : nativeBalanceLookup.status === "loading"
@@ -152,6 +172,21 @@ export function EvmBatchDistributorPage() {
   const resetConfirmation = () => {
     setConfirmVisible(false);
     setSendState(initialSendState);
+  };
+
+  const removeSelectedVerifiedNetwork = () => {
+    if (!removeVerifiedEvmDistributionNetwork(selectedNetwork.chainId)) return;
+
+    const networks = getEvmDistributionNetworks();
+    const nextSelected = getPreferredEvmDistributionNetwork(networks);
+    setNetworkState({
+      networks,
+      selected: nextSelected,
+      verifiedChainIds: getVerifiedEvmDistributionChainIds()
+    });
+    setNetworkId(nextSelected.id);
+    setRpcEndpoint(nextSelected.rpcEndpoint);
+    resetConfirmation();
   };
 
   useEffect(() => {
@@ -517,13 +552,15 @@ export function EvmBatchDistributorPage() {
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
                     <select id="networkId" value={networkId} onChange={(event) => {
-                      const nextNetworkId = event.target.value as EvmNetworkId;
+                      const nextNetworkId = event.target.value as EvmDistributionNetworkId;
+                      const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
                       setNetworkId(nextNetworkId);
-                      setRpcEndpoint(getEvmNetworkConfig(nextNetworkId).rpcEndpoint);
+                      setRpcEndpoint(nextNetwork.rpcEndpoint);
+                      rememberPreferredEvmDistributionNetwork(nextNetworkId);
                       resetConfirmation();
                     }}>
-                      {evmNetworks.map((network) => (
-                        <option key={network.id} value={network.id}>{network.label}</option>
+                      {networkState.networks.map((network) => (
+                        <option key={network.chainId} value={network.id}>{network.label} · {network.chainId}</option>
                       ))}
                     </select>
                   </div>
@@ -535,6 +572,12 @@ export function EvmBatchDistributorPage() {
                     }} />
                   </div>
                 </div>
+                <p className="hint">这里只显示默认链，以及你在部署页手动添加的链配置。</p>
+                {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
+                  <div className="action-group network-config-actions">
+                    <button className="button ghost" type="button" onClick={removeSelectedVerifiedNetwork}>移除此链配置</button>
+                  </div>
+                ) : null}
                 {assetMode === "token" ? (
                   <div className="token-config">
                     <div className="field route-card token-address-field">
@@ -628,10 +671,11 @@ export function EvmBatchDistributorPage() {
                     <div className="signature-list">
                       {sendState.signatures.map((signature, index) => {
                         const label = sendState.signatures.length > 1 && index === 0 ? "授权" : "分发";
+                        const explorerUrl = getEvmExplorerUrl(signature, selectedNetwork);
                         return (
-                          <a key={signature} href={getEvmExplorerUrl(signature, selectedNetwork)} target="_blank" rel="noreferrer">
-                            {label}: {shortenAddress(signature)}
-                          </a>
+                          explorerUrl
+                            ? <a key={signature} href={explorerUrl} target="_blank" rel="noreferrer">{label}: {shortenAddress(signature)}</a>
+                            : <span key={signature}>{label}: {shortenAddress(signature)} · 当前链未配置区块浏览器</span>
                         );
                       })}
                     </div>
