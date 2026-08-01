@@ -14,6 +14,7 @@ import {
   getEvmBalanceLookupErrorMessage,
   getEvmDistributionNetworks,
   getEvmExplorerUrl,
+  getEvmNativeCurrencyMetadata,
   getEvmNativeBalance,
   getEvmNetworkConfig,
   getPreferredEvmDistributionNetwork,
@@ -23,6 +24,7 @@ import {
   getEvmTokenLookupErrorMessage,
   getEvmTransactionErrorMessage,
   isValidEvmAddress,
+  isEvmNativeCurrencyEnabled,
   parseEvmDistribution,
   rememberPreferredEvmDistributionNetwork,
   removeVerifiedEvmDistributionNetwork,
@@ -69,7 +71,9 @@ export function EvmBatchDistributorPage() {
     };
   });
   const [input, setInput] = useState(() => getInitialDistributionInput());
-  const [assetMode, setAssetMode] = useState<EvmAssetMode>("native");
+  const [assetMode, setAssetMode] = useState<EvmAssetMode>(() => (
+    isEvmNativeCurrencyEnabled(networkState.selected) ? "native" : "token"
+  ));
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(networkState.selected.id);
   const [rpcEndpoint, setRpcEndpoint] = useState(networkState.selected.rpcEndpoint);
@@ -86,8 +90,10 @@ export function EvmBatchDistributorPage() {
     [networkId, networkState.networks]
   );
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
+  const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
+  const nativeCurrencyMetadata = getEvmNativeCurrencyMetadata(selectedNetwork);
   const tokenDetails = assetMode === "token" ? tokenLookup.details : null;
-  const assetDecimals = assetMode === "token" ? tokenDetails?.decimals ?? selectedNetwork.nativeCurrency.decimals : selectedNetwork.nativeCurrency.decimals;
+  const assetDecimals = assetMode === "token" ? tokenDetails?.decimals ?? 18 : selectedNetwork.nativeCurrency.decimals;
   const assetSymbol = getEvmAssetSymbol(assetMode, selectedNetwork, tokenDetails);
   const tokenAddressInput = tokenAddress.trim();
   const parsed = useMemo(() => parseEvmDistribution(input, assetDecimals), [input, assetDecimals]);
@@ -101,21 +107,27 @@ export function EvmBatchDistributorPage() {
     status: row.status
   })), [parsed.rows]);
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
-  const assetReady = assetMode === "native" || (tokenLookup.status === "success" && Boolean(tokenDetails));
+  const assetReady = assetMode === "native"
+    ? nativeCurrencyEnabled
+    : tokenLookup.status === "success" && Boolean(tokenDetails);
   const readyToSend = wallet.connected
     && Boolean(wallet.getProvider())
     && assetReady
     && parsed.validRows.length > 0
     && parsed.invalid === 0
     && !sending;
-  const nativeBalance = nativeBalanceLookup.status === "success" && nativeBalanceLookup.valueWei !== null
+  const nativeBalance = !nativeCurrencyEnabled
+    ? "未开放"
+    : nativeBalanceLookup.status === "success" && nativeBalanceLookup.valueWei !== null
     ? formatWeiForDisplay(nativeBalanceLookup.valueWei, selectedNetwork.nativeCurrency.decimals)
     : nativeBalanceLookup.status === "loading"
       ? "读取中"
       : wallet.connected
         ? "--"
         : "未连接";
-  const nativeBalanceDescription = nativeBalanceLookup.status === "success"
+  const nativeBalanceDescription = !nativeCurrencyEnabled
+    ? "元数据待确认"
+    : nativeBalanceLookup.status === "success"
     ? nativeBalance
     : nativeBalanceLookup.status === "loading"
       ? "读取中"
@@ -186,6 +198,7 @@ export function EvmBatchDistributorPage() {
     });
     setNetworkId(nextSelected.id);
     setRpcEndpoint(nextSelected.rpcEndpoint);
+    setAssetMode(isEvmNativeCurrencyEnabled(nextSelected) ? "native" : "token");
     resetConfirmation();
   };
 
@@ -246,6 +259,15 @@ export function EvmBatchDistributorPage() {
   }, [assetMode, effectiveRpcEndpoint, selectedNetwork, tokenAddressInput]);
 
   useEffect(() => {
+    if (!nativeCurrencyEnabled) {
+      setNativeBalanceLookup({
+        message: "确认原生币元数据后显示余额",
+        status: "idle",
+        valueWei: null
+      });
+      return;
+    }
+
     if (!wallet.connected || !wallet.address) {
       setNativeBalanceLookup({
         message: "连接钱包后显示余额",
@@ -285,7 +307,7 @@ export function EvmBatchDistributorPage() {
     return () => {
       active = false;
     };
-  }, [balanceRefreshNonce, effectiveRpcEndpoint, selectedNetwork, wallet.address, wallet.connected]);
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, nativeCurrencyEnabled, selectedNetwork, wallet.address, wallet.connected]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -435,6 +457,10 @@ export function EvmBatchDistributorPage() {
         return;
       }
 
+      if (!nativeCurrencyEnabled) {
+        throw new Error("原生币元数据尚未确认，当前链只允许 Token 分发");
+      }
+
       const { hash } = await sendEvmNativeDistribution({
         from: wallet.address,
         network: selectedNetwork,
@@ -509,12 +535,13 @@ export function EvmBatchDistributorPage() {
 
               <div className="transaction-options compact-route" aria-label="链路配置">
                 <div className="mode-row asset-mode-row" aria-label="资产类型">
-                  <label className={`mode asset-mode ${assetMode === "native" ? "selected" : ""}`}>
+                  <label className={`mode asset-mode ${assetMode === "native" ? "selected" : ""}${nativeCurrencyEnabled ? "" : " disabled"}`}>
                     <span className="mode-head">
                       <input
                         type="radio"
                         name="assetMode"
                         checked={assetMode === "native"}
+                        disabled={!nativeCurrencyEnabled}
                         onChange={() => {
                           setAssetMode("native");
                           resetConfirmation();
@@ -523,7 +550,7 @@ export function EvmBatchDistributorPage() {
                       原生币
                     </span>
                     <span className="asset-mode-meta">
-                      <span>{selectedNetwork.nativeCurrency.symbol}</span>
+                      <span>{nativeCurrencyEnabled ? selectedNetwork.nativeCurrency.symbol : "未确认"}</span>
                       {nativeBalanceDescription ? <span className="asset-mode-balance">{nativeBalanceDescription}</span> : null}
                     </span>
                   </label>
@@ -556,6 +583,7 @@ export function EvmBatchDistributorPage() {
                       const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
                       setNetworkId(nextNetworkId);
                       setRpcEndpoint(nextNetwork.rpcEndpoint);
+                      if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
                       rememberPreferredEvmDistributionNetwork(nextNetworkId);
                       resetConfirmation();
                     }}>
@@ -573,6 +601,13 @@ export function EvmBatchDistributorPage() {
                   </div>
                 </div>
                 <p className="hint">这里只显示默认链，以及你在部署页手动添加的链配置。</p>
+                {!nativeCurrencyEnabled ? (
+                  <div className="notice">
+                    <strong>当前链仅开放 Token 分发</strong>
+                    <span>原生币元数据尚未确认（来源：{nativeCurrencyMetadata.source === "viem" ? `viem ${nativeCurrencyMetadata.sourceVersion}` : "未配置"}）。你仍可读取 ERC20 信息并进行 Token 分发。</span>
+                    <a href="/evm/deploy/">前往部署页确认原生币元数据</a>
+                  </div>
+                ) : null}
                 {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
                   <div className="action-group network-config-actions">
                     <button className="button ghost" type="button" onClick={removeSelectedVerifiedNetwork}>移除此链配置</button>
@@ -651,7 +686,7 @@ export function EvmBatchDistributorPage() {
                   {showFinalSummary ? (
                     <div className="summary-list">
                       <div><span>网络选择</span><strong>{selectedNetwork.label}</strong></div>
-                      <div><span>资产类型</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : selectedNetwork.nativeCurrency.symbol}</strong></div>
+                      <div><span>资产类型</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
                       <div><span>总额</span><strong>{parsed.total} {assetSymbol}</strong></div>

@@ -3,21 +3,25 @@ import {
   createEvmDistributionNetwork,
   disperseContractAddress,
   disperseContractRuntimeCodeHash,
+  ensureEvmNetwork,
   evmNetworks,
   formatWeiForDisplay,
   getEvmAssetSymbol,
   getEvmBalanceLookupErrorMessage,
   getEvmDistributionNetworks,
   getEvmExplorerUrl,
+  getEvmNativeCurrencyMetadata,
   getEvmTransactionErrorMessage,
   getPreferredEvmDistributionNetwork,
   getVerifiedEvmDistributionChainIds,
   hasExpectedDisperseContractCode,
+  isEvmNativeCurrencyEnabled,
   isValidEvmAddress,
   mergeEvmDistributionNetworks,
   parseEvmDistribution,
   registerVerifiedEvmDistributionNetwork,
-  removeVerifiedEvmDistributionNetwork
+  removeVerifiedEvmDistributionNetwork,
+  sendEvmNativeDistribution
 } from "./evm";
 
 const addressOne = "0x00000000000000000000000000000000000000aa";
@@ -132,6 +136,111 @@ describe("evm network config", () => {
     });
   });
 
+  it("preserves confirmed custom native currency decimals for distribution amounts", () => {
+    const customNetwork = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "Six Decimal Chain",
+      nativeCurrency: { decimals: 6, name: "Custom Dollar", symbol: "CUSD" },
+      nativeCurrencyMetadata: {
+        confirmedAt: "2026-08-02T00:00:00.000Z",
+        source: "manual",
+        sourceVersion: "user-confirmed",
+        status: "confirmed"
+      },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    const parsed = parseEvmDistribution(`${addressOne},1.25`, customNetwork.nativeCurrency.decimals);
+
+    expect(customNetwork.nativeCurrency).toEqual({ decimals: 6, name: "Custom Dollar", symbol: "CUSD" });
+    expect(isEvmNativeCurrencyEnabled(customNetwork)).toBe(true);
+    expect(parsed.totalWei).toBe(1_250_000n);
+  });
+
+  it("automatically enables native currency for versioned viem metadata", () => {
+    const customNetwork = createEvmDistributionNetwork({
+      blockExplorerUrl: "https://explorer.rsk.co",
+      chainId: 30,
+      label: "Rootstock Mainnet",
+      nativeCurrency: { decimals: 18, name: "Rootstock Bitcoin", symbol: "RBTC" },
+      nativeCurrencyMetadata: {
+        confirmedAt: "",
+        source: "viem",
+        sourceVersion: "2.52.2",
+        status: "unconfirmed"
+      },
+      rpcEndpoint: "https://rootstock.example.test"
+    });
+
+    expect(isEvmNativeCurrencyEnabled(customNetwork)).toBe(true);
+    expect(getEvmNativeCurrencyMetadata(customNetwork)).toMatchObject({
+      confirmedAt: "registry-auto",
+      source: "viem",
+      sourceVersion: "2.52.2",
+      status: "confirmed"
+    });
+  });
+
+  it("persists registry provenance as automatically confirmed", () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => values.get(key) || null,
+        setItem: (key: string, value: string) => values.set(key, value)
+      }
+    });
+    const network = createEvmDistributionNetwork({
+      blockExplorerUrl: "https://explorer.rsk.co",
+      chainId: 30,
+      label: "Rootstock Mainnet",
+      nativeCurrency: { decimals: 18, name: "Rootstock Bitcoin", symbol: "RBTC" },
+      nativeCurrencyMetadata: {
+        confirmedAt: "",
+        source: "viem",
+        sourceVersion: "2.52.2",
+        status: "unconfirmed"
+      },
+      rpcEndpoint: "https://rootstock.example.test"
+    });
+
+    expect(registerVerifiedEvmDistributionNetwork(network)).not.toBeNull();
+    expect(getEvmDistributionNetworks().find((item) => item.chainId === 30)?.nativeCurrencyMetadata).toEqual({
+      confirmedAt: "registry-auto",
+      source: "viem",
+      sourceVersion: "2.52.2",
+      status: "confirmed"
+    });
+  });
+
+  it("still blocks native sends when no metadata source exists", async () => {
+    const network = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "Unknown Chain",
+      nativeCurrency: { decimals: 0, name: "Unconfirmed base unit", symbol: "base units" },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    await expect(sendEvmNativeDistribution({
+      from: addressOne,
+      network,
+      provider: { request: vi.fn() },
+      rows: [],
+      rpcEndpoint: network.rpcEndpoint
+    })).rejects.toThrow("原生币元数据尚未确认");
+  });
+
+  it("rejects incomplete or out-of-range custom native currency metadata", () => {
+    expect(() => createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "Broken Chain",
+      nativeCurrency: { decimals: -1, name: "", symbol: "" },
+      rpcEndpoint: "https://custom.example.test"
+    })).toThrow("EVM 原生币元数据不完整");
+  });
+
   it("normalizes a custom explorer URL and builds transaction links", () => {
     const customNetwork = createEvmDistributionNetwork({
       blockExplorerUrl: "https://scan.example.test///",
@@ -243,6 +352,43 @@ describe("evm network config", () => {
     expect(getEvmTransactionErrorMessage(new Error("Ethereum 分发合约字节码不匹配，已阻止交易"))).toBe("Ethereum 分发合约字节码不匹配，已阻止交易");
     expect(getEvmTransactionErrorMessage(new Error("EVM 分发交易已上链但执行失败"))).toBe("EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对");
     expect(getEvmBalanceLookupErrorMessage(new Error("failed to fetch"))).toBe("余额读取失败，请更换 RPC 后重试");
+  });
+
+  it("uses an already-selected unknown chain without requiring native metadata", async () => {
+    const provider = {
+      request: vi.fn().mockResolvedValue("0x76adf1")
+    };
+    const network = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "EVM Chain 7777777",
+      nativeCurrency: { decimals: 0, name: "Unconfirmed base unit", symbol: "base units" },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    await expect(ensureEvmNetwork(provider, network, network.rpcEndpoint)).resolves.toBeUndefined();
+    expect(provider.request).toHaveBeenCalledTimes(1);
+    expect(provider.request).toHaveBeenCalledWith({ method: "eth_chainId" });
+  });
+
+  it("refuses to add an unknown wallet network before native metadata is confirmed", async () => {
+    const provider = {
+      request: vi.fn(async ({ method }: { method: string }) => {
+        if (method === "eth_chainId") return "0x1";
+        if (method === "wallet_switchEthereumChain") throw { code: 4902 };
+        throw new Error(`unexpected method ${method}`);
+      })
+    };
+    const network = createEvmDistributionNetwork({
+      blockExplorerUrl: "",
+      chainId: 7777777,
+      label: "EVM Chain 7777777",
+      nativeCurrency: { decimals: 0, name: "Unconfirmed base unit", symbol: "base units" },
+      rpcEndpoint: "https://custom.example.test"
+    });
+
+    await expect(ensureEvmNetwork(provider, network, network.rpcEndpoint)).rejects.toThrow("请先确认原生币元数据");
+    expect(provider.request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "wallet_addEthereumChain" }));
   });
 
   it("labels native and token assets for the EVM page", () => {

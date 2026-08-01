@@ -61,15 +61,25 @@ export type ParseEvmDistributionResult = {
   validRows: EvmDistributionRow[];
 };
 
+export type EvmNativeCurrency = {
+  decimals: number;
+  name: string;
+  symbol: string;
+};
+
+export type EvmNativeCurrencyMetadata = {
+  confirmedAt: string;
+  source: "built-in" | "viem" | "manual" | "unavailable";
+  sourceVersion: string;
+  status: "confirmed" | "unconfirmed";
+};
+
 export type EvmChainConfig = {
   blockExplorerUrl: string;
   chainId: number;
   label: string;
-  nativeCurrency: {
-    decimals: number;
-    name: string;
-    symbol: string;
-  };
+  nativeCurrency: EvmNativeCurrency;
+  nativeCurrencyMetadata?: EvmNativeCurrencyMetadata;
   rpcEndpoint: string;
 };
 
@@ -102,6 +112,11 @@ export type EvmSendState = {
 
 export const disperseContractAddress = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
 export const disperseContractRuntimeCodeHash = "0xc0a38c227d2c70248fc51ed0dd3a72df3adf5b41494c7f3cc19c16c38523244d";
+export const unconfirmedEvmNativeCurrency: EvmNativeCurrency = {
+  decimals: 0,
+  name: "Unconfirmed base unit",
+  symbol: "base units"
+};
 
 export const evmNetworks: EvmNetworkConfig[] = [
   {
@@ -286,7 +301,7 @@ export const evmNetworks: EvmNetworkConfig[] = [
   }
 ];
 
-const verifiedEvmNetworksStorageKey = "batch-send.verified-evm-networks.v1";
+const verifiedEvmNetworksStorageKey = "batch-send.verified-evm-networks.v3";
 const preferredEvmNetworkStorageKey = "batch-send.preferred-evm-network.v1";
 
 function getHttpsRpcHostname(rpcEndpoint: string) {
@@ -296,6 +311,70 @@ function getHttpsRpcHostname(rpcEndpoint: string) {
   } catch {
     return "";
   }
+}
+
+function isValidEvmNativeCurrency(value: unknown): value is EvmChainConfig["nativeCurrency"] {
+  if (!value || typeof value !== "object") return false;
+  const nativeCurrency = value as Partial<EvmChainConfig["nativeCurrency"]>;
+  return typeof nativeCurrency.name === "string"
+    && Boolean(nativeCurrency.name.trim())
+    && typeof nativeCurrency.symbol === "string"
+    && Boolean(nativeCurrency.symbol.trim())
+    && typeof nativeCurrency.decimals === "number"
+    && Number.isInteger(nativeCurrency.decimals)
+    && nativeCurrency.decimals >= 0
+    && nativeCurrency.decimals <= 255;
+}
+
+function isValidEvmNativeCurrencyMetadata(value: unknown): value is EvmNativeCurrencyMetadata {
+  if (!value || typeof value !== "object") return false;
+  const metadata = value as Partial<EvmNativeCurrencyMetadata>;
+  return (metadata.status === "confirmed" || metadata.status === "unconfirmed")
+    && (metadata.source === "built-in"
+      || metadata.source === "viem"
+      || metadata.source === "manual"
+      || metadata.source === "unavailable")
+    && typeof metadata.sourceVersion === "string"
+    && typeof metadata.confirmedAt === "string"
+    && (metadata.status === "unconfirmed" || Boolean(metadata.confirmedAt));
+}
+
+function getBuiltInNativeCurrencyMetadata(): EvmNativeCurrencyMetadata {
+  return {
+    confirmedAt: "built-in",
+    source: "built-in",
+    sourceVersion: "app",
+    status: "confirmed"
+  };
+}
+
+function normalizeEvmNativeCurrencyMetadata(metadata: EvmNativeCurrencyMetadata): EvmNativeCurrencyMetadata {
+  if (metadata.source !== "viem") return metadata;
+  return {
+    ...metadata,
+    confirmedAt: metadata.confirmedAt || "registry-auto",
+    status: "confirmed"
+  };
+}
+
+export function getEvmNativeCurrencyMetadata(network: EvmChainConfig): EvmNativeCurrencyMetadata {
+  if (network.nativeCurrencyMetadata) return normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata);
+  if (evmNetworks.some((configuredNetwork) => configuredNetwork.chainId === network.chainId)) {
+    return getBuiltInNativeCurrencyMetadata();
+  }
+  return {
+    confirmedAt: "",
+    source: "unavailable",
+    sourceVersion: "",
+    status: "unconfirmed"
+  };
+}
+
+export function isEvmNativeCurrencyEnabled(network: EvmChainConfig) {
+  const metadata = getEvmNativeCurrencyMetadata(network);
+  return metadata.status === "confirmed"
+    && metadata.source !== "unavailable"
+    && isValidEvmNativeCurrency(network.nativeCurrency);
 }
 
 function isStoredEvmNetwork(value: unknown): value is EvmNetworkConfig {
@@ -312,35 +391,48 @@ function isStoredEvmNetwork(value: unknown): value is EvmNetworkConfig {
     && typeof network.blockExplorerUrl === "string"
     && (!network.blockExplorerUrl || network.blockExplorerUrl.startsWith("https://"))
     && network.disperseContractAddress?.toLowerCase() === disperseContractAddress.toLowerCase()
-    && typeof network.nativeCurrency?.name === "string"
-    && typeof network.nativeCurrency?.symbol === "string"
-    && typeof network.nativeCurrency?.decimals === "number"
-    && Number.isInteger(network.nativeCurrency.decimals);
+    && isValidEvmNativeCurrency(network.nativeCurrency)
+    && isValidEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata);
 }
 
 function readStoredEvmNetworks() {
   if (typeof window === "undefined") return [];
   try {
     const parsed = JSON.parse(window.localStorage.getItem(verifiedEvmNetworksStorageKey) || "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isStoredEvmNetwork) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(isStoredEvmNetwork).map((network) => ({
+          ...network,
+          nativeCurrencyMetadata: normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata!)
+        }))
+      : [];
   } catch {
     return [];
   }
 }
 
 export function createEvmDistributionNetwork(network: EvmChainConfig): EvmNetworkConfig {
+  if (!isValidEvmNativeCurrency(network.nativeCurrency)) {
+    throw new Error("EVM 原生币元数据不完整");
+  }
   const configuredNetwork = evmNetworks.find((item) => item.chainId === network.chainId);
+  const nativeCurrencyMetadata = normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata
+    || (configuredNetwork ? getBuiltInNativeCurrencyMetadata() : {
+      confirmedAt: "",
+      source: "unavailable" as const,
+      sourceVersion: "",
+      status: "unconfirmed" as const
+    }));
+  if (!isValidEvmNativeCurrencyMetadata(nativeCurrencyMetadata)) {
+    throw new Error("EVM 原生币确认记录不完整");
+  }
   return {
     blockExplorerUrl: (network.blockExplorerUrl || configuredNetwork?.blockExplorerUrl || "").trim().replace(/\/+$/, ""),
     chainId: network.chainId,
     disperseContractAddress,
     id: configuredNetwork?.id || `custom-${network.chainId}`,
     label: network.label || configuredNetwork?.label || `EVM Chain ${network.chainId}`,
-    nativeCurrency: network.nativeCurrency || configuredNetwork?.nativeCurrency || {
-      decimals: 18,
-      name: "Native currency",
-      symbol: "NATIVE"
-    },
+    nativeCurrency: network.nativeCurrency,
+    nativeCurrencyMetadata,
     rpcEndpoint: network.rpcEndpoint.trim()
   };
 }
@@ -483,7 +575,8 @@ export function formatWeiForDisplay(value: bigint, decimals = 18, maxFractionDig
 }
 
 export function getEvmAssetSymbol(mode: EvmAssetMode, network: EvmNetworkConfig, token?: EvmTokenDetails | null) {
-  return mode === "token" ? token?.symbol || "TOKEN" : network.nativeCurrency.symbol;
+  if (mode === "token") return token?.symbol || "TOKEN";
+  return isEvmNativeCurrencyEnabled(network) ? network.nativeCurrency.symbol : "原生币未开放";
 }
 
 export function isValidEvmAddress(value: string) {
@@ -589,6 +682,8 @@ export function getEvmBalanceLookupErrorMessage(error: unknown) {
 
 export async function ensureEvmNetwork(provider: EvmWalletProvider, network: EvmChainConfig, rpcEndpoint: string) {
   const chainIdHex = `0x${network.chainId.toString(16)}`;
+  const currentChainId = await provider.request({ method: "eth_chainId" });
+  if (typeof currentChainId === "string" && Number.parseInt(currentChainId, 16) === network.chainId) return;
 
   try {
     await provider.request({
@@ -598,6 +693,9 @@ export async function ensureEvmNetwork(provider: EvmWalletProvider, network: Evm
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? Number((error as { code?: unknown }).code) : 0;
     if (code !== 4902) throw error;
+    if (!isEvmNativeCurrencyEnabled(network)) {
+      throw new Error(`钱包尚未添加 Chain ID ${network.chainId}；请先确认原生币元数据，再由页面添加网络`);
+    }
 
     await provider.request({
       method: "wallet_addEthereumChain",
@@ -758,6 +856,9 @@ export async function sendEvmNativeDistribution({
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
 }) {
+  if (!isEvmNativeCurrencyEnabled(network)) {
+    throw new Error("原生币元数据尚未确认，已阻止原生币分发");
+  }
   const chain = toEvmChain(network, rpcEndpoint);
   const publicClient = createEvmPublicClient(network, rpcEndpoint);
   const walletClient = createWalletClient({

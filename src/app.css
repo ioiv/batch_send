@@ -518,6 +518,34 @@ textarea {
   margin-top: 2px;
 }
 
+.automatic-network-metadata,
+.custom-network-metadata {
+  display: grid;
+  gap: 10px;
+}
+
+.mode.disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.metadata-candidate-list {
+  display: grid;
+  gap: 8px;
+}
+
+.metadata-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.metadata-candidate > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .send-progress {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -586,6 +614,10 @@ textarea {
 
   .deploy-route-fields .rpc-field {
     grid-column: 1;
+  }
+
+  .metadata-candidate {
+    grid-template-columns: 1fr;
   }
 
   .asset-mode {

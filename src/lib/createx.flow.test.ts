@@ -68,6 +68,7 @@ const testNetwork: EvmChainConfig = {
 type HarnessOptions = {
   balance?: bigint;
   estimatedGas?: bigint;
+  feeMode?: "eip1559" | "legacy";
   gasPrice?: bigint;
   initialTargetCode?: Hex;
   postTargetCode?: Hex;
@@ -146,7 +147,12 @@ function makeHarness(options: HarnessOptions = {}) {
 
   const httpClient = {
     estimateContractGas: vi.fn().mockResolvedValue(options.estimatedGas ?? 500_000n),
-    estimateFeesPerGas: vi.fn().mockResolvedValue({ maxFeePerGas: options.gasPrice ?? 1_000_000_000n }),
+    estimateFeesPerGas: vi.fn().mockResolvedValue(options.feeMode === "legacy"
+      ? { gasPrice: options.gasPrice ?? 1_000_000_000n }
+      : {
+          maxFeePerGas: options.gasPrice ?? 1_000_000_000n,
+          maxPriorityFeePerGas: 100_000_000n
+        }),
     getBalance: vi.fn().mockResolvedValue(options.balance ?? 1_000_000_000_000_000n),
     getChainId: vi.fn().mockResolvedValue(network.chainId),
     getCode: vi.fn(async ({ address }: { address: string }) => codeFor(address)),
@@ -156,7 +162,7 @@ function makeHarness(options: HarnessOptions = {}) {
     waitForTransactionReceipt: vi.fn().mockResolvedValue(receipt)
   };
   const walletClient = {
-    writeContract: vi.fn(async () => {
+    writeContract: vi.fn(async (_request: Record<string, unknown>) => {
       transactionSubmitted = true;
       return transactionHash;
     })
@@ -206,8 +212,13 @@ describe("runDisperseDeploymentValidation", () => {
     expect(result).toMatchObject({
       estimatedFee: 600_000_000_000_000n,
       estimatedGas: 500_000n,
+      feeCapPerGas: 1_000_000_000n,
+      feeParameters: {
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 100_000_000n,
+        type: "eip1559"
+      },
       gasLimit: 600_000n,
-      gasPrice: 1_000_000_000n,
       status: "ready",
       targetState: "absent"
     });
@@ -292,7 +303,10 @@ describe("runDisperseDeploymentValidation", () => {
   it("uses the EIP-1559 fee cap with a 20 percent gas buffer", async () => {
     const harness = makeHarness({ balance: 2_000_000_000_000_000n });
     harness.httpClient.estimateContractGas.mockResolvedValue(550_000n);
-    harness.httpClient.estimateFeesPerGas.mockResolvedValue({ maxFeePerGas: 2_000_000_000n });
+    harness.httpClient.estimateFeesPerGas.mockResolvedValue({
+      maxFeePerGas: 2_000_000_000n,
+      maxPriorityFeePerGas: 200_000_000n
+    });
 
     const result = await runDisperseDeploymentValidation({
       account,
@@ -304,8 +318,13 @@ describe("runDisperseDeploymentValidation", () => {
     expect(result).toMatchObject({
       estimatedFee: 1_320_000_000_000_000n,
       estimatedGas: 550_000n,
+      feeCapPerGas: 2_000_000_000n,
+      feeParameters: {
+        maxFeePerGas: 2_000_000_000n,
+        maxPriorityFeePerGas: 200_000_000n,
+        type: "eip1559"
+      },
       gasLimit: 660_000n,
-      gasPrice: 2_000_000_000n,
       status: "ready"
     });
   });
@@ -334,6 +353,9 @@ describe("deployDisperseContract", () => {
       account,
       address: createXContractAddress,
       functionName: "deployCreate2",
+      gas: 600_000n,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 100_000_000n,
       value: 0n
     }));
     expect(stages.map((stage) => stage.type)).toEqual([
@@ -342,8 +364,35 @@ describe("deployDisperseContract", () => {
       "confirmed",
       "verified"
     ]);
+    expect(stages[0]).toMatchObject({
+      preflight: {
+        feeCapPerGas: 1_000_000_000n,
+        gasLimit: 600_000n
+      }
+    });
     expect(findCheck(result.preflight.checks, "receipt")).toMatchObject({ status: "pass" });
     expect(findCheck(result.preflight.checks, "runtime")).toMatchObject({ status: "pass" });
+  });
+
+  it("binds the buffered gas limit and legacy gas price to the wallet request", async () => {
+    const harness = makeHarness({
+      balance: 2_000_000_000_000_000n,
+      feeMode: "legacy",
+      gasPrice: 3_000_000_000n
+    });
+
+    await deployDisperseContract({
+      account,
+      network: harness.network,
+      provider: harness.provider,
+      rpcEndpoint
+    });
+
+    expect(harness.walletClient.writeContract).toHaveBeenCalledWith(expect.objectContaining({
+      gas: 600_000n,
+      gasPrice: 3_000_000_000n
+    }));
+    expect(harness.walletClient.writeContract.mock.calls[0][0]).not.toHaveProperty("maxFeePerGas");
   });
 
   it("does not request a signature after the page invalidates the deployment context", async () => {

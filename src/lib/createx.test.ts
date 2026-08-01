@@ -7,12 +7,14 @@ import {
   disperseContractInitCode,
   disperseContractInitCodeHash,
   disperseContractRawSalt,
+  finalizeDisperseDeploymentNetwork,
   getDisperseDeploymentArtifacts,
   getDisperseDeploymentErrorMessage,
   getDisperseDeploymentNetworkForChainId,
   getBufferedDeploymentGasLimit,
   hasDisperseSaltSenderCollision,
-  hasExpectedCreateXContractCode
+  hasExpectedCreateXContractCode,
+  resolveRegisteredDisperseDeploymentNetwork
 } from "./createx";
 import { disperseContractAddress, disperseContractRuntimeCodeHash } from "./evm";
 
@@ -67,7 +69,11 @@ describe("Disperse deployment network discovery", () => {
     expect(arc).toMatchObject({
       chainId: 5042,
       label: "Arc Mainnet",
+      metadataCandidates: [],
+      metadataSource: "built-in",
+      metadataStatus: "confirmed",
       nativeCurrency: { symbol: "USDC" },
+      sourceVersion: "app",
       rpcEndpoint: "https://arc.example.test"
     });
     expect(base).toMatchObject({
@@ -79,7 +85,109 @@ describe("Disperse deployment network discovery", () => {
       blockExplorerUrl: "",
       chainId: 7777777,
       label: "EVM Chain 7777777",
-      nativeCurrency: { decimals: 18, name: "Native currency", symbol: "NATIVE" },
+      metadataCandidates: [],
+      metadataSource: "unavailable",
+      metadataStatus: "unavailable",
+      nativeCurrency: null,
+      sourceVersion: "",
+      rpcEndpoint: "https://custom.example.test"
+    });
+  });
+
+  it("automatically accepts a versioned viem match when its native currency has no conflict", async () => {
+    const discovery = await resolveRegisteredDisperseDeploymentNetwork(30, "https://rootstock.example.test");
+
+    expect(discovery).toMatchObject({
+      blockExplorerUrl: "https://explorer.rsk.co",
+      chainId: 30,
+      label: "Rootstock Mainnet",
+      metadataSource: "viem",
+      metadataStatus: "suggested",
+      nativeCurrency: {
+        decimals: 18,
+        name: "Rootstock Bitcoin",
+        symbol: "RBTC"
+      },
+      sourceVersion: "2.52.2"
+    });
+    expect(finalizeDisperseDeploymentNetwork(discovery!, "")).toMatchObject({
+      nativeCurrency: { decimals: 18, symbol: "RBTC" },
+      nativeCurrencyMetadata: {
+        source: "viem",
+        sourceVersion: "2.52.2",
+        status: "confirmed"
+      }
+    });
+  });
+
+  it("detects conflicting native currency definitions for a duplicated chain ID", async () => {
+    const result = await resolveRegisteredDisperseDeploymentNetwork(1337, "https://custom.example.test");
+
+    expect(result).toMatchObject({
+      chainId: 1337,
+      metadataSource: "viem",
+      metadataStatus: "conflict",
+      nativeCurrency: null
+    });
+    expect(result?.metadataCandidates.map((candidate) => candidate.nativeCurrency)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ decimals: 18, symbol: "ETH" }),
+      expect.objectContaining({ decimals: 6, symbol: "USD" })
+    ]));
+
+    const tempoCandidate = result?.metadataCandidates.find((candidate) => candidate.nativeCurrency.symbol === "USD");
+    expect(result).not.toBeNull();
+    expect(tempoCandidate).toBeDefined();
+    expect(finalizeDisperseDeploymentNetwork(result!, "", {
+      manualMetadata: {
+        chainName: tempoCandidate!.label,
+        nativeCurrencyDecimals: String(tempoCandidate!.nativeCurrency.decimals),
+        nativeCurrencyName: tempoCandidate!.nativeCurrency.name,
+        nativeCurrencySymbol: tempoCandidate!.nativeCurrency.symbol
+      },
+      nativeCurrencyConfirmed: true,
+      selectedCandidateKey: tempoCandidate!.key,
+      useManualMetadata: true
+    })).toMatchObject({
+      nativeCurrency: { decimals: 6, symbol: "USD" },
+      nativeCurrencyMetadata: { source: "viem", sourceVersion: "2.52.2", status: "confirmed" }
+    });
+  });
+
+  it("allows deployment without native metadata and only unlocks native currency after confirmation", () => {
+    const discovery = getDisperseDeploymentNetworkForChainId(7777777, "https://custom.example.test");
+
+    expect(finalizeDisperseDeploymentNetwork(discovery, "")).toMatchObject({
+      chainId: 7777777,
+      label: "EVM Chain 7777777",
+      nativeCurrency: { decimals: 0, symbol: "base units" },
+      nativeCurrencyMetadata: { source: "unavailable", status: "unconfirmed" }
+    });
+    expect(() => finalizeDisperseDeploymentNetwork(discovery, "", {
+      manualMetadata: {
+        chainName: "Six Decimal Chain",
+        nativeCurrencyDecimals: "18.5",
+        nativeCurrencyName: "Custom Dollar",
+        nativeCurrencySymbol: "CUSD"
+      },
+      nativeCurrencyConfirmed: true,
+      useManualMetadata: true
+    })).toThrow("decimals 必须是 0 到 255 的整数");
+
+    expect(finalizeDisperseDeploymentNetwork(discovery, "https://scan.example.test", {
+      manualMetadata: {
+        chainName: "Six Decimal Chain",
+        nativeCurrencyDecimals: "6",
+        nativeCurrencyName: "Custom Dollar",
+        nativeCurrencySymbol: "CUSD"
+      },
+      nativeCurrencyConfirmed: true,
+      useManualMetadata: true
+    })).toMatchObject({
+      blockExplorerUrl: "https://scan.example.test",
+      chainId: 7777777,
+      label: "Six Decimal Chain",
+      nativeCurrency: { decimals: 6, name: "Custom Dollar", symbol: "CUSD" },
+      nativeCurrencyMetadata: { source: "manual", sourceVersion: "user-confirmed", status: "confirmed" },
       rpcEndpoint: "https://custom.example.test"
     });
   });

@@ -12,10 +12,12 @@ import {
   parseEventLogs,
   slice,
   type Address,
+  type Chain,
   type Hash,
   type Hex,
   type TransactionReceipt
 } from "viem";
+import viemPackage from "viem/package.json";
 import type { EvmWalletProvider } from "../hooks/useEvmWallet";
 import {
   createEvmPublicClient,
@@ -23,7 +25,11 @@ import {
   disperseContractRuntimeCodeHash,
   ensureEvmNetwork,
   evmNetworks,
+  isEvmNativeCurrencyEnabled,
   toEvmChain,
+  unconfirmedEvmNativeCurrency,
+  type EvmNativeCurrency,
+  type EvmNativeCurrencyMetadata,
   type EvmChainConfig
 } from "./evm";
 
@@ -46,6 +52,7 @@ const deploymentNetworkMetadata: EvmChainConfig[] = [
 
 export const createXContractAddress = "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed" as const;
 export const createXContractRuntimeCodeHash = "0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f" as const;
+export const viemChainRegistryVersion = viemPackage.version;
 
 // Exact deployCreate2 inputs recovered from the matching Ethereum and Base deployments:
 // Ethereum 0x66a4f4e092c49ff34bc398a89140d6c952dc3986e9ac80548bd5f4f6c2bcc277
@@ -101,14 +108,59 @@ export type DisperseDeploymentPreflight = {
   checks: DisperseDeploymentCheck[];
   estimatedFee: bigint;
   estimatedGas: bigint;
+  feeCapPerGas: bigint;
+  feeParameters: DisperseDeploymentFeeParameters | null;
   gasLimit: bigint;
-  gasPrice: bigint;
   status: "ready" | "already-deployed";
   targetState: ContractCodeState;
 };
 
+export type DisperseDeploymentFeeParameters =
+  | {
+      maxFeePerGas: bigint;
+      maxPriorityFeePerGas: bigint;
+      type: "eip1559";
+    }
+  | {
+      gasPrice: bigint;
+      type: "legacy";
+    };
+
+export type DisperseDeploymentNetworkDiscovery = {
+  blockExplorerUrl: string;
+  chainId: number;
+  label: string;
+  metadataCandidates: DisperseDeploymentNetworkMetadataCandidate[];
+  metadataSource: "built-in" | "viem" | "unavailable";
+  metadataStatus: "confirmed" | "suggested" | "conflict" | "unavailable";
+  nativeCurrency: EvmChainConfig["nativeCurrency"] | null;
+  sourceVersion: string;
+  rpcEndpoint: string;
+};
+
+export type DisperseDeploymentNetworkMetadataCandidate = {
+  blockExplorerUrl: string;
+  key: string;
+  label: string;
+  nativeCurrency: EvmNativeCurrency;
+};
+
+export type DisperseDeploymentNetworkMetadataInput = {
+  chainName: string;
+  nativeCurrencyDecimals: number | string;
+  nativeCurrencyName: string;
+  nativeCurrencySymbol: string;
+};
+
+export type FinalizeDisperseDeploymentNetworkOptions = {
+  manualMetadata?: DisperseDeploymentNetworkMetadataInput;
+  nativeCurrencyConfirmed?: boolean;
+  selectedCandidateKey?: string;
+  useManualMetadata?: boolean;
+};
+
 export type DisperseDeploymentStage =
-  | { type: "awaiting-wallet" }
+  | { preflight: DisperseDeploymentPreflight; type: "awaiting-wallet" }
   | { hash: Hash; type: "submitted" }
   | { hash: Hash; receipt: TransactionReceipt; type: "confirmed" }
   | { hash: Hash; receipt: TransactionReceipt; type: "verified" };
@@ -184,6 +236,7 @@ function assertHttpsRpcEndpoint(rpcEndpoint: string) {
 }
 
 function formatNativeAmount(value: bigint, network: EvmChainConfig) {
+  if (!isEvmNativeCurrencyEnabled(network)) return `${value.toLocaleString()} base units`;
   const formatted = formatUnits(value, network.nativeCurrency.decimals);
   const [integer, fraction = ""] = formatted.split(".");
   const shortFraction = fraction.slice(0, 8).replace(/0+$/, "");
@@ -194,15 +247,35 @@ export function getBufferedDeploymentGasLimit(estimatedGas: bigint) {
   return (estimatedGas * 120n + 99n) / 100n;
 }
 
-async function getConservativeFeePerGas(publicClient: ReturnType<typeof createEvmPublicClient>) {
+async function getDeploymentFeeParameters(
+  publicClient: ReturnType<typeof createEvmPublicClient>
+): Promise<DisperseDeploymentFeeParameters> {
   try {
     const fees = await publicClient.estimateFeesPerGas();
-    if ("maxFeePerGas" in fees && typeof fees.maxFeePerGas === "bigint") return fees.maxFeePerGas;
-    if ("gasPrice" in fees && typeof fees.gasPrice === "bigint") return fees.gasPrice;
+    if (
+      "maxFeePerGas" in fees
+      && typeof fees.maxFeePerGas === "bigint"
+      && "maxPriorityFeePerGas" in fees
+      && typeof fees.maxPriorityFeePerGas === "bigint"
+      && fees.maxFeePerGas >= fees.maxPriorityFeePerGas
+    ) {
+      return {
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        type: "eip1559"
+      };
+    }
+    if ("gasPrice" in fees && typeof fees.gasPrice === "bigint") {
+      return { gasPrice: fees.gasPrice, type: "legacy" };
+    }
   } catch {
     // Fall back for legacy or partially implemented RPCs.
   }
-  return publicClient.getGasPrice();
+  return { gasPrice: await publicClient.getGasPrice(), type: "legacy" };
+}
+
+function getDeploymentFeeCapPerGas(feeParameters: DisperseDeploymentFeeParameters) {
+  return feeParameters.type === "eip1559" ? feeParameters.maxFeePerGas : feeParameters.gasPrice;
 }
 
 function hasExpectedContractCreationEvent(receipt: TransactionReceipt) {
@@ -220,17 +293,177 @@ function hasExpectedContractCreationEvent(receipt: TransactionReceipt) {
   );
 }
 
-export function getDisperseDeploymentNetworkForChainId(chainId: number, rpcEndpoint: string): EvmChainConfig {
+export function getDisperseDeploymentNetworkForChainId(
+  chainId: number,
+  rpcEndpoint: string
+): DisperseDeploymentNetworkDiscovery {
   const knownNetwork = deploymentNetworkMetadata.find((network) => network.chainId === chainId)
     || evmNetworks.find((network) => network.chainId === chainId);
-  if (knownNetwork) return { ...knownNetwork, rpcEndpoint };
+  if (knownNetwork) {
+    return {
+      blockExplorerUrl: knownNetwork.blockExplorerUrl,
+      chainId,
+      label: knownNetwork.label,
+      metadataCandidates: [],
+      metadataSource: "built-in",
+      metadataStatus: "confirmed",
+      nativeCurrency: knownNetwork.nativeCurrency,
+      sourceVersion: "app",
+      rpcEndpoint
+    };
+  }
 
   return {
     blockExplorerUrl: "",
     chainId,
     label: `EVM Chain ${chainId}`,
-    nativeCurrency: { decimals: 18, name: "Native currency", symbol: "NATIVE" },
+    metadataCandidates: [],
+    metadataSource: "unavailable",
+    metadataStatus: "unavailable",
+    nativeCurrency: null,
+    sourceVersion: "",
     rpcEndpoint
+  };
+}
+
+export async function resolveRegisteredDisperseDeploymentNetwork(
+  chainId: number,
+  rpcEndpoint: string
+): Promise<DisperseDeploymentNetworkDiscovery | null> {
+  try {
+    const registeredChains = await import("viem/chains");
+    const candidates = Object.entries(registeredChains).flatMap(([key, candidate]) => {
+      const chain = candidate as Partial<Chain>;
+      const valid = chain.id === chainId
+        && typeof chain.name === "string"
+        && Boolean(chain.name.trim())
+        && typeof chain.nativeCurrency?.name === "string"
+        && Boolean(chain.nativeCurrency.name.trim())
+        && typeof chain.nativeCurrency.symbol === "string"
+        && Boolean(chain.nativeCurrency.symbol.trim())
+        && Number.isInteger(chain.nativeCurrency.decimals)
+        && chain.nativeCurrency.decimals >= 0
+        && chain.nativeCurrency.decimals <= 255;
+      if (!valid) return [];
+      const registeredChain = chain as Chain;
+      return [{
+        blockExplorerUrl: registeredChain.blockExplorers?.default.url || "",
+        key,
+        label: registeredChain.name.trim(),
+        nativeCurrency: {
+          decimals: registeredChain.nativeCurrency.decimals,
+          name: registeredChain.nativeCurrency.name.trim(),
+          symbol: registeredChain.nativeCurrency.symbol.trim()
+        }
+      } satisfies DisperseDeploymentNetworkMetadataCandidate];
+    });
+
+    if (candidates.length === 0) return null;
+
+    const uniqueCandidates = [...new Map(candidates.map((candidate) => [
+      [
+        candidate.label.toLowerCase(),
+        candidate.nativeCurrency.name.toLowerCase(),
+        candidate.nativeCurrency.symbol.toUpperCase(),
+        candidate.nativeCurrency.decimals
+      ].join("|"),
+      candidate
+    ])).values()];
+    const currencySignatures = new Set(uniqueCandidates.map((candidate) => [
+      candidate.nativeCurrency.name.toLowerCase(),
+      candidate.nativeCurrency.symbol.toUpperCase(),
+      candidate.nativeCurrency.decimals
+    ].join("|")));
+    const metadataConflict = currencySignatures.size > 1;
+    const selectedCandidate = uniqueCandidates[0];
+
+    return {
+      blockExplorerUrl: metadataConflict ? "" : selectedCandidate.blockExplorerUrl,
+      chainId,
+      label: metadataConflict ? `EVM Chain ${chainId}` : selectedCandidate.label,
+      metadataCandidates: uniqueCandidates,
+      metadataSource: "viem",
+      metadataStatus: metadataConflict ? "conflict" : "suggested",
+      nativeCurrency: metadataConflict ? null : selectedCandidate.nativeCurrency,
+      sourceVersion: viemChainRegistryVersion,
+      rpcEndpoint
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function finalizeDisperseDeploymentNetwork(
+  discovery: DisperseDeploymentNetworkDiscovery,
+  blockExplorerUrl: string,
+  options: FinalizeDisperseDeploymentNetworkOptions = {}
+): EvmChainConfig {
+  const registryMetadataAccepted = discovery.metadataStatus === "suggested"
+    && discovery.metadataSource === "viem"
+    && !options.useManualMetadata;
+  const nativeCurrencyConfirmed = discovery.metadataStatus === "confirmed"
+    || registryMetadataAccepted
+    || Boolean(options.nativeCurrencyConfirmed
+      && (options.useManualMetadata || discovery.metadataStatus === "suggested"));
+  const manualMetadata = options.manualMetadata;
+  let label = discovery.label;
+  let nativeCurrency = discovery.nativeCurrency || unconfirmedEvmNativeCurrency;
+  let metadataSource: EvmNativeCurrencyMetadata["source"] = discovery.metadataSource;
+  let sourceVersion = discovery.sourceVersion;
+
+  if (options.useManualMetadata) {
+    label = manualMetadata?.chainName.trim() || discovery.label;
+    nativeCurrency = unconfirmedEvmNativeCurrency;
+    metadataSource = "unavailable";
+    sourceVersion = "";
+
+    if (nativeCurrencyConfirmed) {
+      const selectedCandidate = options.selectedCandidateKey
+        ? discovery.metadataCandidates.find((candidate) => candidate.key === options.selectedCandidateKey)
+        : undefined;
+      if (selectedCandidate) {
+        label = selectedCandidate.label;
+        nativeCurrency = selectedCandidate.nativeCurrency;
+        metadataSource = "viem";
+        sourceVersion = discovery.sourceVersion;
+      } else {
+        const chainName = manualMetadata?.chainName.trim() || "";
+        const nativeCurrencyName = manualMetadata?.nativeCurrencyName.trim() || "";
+        const nativeCurrencySymbol = manualMetadata?.nativeCurrencySymbol.trim() || "";
+        const decimalsText = String(manualMetadata?.nativeCurrencyDecimals ?? "").trim();
+        const nativeCurrencyDecimals = /^\d+$/.test(decimalsText) ? Number(decimalsText) : Number.NaN;
+
+        if (!chainName) throw new Error("请填写并确认链名称");
+        if (!nativeCurrencyName) throw new Error("请填写并确认原生币名称");
+        if (!nativeCurrencySymbol) throw new Error("请填写并确认原生币符号");
+        if (!Number.isSafeInteger(nativeCurrencyDecimals) || nativeCurrencyDecimals < 0 || nativeCurrencyDecimals > 255) {
+          throw new Error("原生币 decimals 必须是 0 到 255 的整数");
+        }
+
+        label = chainName;
+        nativeCurrency = {
+          decimals: nativeCurrencyDecimals,
+          name: nativeCurrencyName,
+          symbol: nativeCurrencySymbol
+        };
+        metadataSource = "manual";
+        sourceVersion = "user-confirmed";
+      }
+    }
+  }
+
+  return {
+    blockExplorerUrl: blockExplorerUrl || discovery.blockExplorerUrl,
+    chainId: discovery.chainId,
+    label,
+    nativeCurrency,
+    nativeCurrencyMetadata: {
+      confirmedAt: nativeCurrencyConfirmed ? new Date().toISOString() : "",
+      source: nativeCurrencyConfirmed ? metadataSource : metadataSource === "viem" ? "viem" : "unavailable",
+      sourceVersion,
+      status: nativeCurrencyConfirmed ? "confirmed" : "unconfirmed"
+    },
+    rpcEndpoint: discovery.rpcEndpoint
   };
 }
 
@@ -241,7 +474,9 @@ export async function resolveDisperseDeploymentNetwork(rpcEndpoint: string) {
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {
     throw new Error(`RPC 返回了无效的 chainId：${chainId}`);
   }
-  return getDisperseDeploymentNetworkForChainId(chainId, rpcEndpoint);
+  const discovery = getDisperseDeploymentNetworkForChainId(chainId, rpcEndpoint);
+  if (discovery.metadataStatus === "confirmed") return discovery;
+  return await resolveRegisteredDisperseDeploymentNetwork(chainId, rpcEndpoint) || discovery;
 }
 
 export function getDisperseDeploymentArtifacts() {
@@ -443,8 +678,9 @@ export async function runDisperseDeploymentValidation({
       checks: reporter.getChecks(),
       estimatedFee: 0n,
       estimatedGas: 0n,
+      feeCapPerGas: 0n,
+      feeParameters: null,
       gasLimit: 0n,
-      gasPrice: 0n,
       status: "already-deployed",
       targetState
     };
@@ -459,14 +695,14 @@ export async function runDisperseDeploymentValidation({
   let deploymentMetrics: {
     balance: bigint;
     estimatedGas: bigint;
-    gasPrice: bigint;
+    feeParameters: DisperseDeploymentFeeParameters;
     simulatedAddress: Address;
   } | null = null;
   try {
     const [
       simulation,
       estimatedGas,
-      gasPrice,
+      feeParameters,
       balance
     ] = await Promise.all([
       publicClient.simulateContract({
@@ -485,14 +721,14 @@ export async function runDisperseDeploymentValidation({
         functionName: "deployCreate2",
         value: 0n
       }),
-      getConservativeFeePerGas(publicClient),
+      getDeploymentFeeParameters(publicClient),
       publicClient.getBalance({ address: accountAddress })
     ]);
     assertCurrentValidationContext();
     deploymentMetrics = {
       balance,
       estimatedGas,
-      gasPrice,
+      feeParameters,
       simulatedAddress: simulation.result
     };
   } catch (error) {
@@ -506,7 +742,7 @@ export async function runDisperseDeploymentValidation({
     throw new DisperseDeploymentValidationError(detail, reporter.getChecks());
   }
 
-  const { balance, estimatedGas, gasPrice, simulatedAddress } = deploymentMetrics;
+  const { balance, estimatedGas, feeParameters, simulatedAddress } = deploymentMetrics;
 
   if (simulatedAddress !== disperseContractAddress) {
     reporter.fail("simulation", "部署调用模拟", `模拟得到 ${simulatedAddress}，不是固定目标地址`);
@@ -519,7 +755,8 @@ export async function runDisperseDeploymentValidation({
   });
 
   const gasLimit = getBufferedDeploymentGasLimit(estimatedGas);
-  const estimatedFee = gasLimit * gasPrice;
+  const feeCapPerGas = getDeploymentFeeCapPerGas(feeParameters);
+  const estimatedFee = gasLimit * feeCapPerGas;
   if (balance < estimatedFee) {
     reporter.fail(
       "balance",
@@ -528,7 +765,7 @@ export async function runDisperseDeploymentValidation({
     );
   }
   reporter.report({
-    detail: `安全上限 ${gasLimit.toLocaleString()} gas × ${formatNativeAmount(gasPrice, network)} / gas · 当前余额 ${formatNativeAmount(balance, network)}`,
+    detail: `请求上限 ${gasLimit.toLocaleString()} gas × ${formatNativeAmount(feeCapPerGas, network)} / gas · 当前余额 ${formatNativeAmount(balance, network)}`,
     id: "balance",
     label: "Gas 余额",
     status: "pass"
@@ -538,8 +775,9 @@ export async function runDisperseDeploymentValidation({
     checks: reporter.getChecks(),
     estimatedFee,
     estimatedGas,
+    feeCapPerGas,
+    feeParameters,
     gasLimit,
-    gasPrice,
     status: "ready",
     targetState
   };
@@ -593,14 +831,25 @@ export async function deployDisperseContract({
     transport: custom(provider)
   });
 
-  onStage?.({ type: "awaiting-wallet" });
+  onStage?.({ preflight, type: "awaiting-wallet" });
   assertCurrentDeploymentContext();
+  if (!preflight.feeParameters) {
+    throw new DisperseDeploymentValidationError("部署费用参数缺失，请重新校验", preflight.checks);
+  }
+  const feeRequest = preflight.feeParameters.type === "eip1559"
+    ? {
+        maxFeePerGas: preflight.feeParameters.maxFeePerGas,
+        maxPriorityFeePerGas: preflight.feeParameters.maxPriorityFeePerGas
+      }
+    : { gasPrice: preflight.feeParameters.gasPrice };
   const hash = await walletClient.writeContract({
     abi: createXAbi,
     account: accountAddress,
     address: createXContractAddress,
     args: [disperseContractRawSalt, disperseContractInitCode],
     functionName: "deployCreate2",
+    gas: preflight.gasLimit,
+    ...feeRequest,
     value: 0n
   });
   onStage?.({ hash, type: "submitted" });

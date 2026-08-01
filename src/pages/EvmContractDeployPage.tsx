@@ -8,16 +8,21 @@ import {
   deployDisperseContract,
   disperseDeploymentCheckDefinitions,
   DisperseDeploymentValidationError,
+  finalizeDisperseDeploymentNetwork,
   getDisperseDeploymentErrorMessage,
   getDisperseDeploymentExplorerUrl,
   resolveDisperseDeploymentNetwork,
   runDisperseDeploymentValidation,
   type DisperseDeploymentCheck,
+  type DisperseDeploymentNetworkMetadataCandidate,
+  type DisperseDeploymentNetworkDiscovery,
   type DisperseDeploymentPreflight
 } from "../lib/createx";
 import {
   disperseContractAddress,
   formatWeiForDisplay,
+  getEvmNativeCurrencyMetadata,
+  isEvmNativeCurrencyEnabled,
   registerVerifiedEvmDistributionNetwork,
   type EvmChainConfig
 } from "../lib/evm";
@@ -47,6 +52,13 @@ type DistributionRegistrationState = {
   status: "idle" | "success" | "error";
 };
 
+type CustomNetworkMetadataState = {
+  chainName: string;
+  nativeCurrencyDecimals: string;
+  nativeCurrencyName: string;
+  nativeCurrencySymbol: string;
+};
+
 const initialDeploymentState: DeploymentPageState = {
   checks: [],
   contextKey: "",
@@ -61,6 +73,24 @@ const initialDistributionRegistrationState: DistributionRegistrationState = {
   message: "",
   status: "idle"
 };
+
+const initialCustomNetworkMetadataState: CustomNetworkMetadataState = {
+  chainName: "",
+  nativeCurrencyDecimals: "",
+  nativeCurrencyName: "",
+  nativeCurrencySymbol: ""
+};
+
+function customNetworkMetadataIsComplete(metadata: CustomNetworkMetadataState) {
+  const decimals = metadata.nativeCurrencyDecimals.trim();
+  return Boolean(
+    metadata.chainName.trim()
+    && metadata.nativeCurrencyName.trim()
+    && metadata.nativeCurrencySymbol.trim()
+    && /^\d+$/.test(decimals)
+    && Number(decimals) <= 255
+  );
+}
 
 function getPendingCheckDetail(id: DisperseDeploymentCheck["id"], status: DeploymentPageStatus) {
   if (id === "receipt" || id === "runtime") return "部署交易确认后执行";
@@ -87,6 +117,11 @@ function isOptionalHttpsUrl(value: string) {
 export function EvmContractDeployPage() {
   const [rpcEndpoint, setRpcEndpoint] = useState("");
   const [blockExplorerUrl, setBlockExplorerUrl] = useState("");
+  const [networkDiscovery, setNetworkDiscovery] = useState<DisperseDeploymentNetworkDiscovery | null>(null);
+  const [manualMetadataOverride, setManualMetadataOverride] = useState(false);
+  const [nativeMetadataConfirmed, setNativeMetadataConfirmed] = useState(false);
+  const [selectedMetadataCandidateKey, setSelectedMetadataCandidateKey] = useState("");
+  const [customNetworkMetadata, setCustomNetworkMetadata] = useState<CustomNetworkMetadataState>(initialCustomNetworkMetadataState);
   const [deploymentState, setDeploymentState] = useState<DeploymentPageState>(initialDeploymentState);
   const [distributionChainName, setDistributionChainName] = useState("");
   const [distributionRegistration, setDistributionRegistration] = useState<DistributionRegistrationState>(initialDistributionRegistrationState);
@@ -95,7 +130,13 @@ export function EvmContractDeployPage() {
   const effectiveRpcEndpoint = rpcEndpoint.trim();
   const effectiveBlockExplorerUrl = blockExplorerUrl.trim().replace(/\/+$/, "");
   const blockExplorerUrlIsValid = isOptionalHttpsUrl(effectiveBlockExplorerUrl);
-  const contextKey = `${wallet.address.toLowerCase()}|${effectiveRpcEndpoint}|${effectiveBlockExplorerUrl}`;
+  const metadataContextKey = [
+    customNetworkMetadata.chainName.trim(),
+    customNetworkMetadata.nativeCurrencyName.trim(),
+    customNetworkMetadata.nativeCurrencySymbol.trim(),
+    customNetworkMetadata.nativeCurrencyDecimals.trim()
+  ].join("|");
+  const contextKey = `${wallet.address.toLowerCase()}|${effectiveRpcEndpoint}|${effectiveBlockExplorerUrl}|${manualMetadataOverride}|${nativeMetadataConfirmed}|${selectedMetadataCandidateKey}|${metadataContextKey}`;
   const latestContextKeyRef = useRef(contextKey);
   const operationIdRef = useRef(0);
   useLayoutEffect(() => {
@@ -108,6 +149,17 @@ export function EvmContractDeployPage() {
   const hash = stateIsCurrent ? deploymentState.hash : "";
   const message = stateIsCurrent ? deploymentState.message : initialDeploymentState.message;
   const network = stateIsCurrent ? deploymentState.network : null;
+  const displayNetwork = network || networkDiscovery;
+  const automaticRegistryMetadata = networkDiscovery?.metadataSource === "viem"
+    && networkDiscovery.metadataStatus === "suggested"
+    && networkDiscovery.nativeCurrency
+    && !manualMetadataOverride
+    ? networkDiscovery
+    : null;
+  const automaticRegistryCurrency = automaticRegistryMetadata?.nativeCurrency || null;
+  const metadataConflict = networkDiscovery?.metadataStatus === "conflict" ? networkDiscovery : null;
+  const metadataUnavailable = networkDiscovery?.metadataStatus === "unavailable" ? networkDiscovery : null;
+  const customMetadataReady = customNetworkMetadataIsComplete(customNetworkMetadata);
   const provider = wallet.getProvider();
   const busy = status === "validating" || status === "awaiting-wallet" || status === "confirming";
   const canValidate = wallet.connected
@@ -119,8 +171,12 @@ export function EvmContractDeployPage() {
   const canDeploy = canValidate && status === "ready";
   const deploymentComplete = status === "success" || status === "already-deployed";
   const explorerUrl = hash && network ? getDisperseDeploymentExplorerUrl(hash, network) : "";
+  const nativeCurrencyEnabled = network ? isEvmNativeCurrencyEnabled(network) : false;
+  const nativeCurrencyMetadata = network ? getEvmNativeCurrencyMetadata(network) : null;
   const estimatedFee = preflight && preflight.estimatedFee > 0n && network
-    ? `${formatWeiForDisplay(preflight.estimatedFee, network.nativeCurrency.decimals, 8)} ${network.nativeCurrency.symbol}`
+    ? nativeCurrencyEnabled
+      ? `${formatWeiForDisplay(preflight.estimatedFee, network.nativeCurrency.decimals, 8)} ${network.nativeCurrency.symbol}`
+      : `${preflight.estimatedFee.toLocaleString()} base units`
     : "--";
 
   const isOperationCurrent = (operationId: number, expectedContextKey: string) => (
@@ -132,6 +188,47 @@ export function EvmContractDeployPage() {
     setDeploymentState(initialDeploymentState);
     setDistributionChainName("");
     setDistributionRegistration(initialDistributionRegistrationState);
+  };
+
+  const enableManualMetadataOverride = () => {
+    if (!networkDiscovery) return;
+    setCustomNetworkMetadata({
+      chainName: networkDiscovery.label,
+      nativeCurrencyDecimals: networkDiscovery.nativeCurrency ? String(networkDiscovery.nativeCurrency.decimals) : "",
+      nativeCurrencyName: networkDiscovery.nativeCurrency?.name || "",
+      nativeCurrencySymbol: networkDiscovery.nativeCurrency?.symbol || ""
+    });
+    setManualMetadataOverride(true);
+    setNativeMetadataConfirmed(false);
+    setSelectedMetadataCandidateKey("");
+    resetDeploymentState();
+  };
+
+  const restoreAutomaticMetadata = () => {
+    setManualMetadataOverride(false);
+    setNativeMetadataConfirmed(false);
+    setSelectedMetadataCandidateKey("");
+    setCustomNetworkMetadata(initialCustomNetworkMetadataState);
+    resetDeploymentState();
+  };
+
+  const confirmManualMetadata = () => {
+    if (!customMetadataReady) return;
+    setNativeMetadataConfirmed(true);
+    resetDeploymentState();
+  };
+
+  const selectMetadataCandidate = (candidate: DisperseDeploymentNetworkMetadataCandidate) => {
+    setCustomNetworkMetadata({
+      chainName: candidate.label,
+      nativeCurrencyDecimals: String(candidate.nativeCurrency.decimals),
+      nativeCurrencyName: candidate.nativeCurrency.name,
+      nativeCurrencySymbol: candidate.nativeCurrency.symbol
+    });
+    setManualMetadataOverride(true);
+    setNativeMetadataConfirmed(true);
+    setSelectedMetadataCandidateKey(candidate.key);
+    resetDeploymentState();
   };
 
   const updateCurrentOperation = (
@@ -176,14 +273,26 @@ export function EvmContractDeployPage() {
 
     try {
       const discoveredNetwork = await resolveDisperseDeploymentNetwork(effectiveRpcEndpoint);
-      const resolvedNetwork = {
-        ...discoveredNetwork,
-        blockExplorerUrl: effectiveBlockExplorerUrl || discoveredNetwork.blockExplorerUrl
-      };
       if (!isOperationCurrent(operationId, expectedContextKey)) return;
+      setNetworkDiscovery(discoveredNetwork);
+
+      const resolvedNetwork = finalizeDisperseDeploymentNetwork(
+        discoveredNetwork,
+        effectiveBlockExplorerUrl || discoveredNetwork.blockExplorerUrl,
+        {
+          manualMetadata: customNetworkMetadata,
+          nativeCurrencyConfirmed: nativeMetadataConfirmed,
+          selectedCandidateKey: selectedMetadataCandidateKey,
+          useManualMetadata: manualMetadataOverride
+        }
+      );
+
+      setDistributionChainName(resolvedNetwork.label);
       updateCurrentOperation(operationId, expectedContextKey, (current) => ({
         ...current,
-        message: `已识别 ${resolvedNetwork.label}，正在检查 CreateX 与目标合约`,
+        message: isEvmNativeCurrencyEnabled(resolvedNetwork)
+          ? `已识别 ${resolvedNetwork.label}，正在检查 CreateX 与目标合约`
+          : `已识别 Chain ID ${resolvedNetwork.chainId}；原生币暂未开放，继续检查部署与 Token 分发条件`,
         network: resolvedNetwork
       }));
 
@@ -245,6 +354,7 @@ export function EvmContractDeployPage() {
             updateCurrentOperation(operationId, expectedContextKey, (current) => ({
               ...current,
               message: "校验通过，请在钱包中确认零转账金额的 CreateX 部署调用",
+              preflight: stage.preflight,
               status: "awaiting-wallet"
             }));
             return;
@@ -323,7 +433,12 @@ export function EvmContractDeployPage() {
 
     const registeredNetwork = registerVerifiedEvmDistributionNetwork({ ...network, label: chainName });
     setDistributionRegistration(registeredNetwork
-      ? { message: `${chainName} · Chain ID ${network.chainId} 已添加到 EVM 分发`, status: "success" }
+      ? {
+          message: isEvmNativeCurrencyEnabled(registeredNetwork)
+            ? `${chainName} · Chain ID ${network.chainId} 已添加，可分发 Token 和 ${registeredNetwork.nativeCurrency.symbol}`
+            : `${chainName} · Chain ID ${network.chainId} 已添加，当前仅开放 Token 分发`,
+          status: "success"
+        }
       : { message: "浏览器未能保存链配置，请检查本地存储权限", status: "error" });
   };
 
@@ -363,7 +478,7 @@ export function EvmContractDeployPage() {
                 <h2 className="panel-title" id="deploy-title">部署配置</h2>
                 <p className="panel-note">Chain ID 会从 RPC 自动识别，目标地址、salt 和 initCode 固定不可编辑。</p>
               </div>
-              <span className="pill network-pill">{network ? `${network.label} · ${network.chainId}` : "RPC 自动识别"}</span>
+              <span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span>
             </div>
 
             <div className="form">
@@ -390,6 +505,11 @@ export function EvmContractDeployPage() {
                       disabled={busy}
                       onChange={(event) => {
                         setRpcEndpoint(event.target.value);
+                        setNetworkDiscovery(null);
+                        setManualMetadataOverride(false);
+                        setNativeMetadataConfirmed(false);
+                        setSelectedMetadataCandidateKey("");
+                        setCustomNetworkMetadata(initialCustomNetworkMetadataState);
                         resetDeploymentState();
                       }}
                     />
@@ -417,6 +537,150 @@ export function EvmContractDeployPage() {
                     ? "部署校验和交易确认都使用主 RPC；区块浏览器留空时使用内置地址。"
                     : "区块浏览器地址必须是有效的 HTTPS URL。"}
                 </p>
+                {automaticRegistryMetadata && automaticRegistryCurrency ? (
+                  <div className="deployment-contract-card automatic-network-metadata" aria-label="自动匹配的链元数据">
+                    <div className="summary-list">
+                      <div><span>注册表匹配</span><strong>{automaticRegistryMetadata.label}</strong></div>
+                      <div>
+                        <span>原生币</span>
+                        <strong>{automaticRegistryCurrency.symbol} · {automaticRegistryCurrency.decimals} decimals</strong>
+                      </div>
+                      <div><span>元数据来源</span><strong>viem {automaticRegistryMetadata.sourceVersion}</strong></div>
+                      <div><span>原生币能力</span><strong>已按注册表自动开放</strong></div>
+                    </div>
+                    <p className="hint">当前 Chain ID 的候选币种没有冲突，将直接用于原生币金额换算；如实际链配置不同可手动修改。</p>
+                    <div className="action-group network-config-actions">
+                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>手动修改</button>
+                    </div>
+                  </div>
+                ) : null}
+                {metadataConflict && !manualMetadataOverride ? (
+                  <div className="deployment-contract-card custom-network-metadata" aria-label="链元数据存在冲突">
+                    <div>
+                      <strong>同一 Chain ID 存在多套原生币配置</strong>
+                      <p className="hint">程序不会自动选择。钱包已处于或已添加该链时，部署和 Token 分发仍可继续；只有明确选择后才开放原生币。</p>
+                    </div>
+                    <div className="metadata-candidate-list">
+                      {metadataConflict.metadataCandidates.map((candidate) => (
+                        <div className="metadata-candidate" key={`${candidate.key}-${candidate.nativeCurrency.symbol}`}>
+                          <span><strong>{candidate.label}</strong> · {candidate.nativeCurrency.name}</span>
+                          <span>{candidate.nativeCurrency.symbol} · {candidate.nativeCurrency.decimals} decimals</span>
+                          <button
+                            aria-label={`选择并确认 ${candidate.label} ${candidate.nativeCurrency.symbol}`}
+                            className="button ghost"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => selectMetadataCandidate(candidate)}
+                          >选择并确认</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="action-group network-config-actions">
+                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>手动填写</button>
+                    </div>
+                  </div>
+                ) : null}
+                {metadataUnavailable && !manualMetadataOverride ? (
+                  <div className="deployment-contract-card automatic-network-metadata" aria-label="未找到原生币元数据">
+                    <div className="summary-list">
+                      <div><span>Chain ID</span><strong>{metadataUnavailable.chainId}</strong></div>
+                      <div><span>自动匹配</span><strong>未找到注册表记录</strong></div>
+                      <div><span>当前能力</span><strong>合约部署 + Token 分发</strong></div>
+                    </div>
+                    <p className="hint">钱包已处于或已添加该链时，不填写也不会阻止零 value 部署。钱包还没有该链或需要分发原生币时，再从官方文档确认。</p>
+                    <div className="action-group network-config-actions">
+                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>配置原生币（可选）</button>
+                    </div>
+                  </div>
+                ) : null}
+                {networkDiscovery && manualMetadataOverride ? (
+                  <div className="custom-network-metadata" aria-label="未知链原生币元数据">
+                    <div className="route-fields deploy-route-fields">
+                      <div className="field route-card">
+                        <label htmlFor="customChainName">链名称</label>
+                        <input
+                          id="customChainName"
+                          type="text"
+                          autoComplete="off"
+                          value={customNetworkMetadata.chainName}
+                          disabled={busy}
+                          onChange={(event) => {
+                            setCustomNetworkMetadata((current) => ({ ...current, chainName: event.target.value }));
+                            setNativeMetadataConfirmed(false);
+                            setSelectedMetadataCandidateKey("");
+                            resetDeploymentState();
+                          }}
+                          placeholder={`EVM Chain ${networkDiscovery.chainId}`}
+                        />
+                      </div>
+                      <div className="field route-card">
+                        <label htmlFor="nativeCurrencyName">原生币名称</label>
+                        <input
+                          id="nativeCurrencyName"
+                          type="text"
+                          autoComplete="off"
+                          value={customNetworkMetadata.nativeCurrencyName}
+                          disabled={busy}
+                          onChange={(event) => {
+                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyName: event.target.value }));
+                            setNativeMetadataConfirmed(false);
+                            setSelectedMetadataCandidateKey("");
+                            resetDeploymentState();
+                          }}
+                          placeholder="例如 Ether"
+                        />
+                      </div>
+                      <div className="field route-card">
+                        <label htmlFor="nativeCurrencySymbol">原生币符号</label>
+                        <input
+                          id="nativeCurrencySymbol"
+                          type="text"
+                          autoComplete="off"
+                          value={customNetworkMetadata.nativeCurrencySymbol}
+                          disabled={busy}
+                          onChange={(event) => {
+                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencySymbol: event.target.value }));
+                            setNativeMetadataConfirmed(false);
+                            setSelectedMetadataCandidateKey("");
+                            resetDeploymentState();
+                          }}
+                          placeholder="例如 ETH"
+                        />
+                      </div>
+                      <div className="field route-card">
+                        <label htmlFor="nativeCurrencyDecimals">原生币 decimals</label>
+                        <input
+                          id="nativeCurrencyDecimals"
+                          type="number"
+                          inputMode="numeric"
+                          min="0"
+                          max="255"
+                          step="1"
+                          value={customNetworkMetadata.nativeCurrencyDecimals}
+                          disabled={busy}
+                          onChange={(event) => {
+                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyDecimals: event.target.value }));
+                            setNativeMetadataConfirmed(false);
+                            setSelectedMetadataCandidateKey("");
+                            resetDeploymentState();
+                          }}
+                          placeholder="请从官方文档确认"
+                        />
+                      </div>
+                    </div>
+                    <p className={`hint deployment-rpc-hint${customMetadataReady || !nativeMetadataConfirmed ? "" : " error"}`}>
+                      Chain ID {networkDiscovery.chainId}。这些字段仅用于解锁原生币；不确认时仍可部署并使用 Token 分发。
+                    </p>
+                    <div className="action-group network-config-actions">
+                      {!nativeMetadataConfirmed ? (
+                        <button className="button primary" type="button" disabled={busy || !customMetadataReady} onClick={confirmManualMetadata}>确认并开放原生币</button>
+                      ) : <span className="pill">原生币元数据已确认</span>}
+                      <button className="button ghost" type="button" disabled={busy} onClick={restoreAutomaticMetadata}>
+                        {networkDiscovery.metadataStatus === "suggested" ? "恢复注册表建议" : "暂不配置原生币"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="deployment-contract-card" aria-label="固定部署参数">
@@ -424,7 +688,7 @@ export function EvmContractDeployPage() {
                   <div><span>部署方式</span><strong>CreateX.deployCreate2(bytes32,bytes)</strong></div>
                   <div><span>CreateX</span><strong title={createXContractAddress}>{shortenAddress(createXContractAddress)}</strong></div>
                   <div><span>目标地址</span><strong title={disperseContractAddress}>{disperseContractAddress}</strong></div>
-                  <div><span>交易 value</span><strong>0 {network?.nativeCurrency.symbol || "原生代币"}</strong></div>
+                  <div><span>交易 value</span><strong>0（不转移原生币）</strong></div>
                   <div><span>协议手续费</span><strong>无，仅支付网络 Gas</strong></div>
                 </div>
               </div>
@@ -443,11 +707,14 @@ export function EvmContractDeployPage() {
                           : "尚未执行部署校验"}</strong>
                 <span>{message}</span>
                 {preflight?.status === "ready" ? (
-                  <div className="summary-list deployment-estimate">
-                    <div><span>最高 Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
-                    <div><span>安全 Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
-                    <div><span>费用安全上限</span><strong>{estimatedFee}</strong></div>
-                  </div>
+                  <>
+                    <div className="summary-list deployment-estimate">
+                      <div><span>最高 Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
+                      <div><span>交易请求 Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
+                      <div><span>EVM 执行费上限</span><strong>{estimatedFee}</strong></div>
+                    </div>
+                    <span className="hint">签名请求会绑定上述 Gas 与费用参数；部分 L2 可能另收 L1 数据费，以钱包最终展示为准。</span>
+                  </>
                 ) : null}
                 {hash && explorerUrl ? (
                   <div className="signature-list">
@@ -471,7 +738,21 @@ export function EvmContractDeployPage() {
                       }}
                     />
                   </div>
-                  <p className="hint">Chain ID {network.chainId}。点击“添加到 EVM 分发”后，将保存链名称、主 RPC 和区块浏览器地址。</p>
+                  <div className="summary-list">
+                    <div><span>Chain ID</span><strong>{network.chainId}</strong></div>
+                    <div><span>分发能力</span><strong>{nativeCurrencyEnabled ? `Token + ${network.nativeCurrency.symbol}` : "仅 Token"}</strong></div>
+                    <div>
+                      <span>原生币依据</span>
+                      <strong>{nativeCurrencyMetadata?.source === "viem"
+                        ? `viem ${nativeCurrencyMetadata.sourceVersion}`
+                        : nativeCurrencyMetadata?.source === "manual"
+                          ? "用户手动确认"
+                          : nativeCurrencyMetadata?.source === "built-in"
+                            ? "项目内置配置"
+                            : "未配置"}</strong>
+                    </div>
+                  </div>
+                  <p className="hint">添加后会保存主 RPC、浏览器地址和元数据确认记录。未确认原生币时，分发页会自动切换到 Token 模式。</p>
                   {distributionRegistration.message ? (
                     <p className={`hint distribution-registration-message ${distributionRegistration.status}`} role="status">{distributionRegistration.message}</p>
                   ) : null}
