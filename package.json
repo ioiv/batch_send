@@ -16,7 +16,7 @@
     "buffer": "^6.0.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "viem": "^2.52.2"
+    "viem": "^2.55.8"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",

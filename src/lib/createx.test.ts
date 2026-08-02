@@ -14,7 +14,8 @@ import {
   getBufferedDeploymentGasLimit,
   hasDisperseSaltSenderCollision,
   hasExpectedCreateXContractCode,
-  resolveRegisteredDisperseDeploymentNetwork
+  resolveRegisteredDisperseDeploymentNetwork,
+  viemChainRegistryVersion
 } from "./createx";
 import {
   disperseContractAddress,
@@ -112,13 +113,13 @@ describe("Disperse deployment network discovery", () => {
         name: "Rootstock Bitcoin",
         symbol: "RBTC"
       },
-      sourceVersion: "2.52.2"
+      sourceVersion: viemChainRegistryVersion
     });
     expect(finalizeDisperseDeploymentNetwork(discovery!, "")).toMatchObject({
       nativeCurrency: { decimals: 18, symbol: "RBTC" },
       nativeCurrencyMetadata: {
         source: "viem",
-        sourceVersion: "2.52.2",
+        sourceVersion: viemChainRegistryVersion,
         status: "confirmed"
       }
     });
@@ -160,7 +161,7 @@ describe("Disperse deployment network discovery", () => {
       useManualMetadata: true
     })).toMatchObject({
       nativeCurrency: { decimals: 6, symbol: "USD" },
-      nativeCurrencyMetadata: { source: "viem", sourceVersion: "2.52.2", status: "confirmed" }
+      nativeCurrencyMetadata: { source: "viem", sourceVersion: viemChainRegistryVersion, status: "confirmed" }
     });
   });
 
