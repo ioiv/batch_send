@@ -16,7 +16,11 @@ import {
   hasExpectedCreateXContractCode,
   resolveRegisteredDisperseDeploymentNetwork
 } from "./createx";
-import { disperseContractAddress, disperseContractRuntimeCodeHash } from "./evm";
+import {
+  disperseContractAddress,
+  disperseContractRuntimeCodeHash,
+  isEvmNativeCurrencyEnabled
+} from "./evm";
 
 describe("CreateX Disperse deployment artifacts", () => {
   it("reproduces the official guarded salt, bytecode hashes, and CREATE2 address", () => {
@@ -133,6 +137,13 @@ describe("Disperse deployment network discovery", () => {
       expect.objectContaining({ decimals: 18, symbol: "ETH" }),
       expect.objectContaining({ decimals: 6, symbol: "USD" })
     ]));
+
+    const unresolvedNetwork = finalizeDisperseDeploymentNetwork(result!, "");
+    expect(unresolvedNetwork).toMatchObject({
+      nativeCurrency: { decimals: 0, symbol: "base units" },
+      nativeCurrencyMetadata: { source: "viem", status: "unconfirmed" }
+    });
+    expect(isEvmNativeCurrencyEnabled(unresolvedNetwork)).toBe(false);
 
     const tempoCandidate = result?.metadataCandidates.find((candidate) => candidate.nativeCurrency.symbol === "USD");
     expect(result).not.toBeNull();

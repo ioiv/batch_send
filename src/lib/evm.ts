@@ -348,17 +348,8 @@ function getBuiltInNativeCurrencyMetadata(): EvmNativeCurrencyMetadata {
   };
 }
 
-function normalizeEvmNativeCurrencyMetadata(metadata: EvmNativeCurrencyMetadata): EvmNativeCurrencyMetadata {
-  if (metadata.source !== "viem") return metadata;
-  return {
-    ...metadata,
-    confirmedAt: metadata.confirmedAt || "registry-auto",
-    status: "confirmed"
-  };
-}
-
 export function getEvmNativeCurrencyMetadata(network: EvmChainConfig): EvmNativeCurrencyMetadata {
-  if (network.nativeCurrencyMetadata) return normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata);
+  if (network.nativeCurrencyMetadata) return network.nativeCurrencyMetadata;
   if (evmNetworks.some((configuredNetwork) => configuredNetwork.chainId === network.chainId)) {
     return getBuiltInNativeCurrencyMetadata();
   }
@@ -399,12 +390,7 @@ function readStoredEvmNetworks() {
   if (typeof window === "undefined") return [];
   try {
     const parsed = JSON.parse(window.localStorage.getItem(verifiedEvmNetworksStorageKey) || "[]") as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter(isStoredEvmNetwork).map((network) => ({
-          ...network,
-          nativeCurrencyMetadata: normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata!)
-        }))
-      : [];
+    return Array.isArray(parsed) ? parsed.filter(isStoredEvmNetwork) : [];
   } catch {
     return [];
   }
@@ -415,13 +401,13 @@ export function createEvmDistributionNetwork(network: EvmChainConfig): EvmNetwor
     throw new Error("EVM 原生币元数据不完整");
   }
   const configuredNetwork = evmNetworks.find((item) => item.chainId === network.chainId);
-  const nativeCurrencyMetadata = normalizeEvmNativeCurrencyMetadata(network.nativeCurrencyMetadata
+  const nativeCurrencyMetadata = network.nativeCurrencyMetadata
     || (configuredNetwork ? getBuiltInNativeCurrencyMetadata() : {
       confirmedAt: "",
       source: "unavailable" as const,
       sourceVersion: "",
       status: "unconfirmed" as const
-    }));
+    });
   if (!isValidEvmNativeCurrencyMetadata(nativeCurrencyMetadata)) {
     throw new Error("EVM 原生币确认记录不完整");
   }

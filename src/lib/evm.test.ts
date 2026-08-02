@@ -158,7 +158,7 @@ describe("evm network config", () => {
     expect(parsed.totalWei).toBe(1_250_000n);
   });
 
-  it("automatically enables native currency for versioned viem metadata", () => {
+  it("keeps explicitly unconfirmed viem metadata disabled", () => {
     const customNetwork = createEvmDistributionNetwork({
       blockExplorerUrl: "https://explorer.rsk.co",
       chainId: 30,
@@ -173,16 +173,16 @@ describe("evm network config", () => {
       rpcEndpoint: "https://rootstock.example.test"
     });
 
-    expect(isEvmNativeCurrencyEnabled(customNetwork)).toBe(true);
+    expect(isEvmNativeCurrencyEnabled(customNetwork)).toBe(false);
     expect(getEvmNativeCurrencyMetadata(customNetwork)).toMatchObject({
-      confirmedAt: "registry-auto",
+      confirmedAt: "",
       source: "viem",
       sourceVersion: "2.52.2",
-      status: "confirmed"
+      status: "unconfirmed"
     });
   });
 
-  it("persists registry provenance as automatically confirmed", () => {
+  it("persists an explicit unconfirmed viem status without upgrading it", () => {
     const values = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -206,10 +206,10 @@ describe("evm network config", () => {
 
     expect(registerVerifiedEvmDistributionNetwork(network)).not.toBeNull();
     expect(getEvmDistributionNetworks().find((item) => item.chainId === 30)?.nativeCurrencyMetadata).toEqual({
-      confirmedAt: "registry-auto",
+      confirmedAt: "",
       source: "viem",
       sourceVersion: "2.52.2",
-      status: "confirmed"
+      status: "unconfirmed"
     });
   });
 
