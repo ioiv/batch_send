@@ -3,6 +3,7 @@ import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
 import { DistributionReview } from "../components/DistributionReview";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { Metric } from "../components/Metric";
+import { SearchableSelect } from "../components/SearchableSelect";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
@@ -89,6 +90,12 @@ export function EvmBatchDistributorPage() {
     () => getEvmNetworkConfig(networkId, networkState.networks),
     [networkId, networkState.networks]
   );
+  const networkOptions = useMemo(() => networkState.networks.map((network) => ({
+    keywords: [network.id, network.nativeCurrency.name, network.nativeCurrency.symbol],
+    label: network.label,
+    meta: String(network.chainId),
+    value: network.id
+  })), [networkState.networks]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const nativeCurrencyMetadata = getEvmNativeCurrencyMetadata(selectedNetwork);
@@ -578,19 +585,25 @@ export function EvmBatchDistributorPage() {
                 <div className="route-fields evm-route-fields">
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
-                    <select id="networkId" value={networkId} onChange={(event) => {
-                      const nextNetworkId = event.target.value as EvmDistributionNetworkId;
-                      const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
-                      setNetworkId(nextNetworkId);
-                      setRpcEndpoint(nextNetwork.rpcEndpoint);
-                      if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
-                      rememberPreferredEvmDistributionNetwork(nextNetworkId);
-                      resetConfirmation();
-                    }}>
-                      {networkState.networks.map((network) => (
-                        <option key={network.chainId} value={network.id}>{network.label} · {network.chainId}</option>
-                      ))}
-                    </select>
+                    <SearchableSelect
+                      emptyMessage="未找到匹配的 EVM 链"
+                      id="networkId"
+                      listboxLabel="EVM 链"
+                      metaLabel="Chain ID"
+                      metaPrefix="ID"
+                      onChange={(nextNetworkId) => {
+                        const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
+                        setNetworkId(nextNetworkId);
+                        setRpcEndpoint(nextNetwork.rpcEndpoint);
+                        if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
+                        rememberPreferredEvmDistributionNetwork(nextNetworkId);
+                        resetConfirmation();
+                      }}
+                      options={networkOptions}
+                      placeholder="搜索链名称或 Chain ID"
+                      searchLabel="搜索 EVM 链名称或 Chain ID"
+                      value={networkId}
+                    />
                   </div>
                   <div className="field route-card rpc-field">
                     <label htmlFor="rpcEndpoint">RPC</label>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
 import { DistributionReview } from "../components/DistributionReview";
 import { Metric } from "../components/Metric";
+import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { shortenAddress } from "../lib/address";
@@ -37,6 +38,13 @@ const initialBalanceLookupState: BalanceLookupState = {
   status: "idle",
   valueLamports: null
 };
+
+const solanaNetworkOptions: SearchableSelectOption<SolanaNetworkId>[] = solanaNetworks.map((network) => ({
+  keywords: [network.id],
+  label: network.label,
+  meta: network.id,
+  value: network.id
+}));
 
 function getBalanceLookupErrorMessage(error: unknown) {
   const detail = error && typeof error === "object" && "message" in error ? String((error as { message?: unknown }).message || "") : String(error || "");
@@ -345,16 +353,21 @@ export function BatchDistributorPage() {
                 <div className="route-fields sol-route-fields">
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
-                    <select id="networkId" value={networkId} onChange={(event) => {
-                      const nextNetworkId = event.target.value as SolanaNetworkId;
-                      setNetworkId(nextNetworkId);
-                      setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
-                      resetConfirmation();
-                    }}>
-                      {solanaNetworks.map((network) => (
-                        <option key={network.id} value={network.id}>{network.label}</option>
-                      ))}
-                    </select>
+                    <SearchableSelect
+                      emptyMessage="未找到匹配的 Solana 网络"
+                      id="networkId"
+                      listboxLabel="Solana 网络"
+                      metaLabel="网络标识"
+                      metaPrefix="Cluster"
+                      onChange={(nextNetworkId) => {
+                        setNetworkId(nextNetworkId);
+                        setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
+                        resetConfirmation();
+                      }}
+                      options={solanaNetworkOptions}
+                      searchable={false}
+                      value={networkId}
+                    />
                   </div>
                   <div className="field route-card rpc-field">
                     <label htmlFor="rpcEndpoint">RPC</label>
