@@ -1,7 +1,7 @@
 export const rpcConfig = {
   solana: {
-    mainnetBeta: "https://mainnet.helius-rpc.com/?api-key=10fee8d3-dfcd-4395-981b-e77b67dc4c7d",
-    devnet: "https://devnet.helius-rpc.com/?api-key=10fee8d3-dfcd-4395-981b-e77b67dc4c7d",
+    mainnetBeta: "https://api.mainnet-beta.solana.com",
+    devnet: "https://api.devnet.solana.com",
     testnet: "https://api.testnet.solana.com"
   },
   evm: {

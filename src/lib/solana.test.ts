@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 import type { DistributionRow } from "./distribution";
-import { planTransferChunks, transactionEstimateSenderAddress } from "./solana";
+import {
+  assertSolanaRpcNetwork,
+  planTransferChunks,
+  solanaGenesisHashes,
+  transactionEstimateSenderAddress
+} from "./solana";
 
 function makeAddress(index: number) {
   const bytes = new Uint8Array(32);
@@ -44,5 +49,18 @@ describe("planTransferChunks", () => {
 
   it("throws when a row cannot be converted into a transfer instruction", () => {
     expect(() => planTransferChunks([makeRow(0, "not-an-address")], transactionEstimateSenderAddress)).toThrow();
+  });
+});
+
+describe("assertSolanaRpcNetwork", () => {
+  it("accepts the selected cluster genesis hash", async () => {
+    const connection = { getGenesisHash: vi.fn(async () => solanaGenesisHashes.devnet) };
+    await expect(assertSolanaRpcNetwork(connection as never, "devnet")).resolves.toBeUndefined();
+  });
+
+  it("blocks a mismatched RPC cluster", async () => {
+    const connection = { getGenesisHash: vi.fn(async () => solanaGenesisHashes["mainnet-beta"]) };
+    await expect(assertSolanaRpcNetwork(connection as never, "devnet"))
+      .rejects.toThrow("RPC 网络不匹配");
   });
 });

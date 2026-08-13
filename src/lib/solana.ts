@@ -42,6 +42,12 @@ export const solanaNetworks: Array<{ endpoint: string; id: SolanaNetworkId; labe
   { endpoint: rpcConfig.solana.testnet, id: "testnet", label: "Testnet" }
 ];
 
+export const solanaGenesisHashes: Record<SolanaNetworkId, string> = {
+  "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d6x",
+  devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+};
+
 export const initialSendProgress: SendProgress = {
   confirmed: 0,
   signed: 0,
@@ -72,6 +78,16 @@ export function getNetworkConfig(networkId: SolanaNetworkId) {
 export function getExplorerUrl(signature: TransactionSignature, networkId: SolanaNetworkId) {
   const cluster = networkId === "mainnet-beta" ? "" : `?cluster=${networkId}`;
   return `https://solscan.io/tx/${signature}${cluster}`;
+}
+
+export async function assertSolanaRpcNetwork(
+  connection: Pick<Connection, "getGenesisHash">,
+  networkId: SolanaNetworkId
+) {
+  const genesisHash = await connection.getGenesisHash();
+  if (genesisHash !== solanaGenesisHashes[networkId]) {
+    throw new Error(`RPC 网络不匹配：请选择 ${getNetworkConfig(networkId).label} 的 RPC`);
+  }
 }
 
 export function getTransactionErrorMessage(error: unknown) {
