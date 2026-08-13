@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      buffer: "buffer"
+      buffer: resolve(projectRoot, "node_modules/buffer/index.js")
     }
   },
   build: {
@@ -18,7 +18,10 @@ export default defineConfig({
         index: resolve(projectRoot, "index.html"),
         formatGenerator: resolve(projectRoot, "format/index.html"),
         batchDistributor: resolve(projectRoot, "sol/index.html"),
+        solCollection: resolve(projectRoot, "sol/collect/index.html"),
         evmBatchDistributor: resolve(projectRoot, "evm/index.html"),
+        evmTokenCollection: resolve(projectRoot, "evm/collect/index.html"),
+        evmNftCollection: resolve(projectRoot, "evm/nft-collect/index.html"),
         evmContractDeploy: resolve(projectRoot, "evm/deploy/index.html")
       }
     }
