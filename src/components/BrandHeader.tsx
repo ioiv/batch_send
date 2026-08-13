@@ -11,12 +11,14 @@ function BrandMark() {
 }
 
 export function BrandHeader({
+  compact = false,
   eyebrow,
   title,
   subtitle,
   nav,
   wallet
 }: {
+  compact?: boolean;
   eyebrow?: string;
   title: string;
   subtitle?: React.ReactNode;
@@ -26,16 +28,18 @@ export function BrandHeader({
   const action = wallet ?? nav;
 
   return (
-    <header className="topbar">
+    <header className={`topbar${compact ? " compact-topbar" : ""}`}>
       <div className="brand">
         <div className="mark" aria-hidden="true">
           <BrandMark />
         </div>
-        <div className="brand-copy">
-          {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
-          <h1>{title}</h1>
-          {subtitle ? <p className="subtitle">{subtitle}</p> : null}
-        </div>
+        {compact ? <h1 className="sr-only">{title}</h1> : (
+          <div className="brand-copy">
+            {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
+            <h1>{title}</h1>
+            {subtitle ? <p className="subtitle">{subtitle}</p> : null}
+          </div>
+        )}
       </div>
       {action ? <div className="topbar-actions">{action}</div> : null}
     </header>
@@ -47,9 +51,6 @@ export function NavLinks({ current }: { current?: "home" | "format" | "distribut
     <nav className="nav" aria-label="页面导航">
       <a aria-current={current === "home" ? "page" : undefined} href="/">
         入口
-      </a>
-      <a aria-current={current === "format" ? "page" : undefined} href="/format/">
-        去生成
       </a>
       <a aria-current={current === "distributor" ? "page" : undefined} href="/sol/">
         SOL 分发

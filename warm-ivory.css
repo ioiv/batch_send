@@ -751,6 +751,25 @@ input[type="number"],
   background: rgba(255, 255, 255, 0.74);
 }
 
+.compact-topbar {
+  padding: 7px;
+}
+
+.compact-topbar .mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+}
+
+.compact-topbar .mark svg {
+  width: 21px;
+  height: 21px;
+}
+
+.page-distributor .compact-topbar {
+  margin-bottom: 18px;
+}
+
 .send-gate {
   position: relative;
   border-radius: var(--radius-card);
@@ -871,6 +890,151 @@ input[type="number"],
 
 .page-distributor textarea {
   min-height: clamp(300px, 38vw, 430px);
+}
+
+.page-distributor .list-composer {
+  gap: 14px;
+}
+
+.page-distributor .list-input-mode-row {
+  gap: 10px;
+}
+
+.page-distributor .list-input-mode-row .mode {
+  min-height: 58px;
+  align-content: center;
+  padding: 11px 14px;
+}
+
+.page-distributor .list-input-mode-row .mode-head {
+  font-weight: 760;
+}
+
+.distribution-generator {
+  position: relative;
+  isolation: isolate;
+  border-radius: 24px;
+  padding: 15px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(241, 245, 239, 0.68)),
+    linear-gradient(135deg, rgba(120, 136, 107, 0.1), rgba(90, 113, 132, 0.06));
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.075),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 18px 42px rgba(47, 58, 67, 0.065);
+}
+
+.distribution-generator::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: -1;
+  border-radius: 18px;
+  box-shadow: inset 0 0 0 1px rgba(31, 39, 47, 0.04);
+  pointer-events: none;
+}
+
+.generator-heading strong {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 760;
+}
+
+.generator-heading > label {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.generator-heading > div > span,
+.generator-summary span {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.generator-status {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.generator-status.ready {
+  background: rgba(231, 239, 225, 0.84);
+  color: #5f744f;
+}
+
+.generator-status.error {
+  background: rgba(250, 232, 227, 0.88);
+  color: #9c5b50;
+}
+
+.page-distributor .address-only-input {
+  min-height: clamp(170px, 23vw, 250px);
+}
+
+.distribution-generator .generator-mode-row {
+  gap: 10px;
+}
+
+.distribution-generator .generator-mode-row .mode {
+  min-height: 56px;
+  align-content: center;
+  padding: 10px 13px;
+}
+
+.page-distributor .review-panel .empty {
+  min-height: 132px;
+  padding: 18px;
+}
+
+.distribution-generator .generator-amount-grid {
+  gap: 10px;
+}
+
+.distribution-generator .generator-amount-grid input {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.generator-summary {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 39, 47, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.generator-summary strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 740;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.generator-actions .button {
+  min-height: 40px;
+  padding-inline: 13px;
+  font-size: 13px;
+}
+
+.compact-notice {
+  padding: 12px 14px;
+}
+
+.distribution-generator.disabled .address-only-input,
+.distribution-generator.disabled .generator-mode-row,
+.distribution-generator.disabled .generator-amount-grid,
+.distribution-generator.generation-disabled .generator-mode-row,
+.distribution-generator.generation-disabled .generator-amount-grid {
+  opacity: 0.62;
+}
+
+.review-expand-button {
+  justify-self: center;
+  min-height: 38px;
+  margin-top: 2px;
 }
 
 .page-distributor .transaction-options {
@@ -2722,6 +2886,23 @@ input[type="number"],
 }
 
 @media (max-width: 760px) {
+  .distribution-generator {
+    border-radius: 20px;
+    padding: 15px;
+  }
+
+  .distribution-generator::before {
+    border-radius: 15px;
+  }
+
+  .generator-status {
+    align-self: flex-start;
+  }
+
+  .generator-summary strong {
+    text-align: left;
+  }
+
   .page-distributor .input-panel > .form > .transaction-options.compact-route {
     border-radius: 24px;
     padding: 8px;

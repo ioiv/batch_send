@@ -18,6 +18,7 @@ export type SearchableSelectOption<T extends string> = {
 };
 
 type SearchableSelectProps<T extends string> = {
+  disabled?: boolean;
   emptyMessage?: string;
   id: string;
   listboxLabel?: string;
@@ -71,6 +72,7 @@ export function filterSearchableSelectOptions<T extends string>(
 }
 
 export function SearchableSelect<T extends string>({
+  disabled = false,
   emptyMessage = "未找到匹配的选项",
   id,
   listboxLabel = "可选项",
@@ -212,6 +214,10 @@ export function SearchableSelect<T extends string>({
       visualViewport?.removeEventListener("scroll", scheduleMenuPositionUpdate);
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (disabled) closeMenu();
+  }, [disabled]);
 
   useEffect(() => {
     if (!isOpen || !searchable) return;
@@ -475,6 +481,7 @@ export function SearchableSelect<T extends string>({
         aria-haspopup="listbox"
         aria-label={`${triggerLabel}：${selectedOption?.label || "请选择"}`}
         className="searchable-select-trigger"
+        disabled={disabled}
         id={id}
         onClick={() => isOpen ? closeMenu() : openMenu()}
         onKeyDown={handleTriggerKeyDown}

@@ -587,11 +587,17 @@ export function parseEvmDistribution(input: string, decimals = 18): ParseEvmDist
     if (parts.length !== 2) problems.push("格式需要刚好包含一个逗号");
     if (!isAddress(address)) problems.push("EVM 地址格式不正确");
 
-    try {
-      valueWei = parseUnits(amountRaw, decimals);
-      if (valueWei <= 0n) problems.push("金额需要大于 0");
-    } catch {
+    const amountMatch = amountRaw.match(/^(\d+)(?:\.(\d*))?$/);
+    const fractionDigits = amountMatch?.[2]?.length || 0;
+    if (!amountMatch || fractionDigits > decimals) {
       problems.push(`金额需要大于 0，最多 ${decimals} 位小数`);
+    } else {
+      try {
+        valueWei = parseUnits(amountRaw, decimals);
+        if (valueWei <= 0n) problems.push("金额需要大于 0");
+      } catch {
+        problems.push(`金额需要大于 0，最多 ${decimals} 位小数`);
+      }
     }
 
     if (isAddress(address)) {
@@ -831,6 +837,7 @@ export async function getEvmTokenBalance({
 
 export async function sendEvmNativeDistribution({
   from,
+  onSubmitted,
   provider,
   rows,
   rpcEndpoint,
@@ -838,6 +845,7 @@ export async function sendEvmNativeDistribution({
 }: {
   from: string;
   network: EvmNetworkConfig;
+  onSubmitted?: (hash: Hash) => void;
   provider: EvmWalletProvider;
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
@@ -873,6 +881,7 @@ export async function sendEvmNativeDistribution({
     functionName: "disperseEther",
     value: totalWei
   });
+  onSubmitted?.(hash);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
     throw new Error("EVM 分发交易已上链但执行失败");

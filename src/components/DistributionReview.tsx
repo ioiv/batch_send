@@ -1,5 +1,8 @@
+import { useState } from "react";
 import type { DistributionRow } from "../lib/distribution";
 import { formatLamports } from "../lib/amount";
+
+const collapsedRowCount = 12;
 
 export function DistributionReview({
   formatAmount,
@@ -8,17 +11,21 @@ export function DistributionReview({
   formatAmount?: (row: DistributionRow) => string;
   rows: DistributionRow[];
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (rows.length === 0) {
     return (
       <div className="review-list">
-        <div className="empty">粘贴清单后会显示逐行检查结果。</div>
+        <div className="empty">暂无清单</div>
       </div>
     );
   }
 
+  const visibleRows = expanded ? rows : rows.slice(0, collapsedRowCount);
+
   return (
     <div className="review-list">
-      {rows.slice(0, 12).map((row) => {
+      {visibleRows.map((row) => {
         const label = row.status === "valid" ? "✓" : row.status === "warn" ? "!" : "×";
         const title = row.status === "valid" ? `第 ${row.line} 行可发送` : `第 ${row.line} 行需要检查`;
         const problemText = row.problems.length ? row.problems.join(" / ") : row.address;
@@ -34,7 +41,14 @@ export function DistributionReview({
           </div>
         );
       })}
-      {rows.length > 12 ? <div className="empty">还有 {rows.length - 12} 行未展开，统计已计入。</div> : null}
+      {rows.length > collapsedRowCount ? (
+        <button
+          aria-expanded={expanded}
+          className="button ghost review-expand-button"
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+        >{expanded ? "收起清单" : `展开全部 ${rows.length} 行`}</button>
+      ) : null}
     </div>
   );
 }

@@ -14,23 +14,18 @@ export function HomePage() {
             </figure>
 
             <div className="tool-grid" aria-label="工具入口">
-              <a className="tool-card primary-tool" href="/format/">
+              <a className="tool-card primary-tool" href="/sol/">
                 <span>01</span>
-                <strong>格式生成</strong>
-                <small>地址清单整理</small>
-              </a>
-              <a className="tool-card" href="/sol/">
-                <span>02</span>
                 <strong>SOL 分发</strong>
-                <small>Solana 钱包确认</small>
+                <small>清单生成与钱包确认</small>
               </a>
               <a className="tool-card" href="/evm/">
-                <span>03</span>
+                <span>02</span>
                 <strong>EVM 分发</strong>
-                <small>原生币批量发送</small>
+                <small>原生币与 Token 批量发送</small>
               </a>
               <a className="tool-card" href="/evm/deploy/">
-                <span>04</span>
+                <span>03</span>
                 <strong>合约部署</strong>
                 <small>CreateX 校验部署</small>
               </a>

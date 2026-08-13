@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
+import { DistributionListGenerator } from "../components/DistributionListGenerator";
 import { DistributionReview } from "../components/DistributionReview";
 import { Metric } from "../components/Metric";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -8,6 +9,7 @@ import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { shortenAddress } from "../lib/address";
 import { formatLamports, formatLamportsForDisplay } from "../lib/amount";
 import { getInitialDistributionInput, parseDistribution } from "../lib/distribution";
+import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
 import {
   Connection,
   createSendProgress,
@@ -39,6 +41,16 @@ const initialBalanceLookupState: BalanceLookupState = {
   valueLamports: null
 };
 
+const initialGeneratedList: GeneratedDistributionList = {
+  duplicates: 0,
+  invalid: 0,
+  issues: [],
+  output: "",
+  total: "0",
+  totalUnits: 0n,
+  validCount: 0
+};
+
 const solanaNetworkOptions: SearchableSelectOption<SolanaNetworkId>[] = solanaNetworks.map((network) => ({
   keywords: [network.id],
   label: network.label,
@@ -54,7 +66,9 @@ function getBalanceLookupErrorMessage(error: unknown) {
 }
 
 export function BatchDistributorPage() {
-  const [input, setInput] = useState(() => getInitialDistributionInput());
+  const [initialDistribution] = useState(() => importDistributionInput(getInitialDistributionInput()));
+  const [generatedInput, setGeneratedInput] = useState("");
+  const [generatedList, setGeneratedList] = useState<GeneratedDistributionList>(initialGeneratedList);
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [networkId, setNetworkId] = useState<SolanaNetworkId>("mainnet-beta");
   const [rpcEndpoint, setRpcEndpoint] = useState(getNetworkConfig("mainnet-beta").endpoint);
@@ -63,13 +77,31 @@ export function BatchDistributorPage() {
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const wallet = useSolanaWallet();
 
-  const parsed = useMemo(() => parseDistribution(input), [input]);
+  const resetConfirmation = useCallback(() => {
+    setConfirmVisible(false);
+    setSendState(initialSendState);
+  }, []);
+
+  const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
+    setGeneratedList(result);
+    setGeneratedInput(result.output);
+    resetConfirmation();
+  }, [resetConfirmation]);
+
+  const parsed = useMemo(() => parseDistribution(generatedInput), [generatedInput]);
   const selectedNetwork = useMemo(() => getNetworkConfig(networkId), [networkId]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.endpoint;
   const estimatedChunks = useMemo(() => getEstimatedTransferChunks(parsed.validRows, wallet.address), [parsed.validRows, wallet.address]);
   const transactionCount = estimatedChunks.length;
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
-  const readyToSend = wallet.connected && Boolean(wallet.provider) && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending;
+  const sendComplete = sendState.status === "success";
+  const sendFailed = sendState.status === "error";
+  const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
+  const controlsLocked = sending || unresolvedSubmission;
+  const generatedListReady = generatedList.invalid === 0 && generatedList.duplicates === 0;
+  const readyToSend = wallet.connected && Boolean(wallet.provider) && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending && !sendComplete && !sendFailed;
+  const invalidCount = parsed.invalid + generatedList.invalid;
+  const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const walletBalance = balanceLookup.status === "success" && balanceLookup.valueLamports !== null
     ? formatLamportsForDisplay(balanceLookup.valueLamports)
     : balanceLookup.status === "loading"
@@ -82,18 +114,20 @@ export function BatchDistributorPage() {
     ? sendState.status === "confirming"
       ? "链上确认中"
       : "等待钱包确认"
+    : sendComplete
+      ? "分发已完成"
+    : sendFailed
+      ? "请先核对失败结果"
     : confirmVisible
       ? "确认并签名"
       : "发送前确认";
 
-  const resetConfirmation = () => {
-    setConfirmVisible(false);
-    setSendState(initialSendState);
-  };
-
   useEffect(() => {
+    if (sending || unresolvedSubmission) return;
     resetConfirmation();
-  }, [wallet.address, wallet.connected]);
+    // Keep an in-flight transaction locked even if the wallet changes accounts.
+    // eslint/react-hooks deliberately omits `sending`: completion must not clear its result.
+  }, [resetConfirmation, unresolvedSubmission, wallet.address, wallet.connected]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -135,7 +169,7 @@ export function BatchDistributorPage() {
   }, [balanceRefreshNonce, effectiveRpcEndpoint, wallet.address, wallet.connected]);
 
   const sendDistribution = async () => {
-    if (!readyToSend || !wallet.provider || !wallet.address || !confirmVisible) return;
+    if (!readyToSend || !wallet.provider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
 
     const connection = new Connection(effectiveRpcEndpoint, "confirmed");
     const sendOptions: SendOptions = {
@@ -233,11 +267,14 @@ export function BatchDistributorPage() {
             status: "confirming"
           });
 
-          await connection.confirmTransaction({
+          const confirmation = await connection.confirmTransaction({
             blockhash: latestBlockhash.blockhash,
             lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
             signature: signatures[index]
           }, "confirmed");
+          if (confirmation.value.err) {
+            throw new Error(`第 ${index + 1} 笔交易链上执行失败：${JSON.stringify(confirmation.value.err)}`);
+          }
           confirmedCount += 1;
 
           setSendState({
@@ -271,11 +308,14 @@ export function BatchDistributorPage() {
             status: "confirming"
           });
 
-          await connection.confirmTransaction({
+          const confirmation = await connection.confirmTransaction({
             blockhash: currentBlockhash.blockhash,
             lastValidBlockHeight: currentBlockhash.lastValidBlockHeight,
             signature
           }, "confirmed");
+          if (confirmation.value.err) {
+            throw new Error(`第 ${index + 1} 笔交易链上执行失败：${JSON.stringify(confirmation.value.err)}`);
+          }
           confirmedCount += 1;
 
           setSendState({
@@ -324,7 +364,7 @@ export function BatchDistributorPage() {
       <SkipLink />
       <main className="shell tool-shell page-distributor" id="main">
         <BrandHeader
-          eyebrow="solana distributor"
+          compact
           title="Solana 批量分发"
           nav={<NavLinks current="distributor" />}
         />
@@ -334,26 +374,26 @@ export function BatchDistributorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="list-title">Solana 分发清单</h2>
-                <p className="panel-note">每行必须是 `地址,金额`，金额单位固定为 SOL。</p>
               </div>
               <span className="pill network-pill">{selectedNetwork.label}</span>
             </div>
 
             <div className="form">
-              <div className="batch-command">
-                <div className="command-copy">
-                  <span className="eyebrow">wallet gate</span>
-                  <strong>{wallet.connected ? "钱包已连接" : wallet.status === "connecting" ? "等待钱包确认" : "连接 Solana 钱包"}</strong>
-                  <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后会解锁确认分发。"}</span>
+              <WalletConnectionControl disabled={controlsLocked} wallet={wallet} />
+
+              {initialDistribution.hasMixedAmounts ? (
+                <div className="notice compact-notice">
+                  <strong>旧清单金额未导入</strong>
+                  <span>已保留收款地址，请重新设置统一金额或随机区间。</span>
                 </div>
-                <WalletConnectionControl wallet={wallet} />
-              </div>
+              ) : null}
 
               <div className="transaction-options compact-route" aria-label="链路配置">
                 <div className="route-fields sol-route-fields">
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
                     <SearchableSelect
+                      disabled={controlsLocked}
                       emptyMessage="未找到匹配的 Solana 网络"
                       id="networkId"
                       listboxLabel="Solana 网络"
@@ -371,7 +411,7 @@ export function BatchDistributorPage() {
                   </div>
                   <div className="field route-card rpc-field">
                     <label htmlFor="rpcEndpoint">RPC</label>
-                    <input id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
+                    <input disabled={controlsLocked} id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
                       setRpcEndpoint(event.target.value);
                       resetConfirmation();
                     }} />
@@ -395,30 +435,28 @@ export function BatchDistributorPage() {
                 </div>
               </div>
 
-              <div className="field">
-                <label htmlFor="distributionInput">地址,金额</label>
-                <p className="hint">示例：7hQm...SxyQ,0.1。逗号前后有空格也可以，当前单位：SOL。</p>
-                <textarea
-                  id="distributionInput"
-                  spellCheck={false}
-                  value={input}
-                  onChange={(event) => {
-                    setInput(event.target.value);
-                    resetConfirmation();
-                  }}
-                  placeholder={"7hQmJpYvKq2ms2uUpu2f4pCmJfM7m2HJ9dXkR4g3SxyQ,0.1\n9YcQwQ6kR4pYc5v2yAf9hWeXvX5gK2oA9rRk2mL3pZqE,0.1"}
-                />
-              </div>
+              <DistributionListGenerator
+                addressKind="solana"
+                decimals={9}
+                disabled={controlsLocked}
+                initialAddresses={initialDistribution.addresses}
+                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                onDirty={resetConfirmation}
+                onResultChange={handleGeneratedListChange}
+                symbol="SOL"
+              />
               <div className="actions">
                 <div className="action-group">
                   <button className="button primary" type="button" disabled={!readyToSend} onClick={handlePrimaryAction}>{sendButtonLabel}</button>
                   {showFinalSummary ? (
                     <button className="button ghost" type="button" onClick={resetConfirmation}>返回修改</button>
                   ) : null}
-                  <button className="button danger" type="button" onClick={() => {
-                    setInput("");
-                    resetConfirmation();
-                  }}>清空</button>
+                  {sendFailed ? (
+                    <button className="button ghost" type="button" onClick={resetConfirmation}>已核对链上记录，重新准备</button>
+                  ) : null}
+                  {sendComplete ? (
+                    <button className="button ghost" type="button" onClick={resetConfirmation}>开始新的分发</button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -426,8 +464,8 @@ export function BatchDistributorPage() {
             <div className="stats" aria-label="分发统计">
               <Metric value={String(parsed.validRows.length)} label="有效收款地址" />
               <Metric value={parsed.total} label="合计 SOL" />
-              <Metric value={String(parsed.invalid)} label="需修正" />
-              <Metric value={String(parsed.duplicates)} label="重复地址" />
+              <Metric value={String(invalidCount)} label="需修正" />
+              <Metric value={String(duplicateCount)} label="重复地址" />
             </div>
           </section>
 
@@ -435,7 +473,6 @@ export function BatchDistributorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="review-title">发送前检查</h2>
-                <p className="panel-note">只在没有错误且钱包已连接时允许确认分发。</p>
               </div>
             </div>
             <div className="form">

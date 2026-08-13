@@ -19,7 +19,7 @@ function CloseIcon() {
   );
 }
 
-export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState }) {
+export function WalletConnectionControl({ disabled = false, wallet }: { disabled?: boolean; wallet: SolanaWalletState }) {
   const [chooserOpen, setChooserOpen] = useState(false);
   const chooserTitleId = useId();
   const stateClass = wallet.connected ? "connected" : wallet.status === "connecting" ? "pending" : wallet.status === "error" ? "error" : "";
@@ -59,7 +59,7 @@ export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState 
         <span className="dot" aria-hidden="true" />
         <span>{wallet.statusText}</span>
       </span>
-      <button className="button primary" type="button" disabled={wallet.status === "connecting"} onClick={handleClick}>
+      <button className="button primary" type="button" disabled={disabled || wallet.status === "connecting"} onClick={handleClick}>
         <WalletIcon />
         <span>{wallet.buttonLabel}</span>
       </button>
@@ -70,7 +70,6 @@ export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState 
           <section className="wallet-modal" role="dialog" aria-modal="true" aria-labelledby={chooserTitleId}>
             <div className="wallet-modal-header">
               <div>
-                <span className="eyebrow">wallet gate</span>
                 <h3 id={chooserTitleId}>选择 Solana 钱包</h3>
               </div>
               <button className="wallet-modal-close" type="button" aria-label="关闭钱包选择" onClick={() => setChooserOpen(false)}>
@@ -90,7 +89,7 @@ export function WalletConnectionControl({ wallet }: { wallet: SolanaWalletState 
                     <span className="wallet-choice-mark" aria-hidden="true">{detectedWallet.name.slice(0, 1)}</span>
                     <span className="wallet-choice-copy">
                       <strong>{detectedWallet.name}</strong>
-                      <span>{selected ? "当前选中" : "插件钱包"}</span>
+                      {selected ? <span>当前选中</span> : null}
                     </span>
                     <span className="wallet-choice-action">连接</span>
                   </button>

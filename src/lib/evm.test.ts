@@ -27,6 +27,7 @@ import {
 const addressOne = "0x00000000000000000000000000000000000000aa";
 const addressOneMixedCase = "0x00000000000000000000000000000000000000AA";
 const addressTwo = "0x0000000000000000000000000000000000000002";
+const addressThree = "0x0000000000000000000000000000000000000003";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -68,6 +69,22 @@ describe("parseEvmDistribution", () => {
       "格式需要刚好包含一个逗号",
       "金额需要大于 0"
     ]));
+  });
+
+  it("rejects excess precision instead of rounding the amount", () => {
+    const cases = [
+      { amount: "0.5", decimals: 0 },
+      { amount: "1.0000009", decimals: 6 },
+      { amount: "1.0000000000000000001", decimals: 18 }
+    ];
+
+    for (const testCase of cases) {
+      const parsed = parseEvmDistribution(`${addressThree},${testCase.amount}`, testCase.decimals);
+      expect(parsed.invalid).toBe(1);
+      expect(parsed.totalWei).toBe(0n);
+      expect(parsed.rows[0].valueWei).toBe(0n);
+      expect(parsed.rows[0].problems).toContain(`金额需要大于 0，最多 ${testCase.decimals} 位小数`);
+    }
   });
 
   it("marks duplicate EVM addresses case-insensitively", () => {
