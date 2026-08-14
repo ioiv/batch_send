@@ -587,14 +587,16 @@ export function parseEvmDistribution(input: string, decimals = 18): ParseEvmDist
     if (parts.length !== 2) problems.push("格式需要刚好包含一个逗号");
     if (!isAddress(address)) problems.push("EVM 地址格式不正确");
 
-    const amountMatch = amountRaw.match(/^(\d+)(?:\.(\d*))?$/);
+    const amountMatch = amountRaw.length <= 160 ? amountRaw.match(/^(\d+)(?:\.(\d*))?$/) : null;
     const fractionDigits = amountMatch?.[2]?.length || 0;
-    if (!amountMatch || fractionDigits > decimals) {
+    const normalizedWhole = amountMatch?.[1].replace(/^0+(?=\d)/, "") || "";
+    if (!amountMatch || fractionDigits > decimals || normalizedWhole.length > 78) {
       problems.push(`金额需要大于 0，最多 ${decimals} 位小数`);
     } else {
       try {
         valueWei = parseUnits(amountRaw, decimals);
         if (valueWei <= 0n) problems.push("金额需要大于 0");
+        else if (valueWei > (1n << 256n) - 1n) problems.push("金额不能超过 uint256 范围");
       } catch {
         problems.push(`金额需要大于 0，最多 ${decimals} 位小数`);
       }

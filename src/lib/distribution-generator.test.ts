@@ -3,6 +3,7 @@ import {
   dedupeDistributionAddresses,
   generateDistributionList,
   getDistributionAmountStep,
+  importDistributionFileText,
   importDistributionInput
 } from "./distribution-generator";
 
@@ -104,6 +105,19 @@ describe("generateDistributionList fixed amounts", () => {
     expect(result.issues).toEqual(["固定金额需要大于 0，最多 6 位小数"]);
     expect(result.totalUnits).toBe(0n);
     expect(result.total).toBe("0");
+  });
+
+  it("rejects amounts outside uint256 without parsing unbounded integers", () => {
+    const result = generateDistributionList({
+      addresses: evmAddressOne,
+      addressKind: "evm",
+      decimals: 18,
+      fixedAmount: "9".repeat(100_000),
+      mode: "fixed"
+    });
+
+    expect(result.validCount).toBe(0);
+    expect(result.invalid).toBe(1);
   });
 
   it("tracks EVM duplicates case-insensitively and excludes them from the sendable total", () => {
@@ -253,5 +267,52 @@ describe("importDistributionInput", () => {
       hadAmounts: false,
       hasMixedAmounts: false
     });
+  });
+});
+
+describe("importDistributionFileText", () => {
+  it("accepts a csv header and preserves one shared amount", () => {
+    expect(importDistributionFileText(`\uFEFFaddress,amount\n${evmAddressOne},0.5\n${evmAddressTwo},0.5`)).toEqual({
+      addresses: `${evmAddressOne}\n${evmAddressTwo}`,
+      fixedAmount: "0.5",
+      hadAmounts: true,
+      hasMixedAmounts: false,
+      invalidRows: 0,
+      sourceRows: 2,
+      truncated: false
+    });
+  });
+
+  it("accepts tab-delimited text and rejects oversized content", () => {
+    expect(importDistributionFileText(`address\tamount\n${evmAddressOne}\t0.5`).fixedAmount).toBe("0.5");
+    expect(() => importDistributionFileText("x".repeat(512 * 1024 + 1))).toThrow("512 KB");
+  });
+
+  it("reports mixed amounts and truncation without silently changing the first rows", () => {
+    expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo},2`, 1)).toEqual({
+      addresses: evmAddressOne,
+      fixedAmount: "1",
+      hadAmounts: true,
+      hasMixedAmounts: false,
+      invalidRows: 0,
+      sourceRows: 2,
+      truncated: true
+    });
+    expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo},2`).hasMixedAmounts).toBe(true);
+  });
+
+  it("accepts common headers and quoted values while reporting malformed rows", () => {
+    const imported = importDistributionFileText(
+      `wallet_address,amount\n"${evmAddressOne}","0.25"\n${evmAddressTwo},0.25,unexpected`
+    );
+
+    expect(imported.addresses).toBe(evmAddressOne);
+    expect(imported.fixedAmount).toBe("0.25");
+    expect(imported.invalidRows).toBe(1);
+  });
+
+  it("rejects unsafe row limits", () => {
+    expect(() => importDistributionFileText(evmAddressOne, 0)).toThrow("maxRows");
+    expect(() => importDistributionFileText(evmAddressOne, 10_001)).toThrow("maxRows");
   });
 });

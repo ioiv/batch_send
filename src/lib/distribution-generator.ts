@@ -35,6 +35,7 @@ type AmountPlan = {
 };
 
 const decimalAmountPattern = /^(\d+)(?:\.(\d*))?$/;
+const maxUint256 = (1n << 256n) - 1n;
 
 function assertDecimals(decimals: number) {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
@@ -48,15 +49,19 @@ function getScale(decimals: number) {
 }
 
 function parseAmountToUnits(value: string, decimals: number) {
-  const match = value.trim().match(decimalAmountPattern);
+  const normalizedInput = value.trim();
+  if (normalizedInput.length > 160) return null;
+  const match = normalizedInput.match(decimalAmountPattern);
   if (!match) return null;
 
   const fraction = match[2] || "";
   if (fraction.length > decimals) return null;
+  const normalizedWhole = match[1].replace(/^0+(?=\d)/, "");
+  if (normalizedWhole.length > 78) return null;
 
-  const units = BigInt(match[1]) * getScale(decimals)
+  const units = BigInt(normalizedWhole) * getScale(decimals)
     + BigInt(fraction.padEnd(decimals, "0") || "0");
-  return units > 0n ? units : null;
+  return units > 0n && units <= maxUint256 ? units : null;
 }
 
 function formatAmountUnits(units: bigint, decimals: number) {
@@ -176,6 +181,65 @@ export type ImportedDistributionInput = {
   hasMixedAmounts: boolean;
 };
 
+export type ImportedDistributionFile = ImportedDistributionInput & {
+  invalidRows: number;
+  sourceRows: number;
+  truncated: boolean;
+};
+
+const maximumDistributionFileCharacters = 512 * 1024;
+
+function parseDistributionFileFields(line: string) {
+  const normalizedLine = line.includes("\t") && !line.includes(",")
+    ? line.replace(/\t/g, ",")
+    : line;
+  if (!normalizedLine.includes(",")) return [normalizedLine.trim()];
+
+  const fields: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < normalizedLine.length; index += 1) {
+    const character = normalizedLine[index];
+    if (character === '"') {
+      if (quoted && normalizedLine[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (character === "," && !quoted) {
+      fields.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (quoted) return null;
+  fields.push(current.trim());
+  return fields;
+}
+
+function isDistributionFileHeader(fields: readonly string[]) {
+  const normalize = (value: string) => value.toLowerCase().replace(/[\s_-]/g, "");
+  const addressHeader = normalize(fields[0] || "");
+  const amountHeader = normalize(fields[1] || "");
+  const isAddressHeader = [
+    "address",
+    "recipient",
+    "recipientaddress",
+    "to",
+    "toaddress",
+    "wallet",
+    "walletaddress",
+    "地址",
+    "收款地址",
+    "钱包地址"
+  ].includes(addressHeader);
+  return isAddressHeader && (fields.length === 1 || ["amount", "value", "数量", "金额"].includes(amountHeader));
+}
+
 export function importDistributionInput(input: string): ImportedDistributionInput {
   const rows = input.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const addresses: string[] = [];
@@ -196,6 +260,45 @@ export function importDistributionInput(input: string): ImportedDistributionInpu
     fixedAmount: amounts.size === 1 ? [...amounts][0] : "",
     hadAmounts,
     hasMixedAmounts: amounts.size > 1
+  };
+}
+
+export function importDistributionFileText(input: string, maxRows = 5_000): ImportedDistributionFile {
+  if (!Number.isInteger(maxRows) || maxRows <= 0 || maxRows > 10_000) {
+    throw new RangeError("maxRows must be an integer between 1 and 10000");
+  }
+  if (input.length > maximumDistributionFileCharacters) {
+    throw new RangeError("distribution file text must not exceed 512 KB");
+  }
+
+  const sourceRows = input
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstFields = sourceRows.length ? parseDistributionFileFields(sourceRows[0]) : null;
+  if (firstFields && isDistributionFileHeader(firstFields)) {
+    sourceRows.shift();
+  }
+
+  const truncated = sourceRows.length > maxRows;
+  const normalizedRows: string[] = [];
+  let invalidRows = 0;
+  for (const sourceRow of sourceRows.slice(0, maxRows)) {
+    const fields = parseDistributionFileFields(sourceRow);
+    if (!fields || fields.length < 1 || fields.length > 2 || !fields[0]
+      || (fields.length === 2 && !fields[1])) {
+      invalidRows += 1;
+      continue;
+    }
+    normalizedRows.push(fields.length === 2 ? `${fields[0]},${fields[1]}` : fields[0]);
+  }
+  const imported = importDistributionInput(normalizedRows.join("\n"));
+  return {
+    ...imported,
+    invalidRows,
+    sourceRows: sourceRows.length,
+    truncated
   };
 }
 

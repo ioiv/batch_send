@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DistributionListGenerator } from "../components/DistributionListGenerator";
 import { DistributionReview } from "../components/DistributionReview";
 import { Metric } from "../components/Metric";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
+import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { shortenAddress } from "../lib/address";
@@ -34,6 +34,12 @@ type BalanceLookupState = {
   status: "idle" | "loading" | "success" | "error";
   valueLamports: bigint | null;
 };
+
+const solDistributionSteps: ToolPageStep[] = [
+  { label: "准备", description: "连接钱包并整理清单" },
+  { label: "确认", description: "核对网络、金额和批次" },
+  { label: "批量发送", description: "签名并跟踪链上结果" }
+];
 
 const initialBalanceLookupState: BalanceLookupState = {
   message: "",
@@ -75,7 +81,15 @@ export function BatchDistributorPage() {
   const [sendState, setSendState] = useState(initialSendState);
   const [balanceLookup, setBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
+  const [listImporting, setListImporting] = useState(false);
+  const listImportingRef = useRef(false);
+  const sendOperationRef = useRef(false);
   const wallet = useSolanaWallet();
+
+  const handleListImportingChange = useCallback((importing: boolean) => {
+    listImportingRef.current = importing;
+    setListImporting(importing);
+  }, []);
 
   const resetConfirmation = useCallback(() => {
     setConfirmVisible(false);
@@ -98,8 +112,9 @@ export function BatchDistributorPage() {
   const sendFailed = sendState.status === "error";
   const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
   const controlsLocked = sending || unresolvedSubmission;
+  const pageControlsLocked = controlsLocked || listImporting;
   const generatedListReady = generatedList.invalid === 0 && generatedList.duplicates === 0;
-  const readyToSend = wallet.connected && Boolean(wallet.provider) && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending && !sendComplete && !sendFailed;
+  const readyToSend = wallet.connected && Boolean(wallet.provider) && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !sending && !sendComplete && !sendFailed && !listImporting;
   const invalidCount = parsed.invalid + generatedList.invalid;
   const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const walletBalance = balanceLookup.status === "success" && balanceLookup.valueLamports !== null
@@ -114,6 +129,8 @@ export function BatchDistributorPage() {
     ? sendState.status === "confirming"
       ? "链上确认中"
       : "等待钱包确认"
+    : listImporting
+      ? "正在导入清单"
     : sendComplete
       ? "分发已完成"
     : sendFailed
@@ -169,7 +186,8 @@ export function BatchDistributorPage() {
   }, [balanceRefreshNonce, effectiveRpcEndpoint, wallet.address, wallet.connected]);
 
   const sendDistribution = async () => {
-    if (!readyToSend || !wallet.provider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.provider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
+    sendOperationRef.current = true;
 
     const connection = new Connection(effectiveRpcEndpoint, "confirmed");
     const sendOptions: SendOptions = {
@@ -346,11 +364,13 @@ export function BatchDistributorPage() {
         signatures,
         status: "error"
       });
+    } finally {
+      sendOperationRef.current = false;
     }
   };
 
   const handlePrimaryAction = () => {
-    if (!readyToSend) return;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend) return;
     if (!confirmVisible) {
       setConfirmVisible(true);
       setSendState(initialSendState);
@@ -359,16 +379,21 @@ export function BatchDistributorPage() {
     void sendDistribution();
   };
 
-  return (
-    <>
-      <SkipLink />
-      <main className="shell tool-shell page-distributor" id="main">
-        <BrandHeader
-          compact
-          title="Solana 批量分发"
-          nav={<NavLinks current="distributor" />}
-        />
+  const activeStep = !confirmVisible ? 0 : showFinalSummary ? 1 : 2;
 
+  return (
+    <ToolPageLayout
+      activeStep={activeStep}
+      categoryHref="/#distribution"
+      categoryLabel="批量发送"
+      currentToolId="sol-distribution"
+      description="从一个已连接的钱包向多地址分发 SOL；先生成清单和费用预览，再统一确认签名。"
+      eyebrow="One to many · Solana"
+      mainClassName="page-distributor"
+      meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">钱包签名</span></>}
+      steps={solDistributionSteps}
+      title="SOL 批量分发"
+    >
         <section className="workspace batch-workspace">
           <section className="panel input-panel" aria-labelledby="list-title">
             <div className="panel-header">
@@ -379,7 +404,7 @@ export function BatchDistributorPage() {
             </div>
 
             <div className="form">
-              <WalletConnectionControl disabled={controlsLocked} wallet={wallet} />
+              <WalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />
 
               {initialDistribution.hasMixedAmounts ? (
                 <div className="notice compact-notice">
@@ -393,7 +418,7 @@ export function BatchDistributorPage() {
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
                     <SearchableSelect
-                      disabled={controlsLocked}
+                      disabled={pageControlsLocked}
                       emptyMessage="未找到匹配的 Solana 网络"
                       id="networkId"
                       listboxLabel="Solana 网络"
@@ -411,7 +436,7 @@ export function BatchDistributorPage() {
                   </div>
                   <div className="field route-card rpc-field">
                     <label htmlFor="rpcEndpoint">RPC</label>
-                    <input disabled={controlsLocked} id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
+                    <input disabled={pageControlsLocked} id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
                       setRpcEndpoint(event.target.value);
                       resetConfirmation();
                     }} />
@@ -442,6 +467,7 @@ export function BatchDistributorPage() {
                 initialAddresses={initialDistribution.addresses}
                 initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
                 onDirty={resetConfirmation}
+                onImportingChange={handleListImportingChange}
                 onResultChange={handleGeneratedListChange}
                 symbol="SOL"
               />
@@ -513,7 +539,6 @@ export function BatchDistributorPage() {
             </div>
           </aside>
         </section>
-      </main>
-    </>
+    </ToolPageLayout>
   );
 }

@@ -4,6 +4,13 @@ import type { PrivateKeyAccount } from "viem/accounts";
 import {
   deriveEvmCollectionAddress,
   executeEvmCollectionPlan,
+  maximumEvmCollectionAssetInputEntries,
+  maximumEvmCollectionInputCharacters,
+  maximumEvmCollectionInputIssues,
+  maximumEvmCollectionInputLines,
+  maximumEvmPrivateKeyInputEntries,
+  maximumEvmTokenId,
+  maximumEvmTokenIdDigits,
   normalizeEvmCollectionError,
   parseEvmCollectionAssets,
   parseEvmPrivateKeyInput,
@@ -141,6 +148,46 @@ describe("parseEvmPrivateKeyInput", () => {
     ]);
     expect(JSON.stringify(parsed)).not.toContain(zeroKey);
   });
+
+  it("rejects oversized key sets before deriving any account", () => {
+    const deriveAccount = vi.fn(() => {
+      throw new Error("the preflight limit should run first");
+    });
+    const input = Array.from(
+      { length: maximumEvmPrivateKeyInputEntries + 1 },
+      () => privateKeyOne
+    ).join("\n");
+
+    const parsed = parseEvmPrivateKeyInput(input, { deriveAccount });
+
+    expect(deriveAccount).not.toHaveBeenCalled();
+    expect(parsed.accounts).toHaveLength(0);
+    expect(parsed.invalid).toBe(1);
+    expect(parsed.issues).toEqual([
+      expect.objectContaining({ code: "input-limit", line: maximumEvmPrivateKeyInputEntries + 1 })
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain(privateKeyOne);
+  });
+
+  it("bounds private-key input characters, physical lines, and retained issues", () => {
+    const tooLong = parseEvmPrivateKeyInput(
+      `${privateKeyOne}${"x".repeat(maximumEvmCollectionInputCharacters)}`
+    );
+    const tooManyLines = parseEvmPrivateKeyInput(
+      `${privateKeyOne}${"\n".repeat(maximumEvmCollectionInputLines)}`
+    );
+    const invalidRows = parseEvmPrivateKeyInput(
+      Array.from({ length: maximumEvmCollectionInputIssues + 1 }, (_, index) => `wallet-${index},0x1`).join("\n")
+    );
+
+    expect(tooLong.issues).toEqual([expect.objectContaining({ code: "input-limit" })]);
+    expect(tooManyLines.issues).toEqual([
+      expect.objectContaining({ code: "input-limit", line: maximumEvmCollectionInputLines + 1 })
+    ]);
+    expect(invalidRows.invalid).toBe(maximumEvmCollectionInputIssues + 1);
+    expect(invalidRows.issues).toHaveLength(maximumEvmCollectionInputIssues);
+    expect(invalidRows.rows).toHaveLength(maximumEvmCollectionInputIssues);
+  });
 });
 
 describe("normalizeEvmCollectionError", () => {
@@ -196,6 +243,45 @@ describe("parseEvmCollectionAssets", () => {
       "Token ID 必须是非负十进制整数"
     ]));
     expect(erc20.invalid).toBe(1);
+  });
+
+  it("accepts the maximum uint256 token ID and rejects larger or overlong IDs", () => {
+    const maximum = parseEvmCollectionAssets(`${nftAddress},${maximumEvmTokenId}`, "erc721");
+    const overflow = parseEvmCollectionAssets(`${nftAddress},${maximumEvmTokenId + 1n}`, "erc721");
+    const overlong = parseEvmCollectionAssets(
+      `${nftAddress},${"9".repeat(maximumEvmTokenIdDigits + 1)}`,
+      "erc1155"
+    );
+
+    expect(maximum.assets[0]).toMatchObject({ tokenId: maximumEvmTokenId });
+    expect(overflow).toMatchObject({ assets: [], invalid: 1 });
+    expect(overlong).toMatchObject({ assets: [], invalid: 1 });
+    expect(overflow.rows[0].problems).toContain("Token ID 超出 uint256 范围");
+    expect(overlong.rows[0].problems).toContain("Token ID 超出 uint256 范围");
+  });
+
+  it("bounds asset entries, characters, and retained invalid rows", () => {
+    const tooManyEntries = parseEvmCollectionAssets(
+      Array.from({ length: maximumEvmCollectionAssetInputEntries + 1 }, () => tokenAddress).join("\n"),
+      "erc20"
+    );
+    const tooLong = parseEvmCollectionAssets(
+      `${tokenAddress}${"x".repeat(maximumEvmCollectionInputCharacters)}`,
+      "erc20"
+    );
+    const invalidRows = parseEvmCollectionAssets(
+      Array.from({ length: maximumEvmCollectionInputIssues + 1 }, () => "not-an-address").join("\n"),
+      "erc20"
+    );
+
+    expect(tooManyEntries).toMatchObject({ assets: [], invalid: 1 });
+    expect(tooManyEntries.rows[0]).toMatchObject({
+      line: maximumEvmCollectionAssetInputEntries + 1,
+      status: "invalid"
+    });
+    expect(tooLong).toMatchObject({ assets: [], invalid: 1 });
+    expect(invalidRows.invalid).toBe(maximumEvmCollectionInputIssues + 1);
+    expect(invalidRows.rows).toHaveLength(maximumEvmCollectionInputIssues);
   });
 });
 

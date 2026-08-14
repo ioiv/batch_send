@@ -87,6 +87,13 @@ describe("parseEvmDistribution", () => {
     }
   });
 
+  it("rejects amounts outside uint256 without parsing unbounded integers", () => {
+    const parsed = parseEvmDistribution(`${addressOne},${"9".repeat(100_000)}`);
+
+    expect(parsed.invalid).toBe(1);
+    expect(parsed.totalWei).toBe(0n);
+  });
+
   it("marks duplicate EVM addresses case-insensitively", () => {
     const parsed = parseEvmDistribution(`${addressOne},1\n${addressOneMixedCase},2\n${addressTwo},3`);
 

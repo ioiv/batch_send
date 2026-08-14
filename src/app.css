@@ -209,6 +209,31 @@ svg {
   gap: 3px;
 }
 
+.generator-heading > .generator-heading-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.generator-import-button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.generator-import-message {
+  margin-top: -8px;
+}
+
 .generator-heading strong,
 .generator-heading span,
 .generator-summary span,
@@ -676,6 +701,11 @@ textarea {
     flex-direction: column;
   }
 
+  .generator-heading > .generator-heading-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .generator-amount-grid.random {
     grid-template-columns: 1fr;
   }
@@ -906,6 +936,14 @@ textarea {
   grid-template-columns: minmax(0, 0.98fr) minmax(380px, 1.02fr);
 }
 
+.collection-workspace.has-results > * {
+  grid-column: 1 / -1;
+}
+
+.collection-workspace.has-results .collection-results {
+  position: static;
+}
+
 .collection-form {
   gap: 20px;
 }
@@ -923,6 +961,141 @@ textarea {
 .collection-asset-textarea,
 .secret-textarea {
   min-height: 176px;
+}
+
+.nft-asset-builder {
+  display: grid;
+  gap: 13px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 15px;
+  background: rgba(249, 249, 248, 0.9);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.nft-asset-builder-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nft-asset-builder-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.nft-asset-builder-heading h3,
+.nft-asset-builder-heading p {
+  margin: 0;
+}
+
+.nft-asset-builder-heading h3 {
+  font-size: 14px;
+}
+
+.nft-asset-builder-heading p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.nft-asset-builder-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.nft-add-button {
+  min-width: 108px;
+}
+
+.nft-asset-builder-issues {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  color: var(--danger);
+  font-size: 11px;
+  list-style: none;
+}
+
+.nft-input-modes {
+  display: grid;
+  gap: 10px;
+}
+
+.nft-discovery-card {
+  display: grid;
+  gap: 12px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 15px;
+  background: rgba(255, 248, 239, 0.68);
+  box-shadow: inset 0 0 0 1px rgba(232, 139, 43, 0.2);
+}
+
+.nft-discovery-card > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.nft-discovery-card h3,
+.nft-discovery-card p {
+  margin: 0;
+}
+
+.nft-discovery-card h3 {
+  font-size: 14px;
+}
+
+.nft-discovery-card > div:first-child p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.nft-discovery-action {
+  display: flex;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.nft-discovery-issues {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 244, 241, 0.72);
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+  list-style-position: inside;
+}
+
+@media (max-width: 680px) {
+  .nft-asset-builder-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .nft-asset-builder-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .nft-add-button {
+    width: 100%;
+  }
+
+  .nft-discovery-action {
+    width: 100%;
+  }
+
+  .nft-discovery-action .button {
+    width: 100%;
+  }
 }
 
 .secret-input {
@@ -944,6 +1117,58 @@ textarea {
   font-family: var(--font-mono);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.secret-file-import {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secret-file-button {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.secret-file-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.secret-file-button:focus-within {
+  outline: 3px solid rgba(58, 93, 223, 0.18);
+  outline-offset: 2px;
+}
+
+.secret-file-button.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.secret-file-button.is-disabled input {
+  cursor: not-allowed;
+}
+
+.secret-file-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.secret-file-status.is-error {
+  color: var(--danger);
+  white-space: normal;
 }
 
 .secret-textarea {
@@ -1010,8 +1235,8 @@ textarea {
   font-size: 13px;
 }
 
-.collection-inline-status p,
-.collection-final-confirm p {
+.site-page .collection-inline-status p,
+.site-page .collection-final-confirm p {
   color: inherit;
   font-size: 12px;
   line-height: 1.55;
@@ -1057,6 +1282,78 @@ textarea {
 
 .collection-stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.collection-results-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .collection-results-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .collection-result-search {
+    width: 100%;
+    flex-basis: auto;
+  }
+}
+
+.collection-filter-tabs {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.collection-filter-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: rgba(245, 246, 247, 0.88);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.collection-filter-tabs button.is-active {
+  background: rgba(255, 244, 229, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(232, 139, 43, 0.38);
+  color: var(--accent-strong);
+}
+
+.collection-result-search {
+  width: min(240px, 100%);
+  flex: 0 1 240px;
+}
+
+.collection-result-search input {
+  min-height: 36px;
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
+.collection-filter-empty {
+  min-height: 160px;
+  gap: 12px;
+}
+
+.collection-filter-empty > div {
+  display: grid;
+  gap: 5px;
+}
+
+.collection-filter-empty .button {
+  justify-self: center;
 }
 
 .collection-result-list {
@@ -1290,5 +1587,14 @@ textarea {
     align-items: flex-start;
     flex-direction: column;
     gap: 3px;
+  }
+
+  .secret-file-import {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .secret-file-status {
+    width: 100%;
   }
 }

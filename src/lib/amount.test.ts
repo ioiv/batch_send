@@ -16,6 +16,8 @@ describe("parseSolToLamports", () => {
     expect(parseSolToLamports("1.0000000001")).toBeNull();
     expect(parseSolToLamports("abc")).toBeNull();
     expect(parseSolToLamports(".1")).toBeNull();
+    expect(parseSolToLamports("18446744073.709551616")).toBeNull();
+    expect(parseSolToLamports("9".repeat(100_000))).toBeNull();
   });
 });
 

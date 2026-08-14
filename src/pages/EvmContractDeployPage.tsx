@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
+import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import {
@@ -80,6 +80,12 @@ const initialCustomNetworkMetadataState: CustomNetworkMetadataState = {
   nativeCurrencyName: "",
   nativeCurrencySymbol: ""
 };
+
+const deploymentSteps: ToolPageStep[] = [
+  { label: "配置", description: "连接钱包并识别网络" },
+  { label: "校验", description: "检查地址、代码与费用" },
+  { label: "部署", description: "签名并验证链上结果" }
+];
 
 function customNetworkMetadataIsComplete(metadata: CustomNetworkMetadataState) {
   const decimals = metadata.nativeCurrencyDecimals.trim();
@@ -460,17 +466,25 @@ export function EvmContractDeployPage() {
                   ? "重新校验"
                   : "校验部署条件";
 
-  return (
-    <>
-      <SkipLink />
-      <main className="shell tool-shell page-deploy" id="main">
-        <BrandHeader
-          eyebrow="deterministic deploy"
-          title="Disperse 合约部署"
-          subtitle="填写可信的 HTTPS RPC，通过 canonical CreateX 校验并部署固定合约；页面不接触私钥。"
-          nav={<NavLinks current="evmDeploy" />}
-        />
+  const activeStep = status === "ready"
+    ? 1
+    : status === "awaiting-wallet" || status === "confirming" || status === "success" || status === "already-deployed" || Boolean(hash)
+      ? 2
+      : 0;
 
+  return (
+    <ToolPageLayout
+      activeStep={activeStep}
+      categoryHref="/#contract"
+      categoryLabel="合约工具"
+      currentToolId="evm-contract-deploy"
+      description="通过 canonical CreateX 校验并部署固定 Disperse 合约；先完成地址与费用检查，再请求钱包签名。"
+      eyebrow="Deterministic deploy · EVM"
+      mainClassName="page-deploy"
+      meta={<><span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span><span className="pill">页面不接触私钥</span></>}
+      steps={deploymentSteps}
+      title="CreateX 合约部署"
+    >
         <section className="workspace deploy-workspace">
           <section className="panel deploy-panel" aria-labelledby="deploy-title">
             <div className="panel-header">
@@ -815,7 +829,6 @@ export function EvmContractDeployPage() {
             </div>
           </aside>
         </section>
-      </main>
-    </>
+    </ToolPageLayout>
   );
 }

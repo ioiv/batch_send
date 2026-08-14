@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createCollectionResultsCsv, getCollectionResultCounts, type CollectionDisplayResult } from "./collection-results";
+import {
+  createCollectionResultsCsv,
+  filterCollectionResults,
+  getCollectionResultCounts,
+  type CollectionDisplayResult
+} from "./collection-results";
 
 const results: CollectionDisplayResult[] = [
   {
@@ -49,5 +54,17 @@ describe("collection result helpers", () => {
     expect(csv).toContain('"\'+SUM(1,1)"');
     expect(csv).toContain('\' @IMPORTXML');
     expect(csv).not.toContain("privateKey");
+  });
+
+  it("filters by terminal state and searches across safe display fields", () => {
+    expect(filterCollectionResults(results, { status: "error" })).toEqual([results[2]]);
+    expect(filterCollectionResults(results, { query: "WALLET, ONE" })).toEqual([results[0]]);
+    expect(filterCollectionResults(results, { query: "余额为 0", status: "skipped" })).toEqual([results[1]]);
+    expect(filterCollectionResults(results, { query: "missing" })).toEqual([]);
+  });
+
+  it("groups non-terminal states under active", () => {
+    const active = { address: "0x4", asset: "USDC", message: "正在确认", status: "confirming" as const };
+    expect(filterCollectionResults([...results, active], { status: "active" })).toEqual([active]);
   });
 });

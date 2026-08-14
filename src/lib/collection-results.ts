@@ -26,6 +26,13 @@ export type CollectionResultCounts = {
   total: number;
 };
 
+export type CollectionResultFilter = "all" | "active" | "success" | "skipped" | "error";
+
+export type FilterCollectionResultsOptions = {
+  query?: string;
+  status?: CollectionResultFilter;
+};
+
 export function getCollectionResultCounts(results: CollectionDisplayResult[]): CollectionResultCounts {
   return results.reduce<CollectionResultCounts>((counts, result) => {
     counts.total += 1;
@@ -35,6 +42,30 @@ export function getCollectionResultCounts(results: CollectionDisplayResult[]): C
     else counts.active += 1;
     return counts;
   }, { active: 0, error: 0, skipped: 0, success: 0, total: 0 });
+}
+
+export function filterCollectionResults(
+  results: CollectionDisplayResult[],
+  { query = "", status = "all" }: FilterCollectionResultsOptions = {}
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return results.filter((result) => {
+    const matchesStatus = status === "all"
+      || (status === "active"
+        ? !["success", "skipped", "error"].includes(result.status)
+        : result.status === status);
+    if (!matchesStatus) return false;
+    if (!normalizedQuery) return true;
+
+    return [
+      result.address,
+      result.amount,
+      result.asset,
+      result.hash,
+      result.label,
+      result.message
+    ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
+  });
 }
 
 function escapeCsvCell(value: string) {

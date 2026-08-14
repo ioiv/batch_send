@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { BrandHeader, NavLinks, SkipLink } from "../components/BrandHeader";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DistributionListGenerator } from "../components/DistributionListGenerator";
 import { DistributionReview } from "../components/DistributionReview";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { Metric } from "../components/Metric";
 import { SearchableSelect } from "../components/SearchableSelect";
+import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
@@ -38,6 +38,12 @@ import {
   type EvmTokenDetails,
   type EvmTokenDistributionStep
 } from "../lib/evm";
+
+const evmDistributionSteps: ToolPageStep[] = [
+  { label: "准备", description: "选择资产并整理清单" },
+  { label: "确认", description: "核对网络、授权和总额" },
+  { label: "批量发送", description: "签名并跟踪交易结果" }
+];
 import { createSendProgress, initialSendState } from "../lib/solana";
 
 type TokenLookupState = {
@@ -100,7 +106,15 @@ export function EvmBatchDistributorPage() {
   const [nativeBalanceLookup, setNativeBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
+  const [listImporting, setListImporting] = useState(false);
+  const listImportingRef = useRef(false);
+  const sendOperationRef = useRef(false);
   const wallet = useEvmWallet();
+
+  const handleListImportingChange = useCallback((importing: boolean) => {
+    listImportingRef.current = importing;
+    setListImporting(importing);
+  }, []);
 
   const resetConfirmation = useCallback(() => {
     setConfirmVisible(false);
@@ -151,6 +165,7 @@ export function EvmBatchDistributorPage() {
   const sendFailed = sendState.status === "error";
   const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
   const controlsLocked = sending || unresolvedSubmission;
+  const pageControlsLocked = controlsLocked || listImporting;
   const assetReady = assetMode === "native"
     ? nativeCurrencyEnabled
     : tokenLookup.status === "success" && Boolean(tokenDetails);
@@ -163,7 +178,8 @@ export function EvmBatchDistributorPage() {
     && parsed.invalid === 0
     && !sending
     && !sendComplete
-    && !sendFailed;
+    && !sendFailed
+    && !listImporting;
   const invalidCount = parsed.invalid + generatedList.invalid;
   const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const nativeBalance = !nativeCurrencyEnabled
@@ -227,6 +243,8 @@ export function EvmBatchDistributorPage() {
       : sendState.status === "confirming"
       ? "链上确认中"
       : "等待钱包确认"
+    : listImporting
+      ? "正在导入清单"
     : sendComplete
       ? "分发已完成"
     : sendFailed
@@ -477,7 +495,8 @@ export function EvmBatchDistributorPage() {
 
   const sendDistribution = async () => {
     const walletProvider = wallet.getProvider();
-    if (!readyToSend || !walletProvider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
+    sendOperationRef.current = true;
     let observedSignatures: string[] = [];
     let observedProgress = createSendProgress(1);
 
@@ -585,11 +604,13 @@ export function EvmBatchDistributorPage() {
         signatures: observedSignatures,
         status: "error"
       });
+    } finally {
+      sendOperationRef.current = false;
     }
   };
 
   const handlePrimaryAction = () => {
-    if (!readyToSend) return;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend) return;
     if (!confirmVisible) {
       setConfirmVisible(true);
       setSendState(initialSendState);
@@ -598,16 +619,21 @@ export function EvmBatchDistributorPage() {
     void sendDistribution();
   };
 
-  return (
-    <>
-      <SkipLink />
-      <main className="shell tool-shell page-distributor" id="main">
-        <BrandHeader
-          compact
-          title="EVM 批量分发"
-          nav={<NavLinks current="evmDistributor" />}
-        />
+  const activeStep = !confirmVisible ? 0 : showFinalSummary ? 1 : 2;
 
+  return (
+    <ToolPageLayout
+      activeStep={activeStep}
+      categoryHref="/#distribution"
+      categoryLabel="批量发送"
+      currentToolId="evm-distribution"
+      description="在 EVM 网络批量发送原生币或 ERC20；工具会先读取资产信息并展示最终确认摘要。"
+      eyebrow="One to many · EVM"
+      mainClassName="page-distributor"
+      meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">{assetSymbol}</span></>}
+      steps={evmDistributionSteps}
+      title="EVM 批量分发"
+    >
         <section className="workspace batch-workspace">
           <section className="panel input-panel" aria-labelledby="list-title">
             <div className="panel-header">
@@ -618,7 +644,7 @@ export function EvmBatchDistributorPage() {
             </div>
 
             <div className="form">
-              <EvmWalletConnectionControl disabled={controlsLocked} wallet={wallet} />
+              <EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />
 
               {initialDistribution.hasMixedAmounts ? (
                 <div className="notice compact-notice">
@@ -635,7 +661,7 @@ export function EvmBatchDistributorPage() {
                         type="radio"
                         name="assetMode"
                         checked={assetMode === "native"}
-                        disabled={controlsLocked || !nativeCurrencyEnabled}
+                        disabled={pageControlsLocked || !nativeCurrencyEnabled}
                         onChange={() => {
                           setAssetMode("native");
                           setTokenLookup(initialTokenLookupState);
@@ -655,7 +681,7 @@ export function EvmBatchDistributorPage() {
                         type="radio"
                         name="assetMode"
                         checked={assetMode === "token"}
-                        disabled={controlsLocked}
+                        disabled={pageControlsLocked}
                         onChange={() => {
                           setAssetMode("token");
                           setTokenLookup(initialTokenLookupState);
@@ -676,7 +702,7 @@ export function EvmBatchDistributorPage() {
                   <div className="field route-card network-field">
                     <label htmlFor="networkId">网络选择</label>
                     <SearchableSelect
-                      disabled={controlsLocked}
+                      disabled={pageControlsLocked}
                       emptyMessage="未找到匹配的 EVM 链"
                       id="networkId"
                       listboxLabel="EVM 链"
@@ -699,7 +725,7 @@ export function EvmBatchDistributorPage() {
                   </div>
                   <div className="field route-card rpc-field">
                     <label htmlFor="rpcEndpoint">RPC</label>
-                    <input disabled={controlsLocked} id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
+                    <input disabled={pageControlsLocked} id="rpcEndpoint" type="url" value={rpcEndpoint} onChange={(event) => {
                       setRpcEndpoint(event.target.value);
                       setTokenLookup(initialTokenLookupState);
                       resetConfirmation();
@@ -715,7 +741,7 @@ export function EvmBatchDistributorPage() {
                 ) : null}
                 {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
                   <div className="action-group network-config-actions">
-                    <button className="button ghost" disabled={controlsLocked} type="button" onClick={removeSelectedVerifiedNetwork}>移除此链配置</button>
+                    <button className="button ghost" disabled={pageControlsLocked} type="button" onClick={removeSelectedVerifiedNetwork}>移除此链配置</button>
                   </div>
                 ) : null}
                 {assetMode === "token" ? (
@@ -724,7 +750,7 @@ export function EvmBatchDistributorPage() {
                       <label htmlFor="tokenAddress">Token 合约地址</label>
                       <input
                         id="tokenAddress"
-                        disabled={controlsLocked}
+                        disabled={pageControlsLocked}
                         type="text"
                         value={tokenAddress}
                         onChange={(event) => {
@@ -747,6 +773,7 @@ export function EvmBatchDistributorPage() {
                 initialAddresses={initialDistribution.addresses}
                 initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
                 onDirty={resetConfirmation}
+                onImportingChange={handleListImportingChange}
                 onResultChange={handleGeneratedListChange}
                 symbol={assetSymbol}
                 unavailableMessage={generatorUnavailableMessage}
@@ -827,7 +854,6 @@ export function EvmBatchDistributorPage() {
             </div>
           </aside>
         </section>
-      </main>
-    </>
+    </ToolPageLayout>
   );
 }

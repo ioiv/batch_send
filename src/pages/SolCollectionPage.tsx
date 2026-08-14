@@ -1,13 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { CollectionIntro, CollectionSafetyNote } from "../components/CollectionIntro";
+import { CollectionSafetyNote } from "../components/CollectionIntro";
 import { CollectionResults } from "../components/CollectionResults";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { SecretKeyInput, type SecretKeyInputHandle } from "../components/SecretKeyInput";
-import { SiteFooter } from "../components/SiteFooter";
-import { SiteHeader } from "../components/SiteHeader";
+import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
 import { formatLamports, parseSolToLamports } from "../lib/amount";
 import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
+import { validateSolCollectionWorkload } from "../lib/collection-workload";
 import {
   collectSolFromSources,
   parseSolanaSourceKeys,
@@ -23,6 +23,12 @@ import {
 } from "../lib/solana";
 
 type CollectionStage = "editing" | "ready" | "running" | "complete" | "error";
+
+const solCollectionSteps: ToolPageStep[] = [
+  { label: "配置来源", description: "设置网络、保留额与目标" },
+  { label: "检查预览", description: "解析来源并核对地址" },
+  { label: "确认归集", description: "读取费用、签名并确认" }
+];
 
 function validatePublicKey(value: string) {
   try {
@@ -66,9 +72,20 @@ export function SolCollectionPage() {
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
   const [confirmed, setConfirmed] = useState(false);
+  const [errorStep, setErrorStep] = useState<0 | 1 | 2>(0);
+  const [keyImporting, setKeyImporting] = useState(false);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
+  const keyImportingRef = useRef(false);
+  const operationRef = useRef(false);
   const selectedNetwork = getNetworkConfig(networkId);
-  const running = stage === "running";
+  const taskRunning = stage === "running";
+  const running = taskRunning || keyImporting;
+  const activeStep = stage === "error" ? errorStep : stage === "editing" ? 0 : stage === "ready" ? 1 : 2;
+
+  const handleKeyImportingChange = useCallback((importing: boolean) => {
+    keyImportingRef.current = importing;
+    setKeyImporting(importing);
+  }, []);
 
   const networkOptions = useMemo<SearchableSelectOption<SolanaNetworkId>[]>(() => (
     solanaNetworks.map((network) => ({
@@ -80,8 +97,9 @@ export function SolCollectionPage() {
   ), []);
 
   const invalidateConfirmation = (clearResults = true) => {
-    if (running) return;
+    if (operationRef.current || taskRunning) return;
     setStage("editing");
+    setErrorStep(0);
     setConfirmed(false);
     setMessage("");
     setIssues([]);
@@ -89,7 +107,8 @@ export function SolCollectionPage() {
   };
 
   const prepareCollection = () => {
-    if (running) return;
+    if (operationRef.current || keyImportingRef.current || running) return;
+    operationRef.current = true;
     const nextIssues: string[] = [];
     const normalizedTarget = validatePublicKey(targetAddress.trim());
     if (!normalizedTarget) nextIssues.push("目标地址不是有效的 Solana 地址");
@@ -106,10 +125,13 @@ export function SolCollectionPage() {
     parsedSources.duplicates.forEach((duplicate) => (
       nextIssues.push(`密钥第 ${duplicate.duplicateLine} 行与第 ${duplicate.originalLine} 行地址重复`)
     ));
+    nextIssues.push(...validateSolCollectionWorkload(parsedSources.sources.length));
 
     if (nextIssues.length || reserveLamports === null || minCollectionLamports === null) {
+      operationRef.current = false;
       setIssues(nextIssues);
       setStage("error");
+      setErrorStep(0);
       setMessage("请修正输入后重新检查");
       return;
     }
@@ -125,17 +147,20 @@ export function SolCollectionPage() {
       status: source.address === normalizedTarget ? "skipped" : "pending"
     })));
     setStage("ready");
+    setErrorStep(0);
     setMessage(`已解析 ${parsedSources.sources.length} 个来源地址。下一步将在每笔签名前读取实时余额与手续费。`);
+    operationRef.current = false;
   };
 
   const executeCollection = async () => {
-    if (stage !== "ready" || !confirmed) return;
+    if (operationRef.current || keyImportingRef.current || stage !== "ready" || !confirmed) return;
     const normalizedTarget = validatePublicKey(targetAddress.trim());
     const reserveLamports = reserveAmount.trim() === "0" ? 0n : parseSolToLamports(reserveAmount);
     const minCollectionLamports = minimumAmount.trim() === "0" ? 0n : parseSolToLamports(minimumAmount);
     if (!normalizedTarget || reserveLamports === null || minCollectionLamports === null) {
       invalidateConfirmation(false);
       setStage("error");
+      setErrorStep(1);
       setMessage("配置已发生变化，请重新检查");
       return;
     }
@@ -143,11 +168,14 @@ export function SolCollectionPage() {
     const parsedSources = parseSolanaSourceKeys(keyInputRef.current?.read() || "");
     if (!parsedSources.sources.length || parsedSources.errors.length || parsedSources.duplicates.length) {
       setStage("error");
+      setErrorStep(1);
       setMessage("来源钱包内容已变化，请重新检查");
       return;
     }
 
+    operationRef.current = true;
     const connection = new Connection(rpcEndpoint.trim(), "confirmed");
+    keyInputRef.current?.clear();
     setStage("running");
     setConfirmed(false);
     setMessage("正在校验 RPC 网络；校验通过后才会读取余额和签名");
@@ -156,13 +184,14 @@ export function SolCollectionPage() {
       await assertSolanaRpcNetwork(connection, networkId);
     } catch (error) {
       setStage("error");
+      setErrorStep(2);
       setMessage(error instanceof Error && error.message.includes("RPC 网络不匹配")
         ? error.message
         : "无法确认 RPC 所属网络，已阻止归集");
+      operationRef.current = false;
       return;
     }
 
-    keyInputRef.current?.clear();
     setMessage(`正在处理 ${parsedSources.sources.length} 个来源钱包；已提交的交易请勿盲目重试`);
 
     const updateProgress = (progress: SolCollectionProgress) => {
@@ -206,22 +235,27 @@ export function SolCollectionPage() {
       setMessage(`执行结束：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`);
     } catch {
       setStage("error");
+      setErrorStep(2);
       setMessage("归集流程意外中断；请先按已显示的交易哈希核对链上状态，再决定是否重试");
+    } finally {
+      operationRef.current = false;
     }
   };
 
   return (
-    <div className="site-page collection-page">
-      <SiteHeader currentToolId="sol-collection" />
-      <main className="shell collection-shell" id="main">
-        <CollectionIntro
-          chainLabel={selectedNetwork.label}
-          description="逐来源钱包读取实时余额和网络费，扣除自定义保留金额后，用本地签名将可归集 SOL 转入目标地址。"
-          eyebrow="Many to one · Solana"
-          title="SOL 批量归集"
-        />
-
-        <div className="workspace collection-workspace">
+    <ToolPageLayout
+      activeStep={activeStep}
+      categoryHref="/#collection"
+      categoryLabel="资产归集"
+      currentToolId="sol-collection"
+      description="逐来源读取实时余额和网络费，扣除保留金额后，用本地签名将可归集 SOL 转入目标地址。"
+      eyebrow="Many to one · Solana"
+      mainClassName="collection-shell collection-page"
+      meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">密钥仅在本地内存</span></>}
+      steps={solCollectionSteps}
+      title="SOL 归集"
+    >
+        <div className={`workspace collection-workspace${results.length ? " has-results" : ""}`}>
           <section className="panel" aria-labelledby="sol-collection-config-title">
             <div className="panel-header">
               <div>
@@ -313,7 +347,13 @@ export function SolCollectionPage() {
                 </div>
               </div>
 
-              <SecretKeyInput disabled={running} mode="solana" onDirty={() => invalidateConfirmation()} ref={keyInputRef} />
+              <SecretKeyInput
+                disabled={taskRunning}
+                mode="solana"
+                onDirty={() => invalidateConfirmation()}
+                onImportingChange={handleKeyImportingChange}
+                ref={keyInputRef}
+              />
 
               {issues.length ? (
                 <ul className="collection-issue-list" aria-label="输入问题" role="alert">
@@ -350,9 +390,10 @@ export function SolCollectionPage() {
                   setMessage("");
                   setConfirmed(false);
                   setStage("editing");
+                  setErrorStep(0);
                 }} type="button">清空任务</button>
                 {stage === "ready" ? (
-                  <button className="button primary" disabled={!confirmed} onClick={executeCollection} type="button">确认并开始归集</button>
+                  <button className="button primary" disabled={!confirmed || running} onClick={executeCollection} type="button">确认并开始归集</button>
                 ) : (
                   <button className="button primary" disabled={running} onClick={prepareCollection} type="button">检查来源钱包</button>
                 )}
@@ -370,8 +411,6 @@ export function SolCollectionPage() {
             results={results}
           />
         </div>
-      </main>
-      <SiteFooter />
-    </div>
+    </ToolPageLayout>
   );
 }

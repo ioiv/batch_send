@@ -13,6 +13,7 @@ import {
   type SolCollectionProgress,
   type SolCollectionSource
 } from "./sol-collection";
+import { maximumCollectionSources } from "./collection-workload";
 
 const testBlockhash = "11111111111111111111111111111111";
 
@@ -126,6 +127,22 @@ describe("Solana source key parsing", () => {
     }]);
     expect(JSON.stringify(result.errors)).not.toContain(firstSecret);
     expect(JSON.stringify(result.errors)).not.toContain(secondSecret);
+  });
+
+  it("rejects oversized source sets before deriving any keypair", () => {
+    const input = Array.from({ length: maximumCollectionSources + 1 }, () => "invalid-key").join("\n");
+    const result = parseSolanaSourceKeys(input);
+
+    expect(result.sources).toEqual([]);
+    expect(result.errors).toEqual([expect.objectContaining({ code: "input-limit" })]);
+  });
+
+  it("rejects oversized JSON arrays before parsing attacker-controlled content", () => {
+    const oversizedJson = `[${"1,".repeat(300)}1]`;
+    const result = parseSolanaSourceKeys(oversizedJson);
+
+    expect(result.sources).toEqual([]);
+    expect(result.errors).toEqual([expect.objectContaining({ code: "invalid-key" })]);
   });
 });
 

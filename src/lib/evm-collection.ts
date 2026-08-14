@@ -14,6 +14,10 @@ import {
   privateKeyToAccount,
   type PrivateKeyAccount
 } from "viem/accounts";
+import {
+  maximumCollectionSources,
+  maximumEvmCollectionAssets
+} from "./collection-workload";
 
 export type EvmCollectionStandard = "erc20" | "erc721" | "erc1155";
 
@@ -25,7 +29,7 @@ export type EvmCollectionAccount = {
 };
 
 export type EvmPrivateKeyInputIssue = {
-  code: "duplicate-account" | "invalid-format" | "invalid-private-key";
+  code: "duplicate-account" | "input-limit" | "invalid-format" | "invalid-private-key";
   line: number;
   message: string;
 };
@@ -188,6 +192,64 @@ const embeddedPrefixedSecretPattern = /0x[0-9a-fA-F]{64}/gi;
 const embeddedBareSecretPattern = /\b[0-9a-fA-F]{64}\b/g;
 const tokenIdPattern = /^\d+$/;
 
+export const maximumEvmCollectionInputCharacters = 512 * 1024;
+export const maximumEvmCollectionInputLines = 5_000;
+export const maximumEvmCollectionInputIssues = 100;
+export const maximumEvmPrivateKeyInputEntries = maximumCollectionSources;
+export const maximumEvmCollectionAssetInputEntries = maximumEvmCollectionAssets;
+export const maximumEvmTokenIdDigits = 78;
+export const maximumEvmTokenId = (1n << 256n) - 1n;
+
+type BoundedInputIssue = {
+  line: number;
+  message: string;
+};
+
+function inspectBoundedInput(input: string, maximumEntries: number, entryLabel: string): BoundedInputIssue | null {
+  if (input.length > maximumEvmCollectionInputCharacters) {
+    return {
+      line: 1,
+      message: `输入内容过长，单次最多 ${maximumEvmCollectionInputCharacters.toLocaleString("en-US")} 个字符`
+    };
+  }
+
+  let currentLine = 1;
+  let entries = 0;
+  let lineHasContent = false;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (character === "\n") {
+      if (lineHasContent) {
+        entries += 1;
+        if (entries > maximumEntries) {
+          return {
+            line: currentLine,
+            message: `${entryLabel}过多，单次最多 ${maximumEntries.toLocaleString("en-US")} 条`
+          };
+        }
+      }
+      currentLine += 1;
+      if (currentLine > maximumEvmCollectionInputLines) {
+        return {
+          line: currentLine,
+          message: `输入行数过多，单次最多 ${maximumEvmCollectionInputLines.toLocaleString("en-US")} 行`
+        };
+      }
+      lineHasContent = false;
+      continue;
+    }
+    if (!/\s/u.test(character)) lineHasContent = true;
+  }
+
+  if (lineHasContent && entries + 1 > maximumEntries) {
+    return {
+      line: currentLine,
+      message: `${entryLabel}过多，单次最多 ${maximumEntries.toLocaleString("en-US")} 条`
+    };
+  }
+  return null;
+}
+
 function redactSecrets(value: string) {
   return value
     .replace(embeddedPrefixedSecretPattern, "[已隐藏敏感内容]")
@@ -197,7 +259,7 @@ function redactSecrets(value: string) {
 
 function safeLabel(value: string, fallback: string) {
   const redacted = redactSecrets(value).trim();
-  return redacted || fallback;
+  return redacted.slice(0, 120) || fallback;
 }
 
 function getErrorText(error: unknown) {
@@ -270,23 +332,53 @@ export function parseEvmPrivateKeyInput(
   let duplicates = 0;
   let invalid = 0;
 
-  input.split(/\r?\n/).forEach((untrimmedLine, index) => {
+  const limitIssue = inspectBoundedInput(input, maximumEvmPrivateKeyInputEntries, "来源钱包条目");
+  if (limitIssue) {
+    return {
+      accounts,
+      duplicates,
+      invalid: 1,
+      issues: [{ code: "input-limit", ...limitIssue }],
+      rows: [{
+        address: null,
+        label: "输入限制",
+        line: limitIssue.line,
+        message: limitIssue.message,
+        status: "invalid"
+      }]
+    };
+  }
+
+  const pushIssue = (
+    issue: EvmPrivateKeyInputIssue,
+    row: EvmPrivateKeyInputRow
+  ) => {
+    if (issues.length >= maximumEvmCollectionInputIssues) return;
+    issues.push(issue);
+    rows.push(row);
+  };
+
+  for (const [index, untrimmedLine] of input.split(/\r?\n/).entries()) {
     const lineNumber = index + 1;
     const line = untrimmedLine.trim();
-    if (!line) return;
+    if (!line) continue;
 
-    const parts = line.split(",").map((part) => part.trim());
-    const hasLabel = parts.length === 2;
-    const label = safeLabel(hasLabel ? parts[0] : "", `钱包 ${lineNumber}`);
-    if ((parts.length !== 1 && parts.length !== 2) || (hasLabel && !parts[0])) {
+    const firstComma = line.indexOf(",");
+    const secondComma = firstComma < 0 ? -1 : line.indexOf(",", firstComma + 1);
+    const hasLabel = firstComma >= 0 && secondComma < 0;
+    const rawLabel = hasLabel ? line.slice(0, firstComma).trim() : "";
+    const label = safeLabel(rawLabel, `钱包 ${lineNumber}`);
+    if (secondComma >= 0 || (hasLabel && !rawLabel)) {
       const message = "格式应为 0x私钥 或 标签,0x私钥";
       invalid += 1;
-      issues.push({ code: "invalid-format", line: lineNumber, message });
-      rows.push({ address: null, label, line: lineNumber, message, status: "invalid" });
-      return;
+      pushIssue(
+        { code: "invalid-format", line: lineNumber, message },
+        { address: null, label, line: lineNumber, message, status: "invalid" }
+      );
+      continue;
     }
 
-    const privateKey = parts.at(-1) || "";
+    const privateKey = hasLabel ? line.slice(firstComma + 1).trim() : line;
     let account: PrivateKeyAccount;
     let address: Address;
     try {
@@ -295,24 +387,28 @@ export function parseEvmPrivateKeyInput(
     } catch {
       const message = "私钥无效或无法派生地址";
       invalid += 1;
-      issues.push({ code: "invalid-private-key", line: lineNumber, message });
-      rows.push({ address: null, label, line: lineNumber, message, status: "invalid" });
-      return;
+      pushIssue(
+        { code: "invalid-private-key", line: lineNumber, message },
+        { address: null, label, line: lineNumber, message, status: "invalid" }
+      );
+      continue;
     }
 
     const duplicateKey = address.toLowerCase();
     if (seen.has(duplicateKey)) {
       const message = "该来源地址已导入，已跳过重复项";
       duplicates += 1;
-      issues.push({ code: "duplicate-account", line: lineNumber, message });
-      rows.push({ address, label, line: lineNumber, message, status: "duplicate" });
-      return;
+      pushIssue(
+        { code: "duplicate-account", line: lineNumber, message },
+        { address, label, line: lineNumber, message, status: "duplicate" }
+      );
+      continue;
     }
     seen.add(duplicateKey);
 
     accounts.push({ account, address, label, line: lineNumber });
     rows.push({ address, label, line: lineNumber, message: "地址派生成功", status: "valid" });
-  });
+  }
 
   return { accounts, duplicates, invalid, issues, rows };
 }
@@ -327,17 +423,19 @@ function parseContractAddress(value: string) {
 }
 
 function parseAssetLine(line: string, standard: EvmCollectionStandard) {
-  const parts = line.split(",").map((part) => part.trim());
-  const expectedParts = standard === "erc20" ? 1 : 2;
   const problems: string[] = [];
-  if (parts.length !== expectedParts) {
+  const firstComma = line.indexOf(",");
+  const secondComma = firstComma < 0 ? -1 : line.indexOf(",", firstComma + 1);
+  const hasExpectedParts = standard === "erc20" ? firstComma < 0 : firstComma >= 0 && secondComma < 0;
+  if (!hasExpectedParts) {
     problems.push(standard === "erc20"
       ? "ERC20 每行只填写一个合约地址"
       : "NFT 每行格式应为 合约地址,Token ID");
     return { asset: null, problems };
   }
 
-  const contractAddress = parseContractAddress(parts[0] || "");
+  const contractText = (firstComma < 0 ? line : line.slice(0, firstComma)).trim();
+  const contractAddress = parseContractAddress(contractText);
   if (!contractAddress) problems.push("合约地址格式不正确");
 
   if (standard === "erc20") {
@@ -353,11 +451,15 @@ function parseAssetLine(line: string, standard: EvmCollectionStandard) {
     };
   }
 
-  const tokenIdText = parts[1] || "";
+  const tokenIdText = line.slice(firstComma + 1).trim();
   if (!tokenIdPattern.test(tokenIdText)) problems.push("Token ID 必须是非负十进制整数");
+  else if (tokenIdText.length > maximumEvmTokenIdDigits) problems.push("Token ID 超出 uint256 范围");
   if (!contractAddress || problems.length > 0) return { asset: null, problems };
 
   const tokenId = BigInt(tokenIdText);
+  if (tokenId > maximumEvmTokenId) {
+    return { asset: null, problems: ["Token ID 超出 uint256 范围"] };
+  }
   return {
     asset: {
       contractAddress,
@@ -379,31 +481,49 @@ export function parseEvmCollectionAssets(
   let duplicates = 0;
   let invalid = 0;
 
-  input.split(/\r?\n/).forEach((untrimmedLine, index) => {
+  const limitIssue = inspectBoundedInput(input, maximumEvmCollectionAssetInputEntries, "资产条目");
+  if (limitIssue) {
+    return {
+      assets,
+      duplicates,
+      invalid: 1,
+      rows: [{ asset: null, line: limitIssue.line, problems: [limitIssue.message], status: "invalid" }],
+      validAssets: assets
+    };
+  }
+
+  let issueRows = 0;
+  const pushIssueRow = (row: EvmCollectionAssetRow) => {
+    if (issueRows >= maximumEvmCollectionInputIssues) return;
+    issueRows += 1;
+    rows.push(row);
+  };
+
+  for (const [index, untrimmedLine] of input.split(/\r?\n/).entries()) {
     const line = untrimmedLine.trim();
-    if (!line) return;
+    if (!line) continue;
 
     const { asset, problems } = parseAssetLine(line, standard);
     if (!asset) {
       invalid += 1;
-      rows.push({ asset: null, line: index + 1, problems, status: "invalid" });
-      return;
+      pushIssueRow({ asset: null, line: index + 1, problems, status: "invalid" });
+      continue;
     }
     if (seen.has(asset.key)) {
       duplicates += 1;
-      rows.push({
+      pushIssueRow({
         asset,
         line: index + 1,
         problems: ["资产条目重复，已跳过"],
         status: "duplicate"
       });
-      return;
+      continue;
     }
 
     seen.add(asset.key);
     assets.push(asset);
     rows.push({ asset, line: index + 1, problems: [], status: "valid" });
-  });
+  }
 
   return { assets, duplicates, invalid, rows, validAssets: assets };
 }

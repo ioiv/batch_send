@@ -1,5 +1,6 @@
 export const LAMPORTS_PER_SOL_BIGINT = 1_000_000_000n;
 export const GENERATOR_AMOUNT_STEP_LAMPORTS = 100_000_000n;
+export const MAX_SOLANA_LAMPORTS = (1n << 64n) - 1n;
 
 export function formatSol(value: number) {
   return Number(value.toFixed(4)).toString();
@@ -32,13 +33,18 @@ export function getSolAmountStepLamports(...values: string[]) {
 }
 
 export function parseSolToLamports(value: string) {
-  const match = value.trim().match(/^(\d+)(?:\.(\d{0,9}))?$/);
+  const normalizedInput = value.trim();
+  if (normalizedInput.length > 64) return null;
+  const match = normalizedInput.match(/^(\d+)(?:\.(\d{0,9}))?$/);
   if (!match) return null;
 
-  const whole = BigInt(match[1]);
+  const normalizedWhole = match[1].replace(/^0+(?=\d)/, "");
+  if (normalizedWhole.length > 20) return null;
+
+  const whole = BigInt(normalizedWhole);
   const fraction = BigInt((match[2] || "").padEnd(9, "0"));
   const lamports = whole * LAMPORTS_PER_SOL_BIGINT + fraction;
-  return lamports > 0n ? lamports : null;
+  return lamports > 0n && lamports <= MAX_SOLANA_LAMPORTS ? lamports : null;
 }
 
 export function ceilDiv(value: bigint, divisor: bigint) {

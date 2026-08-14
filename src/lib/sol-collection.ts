@@ -11,15 +11,18 @@ import {
   type SendOptions,
   type TransactionSignature
 } from "@solana/web3.js";
+import { maximumCollectionSources } from "./collection-workload";
 
 globalThis.Buffer = globalThis.Buffer || Buffer;
 
 const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const base58Indexes = new Map(Array.from(base58Alphabet, (character, index) => [character, index]));
+const maximumSolCollectionInputCharacters = 512 * 1024;
+const maximumSolCollectionInputLines = 5_000;
 
 export const defaultSolCollectionFeeLamports = 5_000n;
 
-export type SolCollectionParseErrorCode = "empty-key" | "invalid-key" | "invalid-label";
+export type SolCollectionParseErrorCode = "empty-key" | "input-limit" | "invalid-key" | "invalid-label";
 
 export type SolCollectionParseError = {
   code: SolCollectionParseErrorCode;
@@ -193,6 +196,7 @@ export function encodeBase58(value: Uint8Array) {
 }
 
 function parseJsonSecretKey(value: string) {
+  if (value.length > 512) throw new SecretKeyParseError("invalid-key", "密钥格式无效");
   let parsed: unknown;
 
   try {
@@ -237,7 +241,7 @@ function splitSecretKeyLine(rawLine: string) {
   if (looksLikeSolanaSecret(label)) {
     throw new SecretKeyParseError("invalid-label", "标签疑似包含密钥，已拒绝解析");
   }
-  return { key, label };
+  return { key, label: label.slice(0, 120) };
 }
 
 function looksLikeSolanaSecret(value: string) {
@@ -284,6 +288,36 @@ export function parseSolanaSourceKeys(input: string): SolCollectionSourceParseRe
     sources: []
   };
   const firstLineByAddress = new Map<string, number>();
+
+  if (input.length > maximumSolCollectionInputCharacters) {
+    result.errors.push({ code: "input-limit", line: 1, message: "密钥输入内容过长，请拆分任务" });
+    return result;
+  }
+
+  let physicalLines = 1;
+  let sourceEntries = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    if (input[index] === "\n") physicalLines += 1;
+  }
+  if (physicalLines > maximumSolCollectionInputLines) {
+    result.errors.push({
+      code: "input-limit",
+      line: maximumSolCollectionInputLines + 1,
+      message: `密钥输入单次最多 ${maximumSolCollectionInputLines} 行，请拆分任务`
+    });
+    return result;
+  }
+  for (const line of input.split(/\r?\n/)) {
+    if (line.trim()) sourceEntries += 1;
+    if (sourceEntries > maximumCollectionSources) {
+      result.errors.push({
+        code: "input-limit",
+        line: sourceEntries,
+        message: `来源钱包单次最多 ${maximumCollectionSources} 个，请拆分任务`
+      });
+      return result;
+    }
+  }
 
   input.split(/\r?\n/).forEach((rawLine, index) => {
     if (!rawLine.trim()) return;
