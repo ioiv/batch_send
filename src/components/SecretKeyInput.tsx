@@ -1,4 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { readSecretKeyFile, SecretKeyImportError } from "../lib/secret-key-import";
 
 export type SecretKeyInputHandle = {
@@ -49,7 +55,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const [fileStatus, setFileStatus] = useState<
     | { kind: "error" | "idle" | "loading"; message: string }
     | { fileName: string; kind: "success"; lineCount: number }
-  >({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
+  >({ kind: "idle", message: "尚未导入文件" });
   const [lineCount, setLineCount] = useState(0);
   disabledRef.current = disabled;
 
@@ -71,11 +77,15 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   }, [setImportActive]);
 
   useEffect(() => {
+    const fileElement = fileInputRef.current;
+    const textareaElement = textareaRef.current;
     const clearDomValue = () => {
       cancelPendingImport();
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      if (textareaRef.current) textareaRef.current.value = "";
-      setFileStatus({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
+      const currentFileElement = fileInputRef.current || fileElement;
+      const currentTextareaElement = textareaRef.current || textareaElement;
+      if (currentFileElement) currentFileElement.value = "";
+      if (currentTextareaElement) currentTextareaElement.value = "";
+      setFileStatus({ kind: "idle", message: "尚未导入文件" });
       updateLineCount(0);
     };
     const clearRestoredValue = (event: PageTransitionEvent) => {
@@ -87,8 +97,8 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       window.removeEventListener("pagehide", clearDomValue);
       window.removeEventListener("pageshow", clearRestoredValue);
       cancelPendingImport();
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      if (textareaRef.current) textareaRef.current.value = "";
+      if (fileElement) fileElement.value = "";
+      if (textareaElement) textareaElement.value = "";
     };
   }, [cancelPendingImport, updateLineCount]);
 
@@ -97,7 +107,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       cancelPendingImport();
       if (fileInputRef.current) fileInputRef.current.value = "";
       if (textareaRef.current) textareaRef.current.value = "";
-      setFileStatus({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
+      setFileStatus({ kind: "idle", message: "尚未导入文件" });
       updateLineCount(0);
     },
     focus() {
@@ -162,36 +172,42 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     : "每行一个 Base58 / JSON 数组私钥，或：备注,私钥\n示例：运营钱包 01,[12,34,…]";
 
   return (
-    <div className="secret-input">
+    <Field className="secret-input">
       <div className="secret-input-heading">
-        <label htmlFor={`${mode}-secret-keys`}>来源钱包密钥</label>
-        <span aria-live="polite">{lineCount > maximumSecretInputLines
+        <FieldLabel htmlFor={`${mode}-secret-keys`}>来源钱包密钥</FieldLabel>
+        <Badge aria-live="polite" variant="outline">{lineCount > maximumSecretInputLines
           ? `超过 ${maximumSecretInputLines} 行上限`
-          : lineCount ? `${lineCount} 行待解析` : "尚未输入"}</span>
+          : lineCount ? `${lineCount} 行待解析` : "尚未输入"}</Badge>
       </div>
       <div className="secret-file-import">
-        <label className={`button ghost compact-button secret-file-button${disabled ? " is-disabled" : ""}`}>
-          导入钱包文件
-          <input
-            accept=".txt,.csv,.json,text/plain,text/csv,application/json"
-            aria-describedby={`${mode}-secret-file-status ${mode}-secret-help`}
-            disabled={disabled}
-            onChange={handleFileChange}
-            ref={fileInputRef}
-            type="file"
-          />
-        </label>
-        <span
-          aria-live="polite"
-          className={`secret-file-status${fileStatus.kind === "error" ? " is-error" : ""}`}
-          id={`${mode}-secret-file-status`}
+        <Input
+          accept=".txt,.csv,.json,text/plain,text/csv,application/json"
+          aria-describedby={`${mode}-secret-file-status ${mode}-secret-help`}
+          className="sr-only"
+          disabled={disabled}
+          onChange={handleFileChange}
+          ref={fileInputRef}
+          tabIndex={-1}
+          type="file"
+        />
+        <Button
+          className="secret-file-button"
+          disabled={disabled}
+          onClick={() => fileInputRef.current?.click()}
+          type="button"
+          variant="outline"
         >
-          {fileStatus.kind === "success"
-            ? `${fileStatus.fileName} · 已载入 ${fileStatus.lineCount} 行`
-            : fileStatus.message}
-        </span>
+          导入钱包文件
+        </Button>
+        {fileStatus.kind !== "error" ? (
+          <span aria-live="polite" className="secret-file-status" id={`${mode}-secret-file-status`}>
+            {fileStatus.kind === "success"
+              ? `${fileStatus.fileName} · 已载入 ${fileStatus.lineCount} 行`
+              : fileStatus.message}
+          </span>
+        ) : null}
       </div>
-      <textarea
+      <Textarea
         aria-describedby={`${mode}-secret-help`}
         autoCapitalize="none"
         autoComplete="off"
@@ -213,9 +229,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         rows={8}
         spellCheck={false}
       />
-      <p className="hint secret-help" id={`${mode}-secret-help`}>
-        密钥仅在本页内存处理，不存储、不上传；文件控件读取后会立即清空；任务后请清除。
-      </p>
-    </div>
+      {fileStatus.kind === "error" ? (
+        <Alert id={`${mode}-secret-file-status`} variant="destructive"><AlertDescription>{fileStatus.message}</AlertDescription></Alert>
+      ) : null}
+      <FieldDescription className="sr-only" id={`${mode}-secret-help`}>
+        每行一个来源钱包密钥。密钥只保留在当前 DOM 输入中。
+      </FieldDescription>
+    </Field>
   );
 });

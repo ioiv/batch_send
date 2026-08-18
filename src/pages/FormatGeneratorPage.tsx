@@ -1,23 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Metric } from "../components/Metric";
-import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { DistributionListEditor } from "../components/DistributionListEditor";
+import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
+import { ResultTable, WorkbenchPanel } from "../components/WorkbenchPrimitives";
 import { copyText } from "../lib/clipboard";
 import { getDuplicateAddressKey, getListAddressKind } from "../lib/address";
-import { formatLamports, formatLamportsForDisplay, getSolAmountFractionDigits, getSolAmountStepLamports, parseSolToLamports, randomLamportsInStepRange } from "../lib/amount";
-import { getDistributionTargetPage, getDistributionTransferHref } from "../lib/distribution";
-import { importDistributionFileText } from "../lib/distribution-generator";
+import {
+  formatLamports,
+  formatLamportsForDisplay,
+  getSolAmountFractionDigits,
+  getSolAmountStepLamports,
+  parseSolToLamports,
+  randomLamportsInStepRange
+} from "../lib/amount";
+import { evmDistributionPage, getDistributionTargetPage, getDistributionTransferHref } from "../lib/distribution";
+import { importDistributionFileText, type DistributionAmountMode } from "../lib/distribution-generator";
 import {
   beginLocalFileImport,
   cancelLocalFileImport,
   isCurrentLocalFileImport,
   type LocalFileImportEpoch
 } from "../lib/local-file-import";
-
-const formatSteps: ToolPageStep[] = [
-  { label: "输入地址", description: "粘贴并校验收款地址" },
-  { label: "生成清单", description: "设置金额并整理格式" },
-  { label: "进入分发", description: "复制或带入发送工具" }
-];
 
 const distributionFileTypes = new Set(["", "application/csv", "application/vnd.ms-excel", "text/csv", "text/plain"]);
 
@@ -45,12 +51,17 @@ export function getFormatOutputGate({
   };
 }
 
+type PreviewRow = {
+  address: string;
+  amount: string;
+};
+
 export function FormatGeneratorPage() {
   const addressInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importEpochRef = useRef<LocalFileImportEpoch>({ current: 0 });
   const [addresses, setAddresses] = useState("");
-  const [mode, setMode] = useState<"fixed" | "random">("fixed");
+  const [mode, setMode] = useState<DistributionAmountMode>("fixed");
   const [fixedAmount, setFixedAmount] = useState("0.1");
   const [minAmount, setMinAmount] = useState("0.5");
   const [maxAmount, setMaxAmount] = useState("1");
@@ -104,7 +115,9 @@ export function FormatGeneratorPage() {
       }
 
       if (!amountLamports) {
-        issues.push(mode === "fixed" ? "固定金额需要大于 0，最多 9 位小数" : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖当前金额精度");
+        issues.push(mode === "fixed"
+          ? "固定金额需要大于 0，最多 9 位小数"
+          : "随机区间需要大于 0，最大值不能小于最小值，并且至少覆盖当前金额精度");
         invalid += 1;
         return;
       }
@@ -126,18 +139,33 @@ export function FormatGeneratorPage() {
     };
   }, [addresses, fixedAmount, generationNonce, maxAmount, minAmount, mode, randomAmountStepLamports]);
 
+  const previewRows = useMemo<PreviewRow[]>(() => result.output.split("\n").filter(Boolean).map((line) => {
+    const separator = line.lastIndexOf(",");
+    return {
+      address: separator >= 0 ? line.slice(0, separator) : line,
+      amount: separator >= 0 ? line.slice(separator + 1) : ""
+    };
+  }), [result.output]);
   const isMixedList = result.solanaCount > 0 && result.evmCount > 0;
   const distributionTargetPage = getDistributionTargetPage(result.output);
   const outputGate = getFormatOutputGate(result);
+  const canUseOutput = outputGate.canUseOutput && !isMixedList;
   const hasAddressIssues = result.issues.some((issue) => /^第 \d+ 行地址格式不正确$/.test(issue));
-  const resultNote = isMixedList
-    ? "请拆分 SOL 与 EVM 清单。"
-    : result.evmCount > 0
-      ? "可直接进入 EVM 分发。"
-      : "可直接进入 SOL 分发。";
   const resultAnnouncement = addresses.trim()
     ? `生成结果：${result.validCount} 条有效，${result.invalid} 条需修正，${result.duplicates} 条重复。`
     : "尚未输入地址。";
+  const pageStatus: WorkbenchStatus = outputGate.blocked || isMixedList
+    ? "error"
+    : canUseOutput
+      ? "ready"
+      : "editing";
+  const statusLabel = isMixedList
+    ? "需拆分链"
+    : outputGate.blocked
+      ? "需修正"
+      : canUseOutput
+        ? "可导出"
+        : "等待输入";
 
   const cancelPendingImport = useCallback(() => {
     cancelLocalFileImport(importEpochRef.current);
@@ -149,12 +177,24 @@ export function FormatGeneratorPage() {
     cancelLocalFileImport(importEpochRef.current);
   }, []);
 
+  const invalidateOutputFeedback = () => {
+    setCopyLabel("复制结果");
+    setCopyFeedback(null);
+  };
+
   const updateAndRegenerate = (setter: (value: string) => void, value: string) => {
     cancelPendingImport();
     setter(value);
     setGenerationNonce((current) => current + 1);
-    setCopyLabel("复制结果");
-    setCopyFeedback(null);
+    invalidateOutputFeedback();
+  };
+
+  const changeMode = (nextMode: DistributionAmountMode) => {
+    if (nextMode === mode) return;
+    cancelPendingImport();
+    setMode(nextMode);
+    setGenerationNonce((current) => current + 1);
+    invalidateOutputFeedback();
   };
 
   const dedupeAddresses = () => {
@@ -175,17 +215,17 @@ export function FormatGeneratorPage() {
       addressInputRef.current?.focus();
       return;
     }
-    document.getElementById(mode === "fixed" ? "fixedAmount" : "minAmount")?.focus();
+    document.getElementById(`format-generator-${mode === "fixed" ? "fixed" : "min"}-amount`)?.focus();
   };
 
   const copyOutput = async () => {
-    if (!outputGate.canUseOutput) return;
+    if (!canUseOutput) return;
     const copied = await copyText(result.output);
     if (!copied) {
       setCopyLabel("重试复制");
       setCopyFeedback({
         kind: "error",
-        message: "浏览器未允许访问剪贴板，请在右侧结果框中手动选择并复制。"
+        message: "浏览器未允许访问剪贴板，请在结果表中手动复制。"
       });
       return;
     }
@@ -195,7 +235,7 @@ export function FormatGeneratorPage() {
   };
 
   const goToDistributor = () => {
-    if (!outputGate.canUseOutput || !distributionTargetPage) return;
+    if (!canUseOutput || !distributionTargetPage) return;
     window.location.href = getDistributionTransferHref(result.output, distributionTargetPage);
   };
 
@@ -234,8 +274,7 @@ export function FormatGeneratorPage() {
         setFixedAmount(imported.fixedAmount);
       }
       setGenerationNonce((current) => current + 1);
-      setCopyLabel("复制结果");
-      setCopyFeedback(null);
+      invalidateOutputFeedback();
       setImportMessage(imported.hadAmounts
         ? `已导入 ${imported.addresses.split("\n").length} 个地址及统一金额 ${imported.fixedAmount}`
         : `已导入 ${imported.addresses.split("\n").length} 个地址`);
@@ -249,180 +288,176 @@ export function FormatGeneratorPage() {
     }
   };
 
-  const activeStep = outputGate.canUseOutput ? 2 : addresses.trim() ? 1 : 0;
+  const targetLabel = distributionTargetPage === evmDistributionPage
+    ? "进入 EVM 分发"
+    : distributionTargetPage
+      ? "进入 SOL 分发"
+      : "进入分发";
 
   return (
     <ToolPageLayout
-      activeStep={activeStep}
-      categoryHref="/#utility"
-      categoryLabel="数据工具"
+      className="page-format"
       currentToolId="format-generator"
-      description="生成 SOL 或 EVM 批量发送清单。"
-      eyebrow="List builder · SOL & EVM"
-      mainClassName="page-format"
-      meta={<><span className="pill">本地生成</span><span className="pill">不连接钱包</span></>}
-      steps={formatSteps}
+      status={pageStatus}
+      statusLabel={statusLabel}
       title="分发格式生成"
-      trustLabel="本地生成 · 不连接钱包"
     >
-        <section className="workspace flow-workspace">
-          <section className="panel input-panel" aria-labelledby="input-title">
-            <div className="panel-header">
-              <div>
-                <h2 className="panel-title" id="input-title">地址与金额</h2>
-              </div>
-              <div className="panel-header-actions">
-                <input
-                  accept=".txt,.csv,text/plain,text/csv"
-                  className="sr-only"
-                  disabled={importing}
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0];
-                    event.currentTarget.value = "";
-                    void importAddressFile(file);
-                  }}
-                  ref={fileInputRef}
-                  tabIndex={-1}
-                  type="file"
-                />
-                <button className="button ghost compact-button" disabled={importing} onClick={() => fileInputRef.current?.click()} type="button">
-                  {importing ? "正在导入" : "导入 TXT/CSV"}
-                </button>
-              </div>
+      <div className="workbench-grid">
+        <WorkbenchPanel
+          actions={(
+            <>
+              <Input
+                accept=".txt,.csv,text/plain,text/csv"
+                aria-hidden="true"
+                disabled={importing}
+                hidden
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  void importAddressFile(file);
+                }}
+                ref={fileInputRef}
+                tabIndex={-1}
+                type="file"
+              />
+              <Button disabled={importing} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
+                {importing ? "正在导入" : "导入 TXT/CSV"}
+              </Button>
+            </>
+          )}
+          className="min-w-0"
+          footer={(
+            <div className="flex w-full flex-wrap gap-2">
+              <Button disabled={!addresses.trim()} onClick={dedupeAddresses} type="button" variant="outline">去重</Button>
+              <Button disabled={!addresses.trim()} onClick={() => updateAndRegenerate(setAddresses, "")} type="button" variant="destructive">清空</Button>
             </div>
+          )}
+          title="清单编辑"
+        >
+          <div className="flex min-w-0 flex-col gap-4">
+            <DistributionListEditor
+              addressInputRef={addressInputRef}
+              addressPlaceholder={"7hQmJpYvKq2ms2uUpu2f4pCmJfM7m2HJ9dXkR4g3SxyQ\n0x742d35Cc6634C0532925a3b844Bc454e4438f44e"}
+              addresses={addresses}
+              fixedAmount={fixedAmount}
+              fixedAmountStep={fixedAmountStep}
+              idPrefix="format-generator"
+              maxAmount={maxAmount}
+              minAmount={minAmount}
+              mode={mode}
+              onAddressesChange={(value) => updateAndRegenerate(setAddresses, value)}
+              onFixedAmountChange={(value) => updateAndRegenerate(setFixedAmount, value)}
+              onMaxAmountChange={(value) => updateAndRegenerate(setMaxAmount, value)}
+              onMinAmountChange={(value) => updateAndRegenerate(setMinAmount, value)}
+              onModeChange={changeMode}
+              randomAmountStep={randomAmountStep}
+            />
 
-            <div className="form">
-              <div className="field">
-                <label htmlFor="addresses">地址列表</label>
-                <textarea
-                  id="addresses"
-                  ref={addressInputRef}
-                  spellCheck={false}
-                  value={addresses}
-                  onChange={(event) => updateAndRegenerate(setAddresses, event.target.value)}
-                  placeholder={"7hQmJpYvKq2ms2uUpu2f4pCmJfM7m2HJ9dXkR4g3SxyQ\n0x742d35Cc6634C0532925a3b844Bc454e4438f44e"}
-                />
-              </div>
-              {importMessage ? <p className="hint" role="status">{importMessage}</p> : null}
+            {importMessage ? (
+              <Alert role="status">
+                <AlertTitle>导入状态</AlertTitle>
+                <AlertDescription>{importMessage}</AlertDescription>
+              </Alert>
+            ) : null}
 
-              <div className="mode-row" role="radiogroup" aria-label="金额模式">
-                <label className="mode">
-                  <span className="mode-head">
-                    <input type="radio" name="amountMode" value="fixed" checked={mode === "fixed"} onChange={() => setMode("fixed")} />
-                    固定金额
-                  </span>
-                </label>
-                <label className="mode">
-                  <span className="mode-head">
-                    <input type="radio" name="amountMode" value="random" checked={mode === "random"} onChange={() => {
-                      setMode("random");
-                      setGenerationNonce((current) => current + 1);
-                    }} />
-                    随机区间
-                  </span>
-                </label>
-              </div>
-
-              <div className={`amount-grid generator-amount-grid ${mode}`}>
-                {mode === "fixed" ? (
-                  <div className="field">
-                    <label htmlFor="fixedAmount">固定金额</label>
-                    <input id="fixedAmount" type="number" min="0" step={fixedAmountStep} value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
-                  </div>
-                ) : (
-                  <>
-                    <div className="field">
-                      <label htmlFor="minAmount">随机最小值</label>
-                      <input id="minAmount" type="number" min="0" step={randomAmountStep} value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="maxAmount">随机最大值</label>
-                      <input id="maxAmount" type="number" min="0" step={randomAmountStep} value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {outputGate.blocked ? (
-                <div className="confirm transaction-status error" id="format-output-blocker" role="alert">
-                  <strong>请先修正清单</strong>
+            {outputGate.blocked ? (
+              <Alert id="format-output-blocker" variant="destructive">
+                <AlertTitle>请先修正清单</AlertTitle>
+                <AlertDescription className="flex flex-col gap-2">
                   <span>{outputGate.message}</span>
-                  <div className="action-group">
+                  <span className="flex flex-wrap gap-2">
                     {result.invalid > 0 ? (
-                      <button className="button ghost compact-button" type="button" onClick={focusFirstInvalidInput}>
-                        {hasAddressIssues ? "回到地址列表修正" : "回到金额设置修正"}
-                      </button>
+                      <Button onClick={focusFirstInvalidInput} type="button" variant="outline">
+                        {hasAddressIssues ? "修正地址" : "修正金额"}
+                      </Button>
                     ) : null}
                     {result.duplicates > 0 ? (
-                      <button className="button ghost compact-button" type="button" onClick={dedupeAddresses}>
-                        立即去重
-                      </button>
+                      <Button onClick={dedupeAddresses} type="button" variant="outline">立即去重</Button>
                     ) : null}
-                  </div>
-                </div>
-              ) : null}
+                  </span>
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
-              <div className="actions">
-                <div className="action-group">
-                  <button
-                    className="button primary"
-                    type="button"
-                    aria-describedby={outputGate.blocked ? "format-output-blocker" : isMixedList ? "format-result-note" : undefined}
-                    disabled={!outputGate.canUseOutput || !distributionTargetPage}
-                    title={isMixedList ? "同一清单不能同时进入 SOL 和 EVM 分发页，请先拆分。" : undefined}
-                    onClick={goToDistributor}
-                  >
-                    去分发
-                  </button>
-                  <button className="button ghost" type="button" disabled={!addresses.trim()} onClick={dedupeAddresses}>去重</button>
-                  <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
-                </div>
-                <button
-                  aria-describedby={outputGate.blocked ? "format-output-blocker" : copyFeedback ? "format-copy-feedback" : undefined}
-                  className="button"
-                  type="button"
-                  disabled={!outputGate.canUseOutput}
-                  onClick={copyOutput}
-                >{copyLabel}</button>
-              </div>
-              {copyFeedback ? (
-                <p
-                  className={`hint${copyFeedback.kind === "error" ? " error" : ""}`}
-                  id="format-copy-feedback"
-                  role={copyFeedback.kind === "error" ? "alert" : "status"}
-                >{copyFeedback.message}</p>
-              ) : null}
-            </div>
+            {isMixedList ? (
+              <Alert id="format-mixed-blocker" variant="destructive">
+                <AlertTitle>清单包含两种生态地址</AlertTitle>
+                <AlertDescription>请拆分 SOL 与 EVM 清单后再复制或进入分发。</AlertDescription>
+              </Alert>
+            ) : null}
 
-            <div className="stats" aria-label="生成统计">
-              <Metric value={String(result.validCount)} label="有效收款地址" />
-              <Metric value={result.total} label="合计金额" />
-              <Metric value={String(result.invalid)} label="需修正" />
-              <Metric value={String(result.duplicates)} label="重复地址" />
-            </div>
-          </section>
+            {result.issues.length > 0 ? (
+              <Alert variant="destructive">
+                <AlertTitle>校验结果</AlertTitle>
+                <AlertDescription>
+                  {result.issues.slice(0, 5).map((issue, index) => <div key={`${issue}-${index}`}>{issue}</div>)}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        </WorkbenchPanel>
 
-          <aside className="panel output-panel" aria-labelledby="result-title">
-            <div className="panel-header">
-              <div>
-                <h2 className="panel-title" id="result-title">生成结果</h2>
-                <p className="panel-note" id="format-result-note">{resultNote}</p>
-              </div>
-              <span className="pill">{mode === "fixed" ? "固定金额" : "随机区间"}</span>
+        <WorkbenchPanel
+          actions={<Badge variant="outline">{mode === "fixed" ? "固定金额" : "随机区间"}</Badge>}
+          className="min-w-0"
+          footer={(
+            <div className="flex w-full flex-wrap justify-end gap-2">
+              <Button
+                aria-describedby={outputGate.blocked ? "format-output-blocker" : isMixedList ? "format-mixed-blocker" : undefined}
+                disabled={!canUseOutput}
+                onClick={() => void copyOutput()}
+                type="button"
+                variant="outline"
+              >{copyLabel}</Button>
+              <Button
+                aria-describedby={outputGate.blocked ? "format-output-blocker" : isMixedList ? "format-mixed-blocker" : undefined}
+                disabled={!canUseOutput || !distributionTargetPage}
+                onClick={goToDistributor}
+                type="button"
+              >{targetLabel}</Button>
             </div>
-            <div className="form">
-              <p className="sr-only" aria-atomic="true" aria-live="polite">{resultAnnouncement}</p>
-              <div className="result">
-                {result.output ? <pre>{result.output}</pre> : <div className="empty">生成后会显示为：<br />地址,金额</div>}
-              </div>
-              <div className="invalid-list" id="format-result-issues">
-                {result.issues.slice(0, 5).map((issue) => (
-                  <div key={issue}>{issue}</div>
-                ))}
-              </div>
+          )}
+          title="实时预览"
+        >
+          <div className="flex min-w-0 flex-col gap-3">
+            <p className="sr-only" aria-atomic="true" aria-live="polite">{resultAnnouncement}</p>
+            <div className="flex flex-wrap gap-2" aria-label="生成统计">
+              <Badge variant="outline">有效 {result.validCount}</Badge>
+              <Badge variant="outline">合计 {result.total}</Badge>
+              <Badge variant="outline">需修正 {result.invalid}</Badge>
+              <Badge variant="outline">重复 {result.duplicates}</Badge>
             </div>
-          </aside>
-        </section>
+            <ResultTable
+              caption="生成结果"
+              columns={[
+                {
+                  header: "地址",
+                  key: "address",
+                  render: (row) => <span className="font-mono">{row.address}</span>
+                },
+                {
+                  header: "金额",
+                  key: "amount",
+                  render: (row) => <span className="font-mono tabular-nums">{row.amount}</span>
+                }
+              ]}
+              emptyLabel="暂无生成结果"
+              getRowKey={(row, index) => `${row.address}-${index}`}
+              rows={previewRows}
+            />
+            {copyFeedback ? (
+              <Alert
+                id="format-copy-feedback"
+                role={copyFeedback.kind === "error" ? "alert" : "status"}
+                variant={copyFeedback.kind === "error" ? "destructive" : "default"}
+              >
+                <AlertTitle>{copyFeedback.kind === "error" ? "复制失败" : "复制完成"}</AlertTitle>
+                <AlertDescription>{copyFeedback.message}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        </WorkbenchPanel>
+      </div>
     </ToolPageLayout>
   );
 }

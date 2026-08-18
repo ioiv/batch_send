@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   mergeNftAssetInput,
   parseNftAssetFile,
@@ -20,9 +28,7 @@ const manualNftAssetInputModes: Array<{
   label: string;
   value: NftAssetInputMode;
 }> = [
-  { value: "manual", label: "手动添加" },
-  { value: "file", label: "文件导入" },
-  { value: "advanced", label: "高级编辑" }
+  { value: "manual", label: "手工 / 文件" }
 ];
 
 const autoNftAssetInputMode = {
@@ -64,7 +70,7 @@ export function NftAssetInput({
   const [message, setMessage] = useState("");
   const autoDiscoveryPanel = autoDiscovery ?? children;
   const [mode, setMode] = useState<NftAssetInputMode>(() => (
-    defaultMode === "auto" && !autoDiscoveryPanel ? "manual" : defaultMode
+    defaultMode === "auto" && autoDiscoveryPanel ? "auto" : "manual"
   ));
   const availableModes = useMemo(() => (
     autoDiscoveryPanel ? [autoNftAssetInputMode, ...manualNftAssetInputModes] : manualNftAssetInputModes
@@ -190,15 +196,15 @@ export function NftAssetInput({
     <section aria-busy={importing || undefined} className="nft-asset-builder" aria-labelledby="nft-asset-builder-title">
       <h3 className="sr-only" id="nft-asset-builder-title">NFT 资产</h3>
 
-      <div className="field nft-contract-field" data-status={contractStatus}>
+      <Field className="nft-contract-field" data-status={contractStatus}>
         <div className="nft-field-label-row">
-          <label htmlFor="nft-quick-contract">NFT 合约</label>
-          <span aria-live="polite" className="nft-field-status">
+          <FieldLabel htmlFor="nft-quick-contract">NFT 合约</FieldLabel>
+          <Badge aria-live="polite" className="nft-field-status" variant={contractStatus === "invalid" ? "destructive" : "outline"}>
             {contractStatus === "valid" ? "地址格式有效" : contractStatus === "invalid" ? "地址格式不正确" : "等待输入"}
-          </span>
+          </Badge>
         </div>
         <div className="nft-contract-control">
-          <input
+          <Input
             aria-describedby={`${modeGroupId}-contract-help`}
             aria-invalid={contractStatus === "invalid" ? true : undefined}
             autoCapitalize="none"
@@ -217,67 +223,42 @@ export function NftAssetInput({
             {contractStatus === "valid" ? "✓" : contractStatus === "invalid" ? "×" : "0x"}
           </span>
         </div>
-        <p className="hint" id={`${modeGroupId}-contract-help`}>
-          {mode === "auto" || mode === "manual"
-            ? "用于识别或手动添加。"
-            : "仅在自动或手动添加时使用。"}
-        </p>
-      </div>
+        <FieldDescription className="sr-only" id={`${modeGroupId}-contract-help`}>输入 NFT 合约地址。</FieldDescription>
+      </Field>
 
-      <fieldset className="nft-mode-picker">
-        <legend>添加方式</legend>
-        <div className="nft-mode-tabs" role="tablist" aria-label="NFT 添加方式">
-          {availableModes.map((option) => (
-            <button
-              aria-controls={`${modeGroupId}-${option.value}-panel`}
-              aria-selected={mode === option.value}
-              className={mode === option.value ? "is-active" : undefined}
-              disabled={controlsDisabled}
-              id={`${modeGroupId}-${option.value}-tab`}
-              key={option.value}
-              onClick={() => selectMode(option.value)}
-              role="tab"
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
-
-      <input
+      <Input
         accept=".txt,.csv,text/plain,text/csv"
+        className="sr-only"
         disabled={controlsDisabled}
-        hidden
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           void importAssetFile(file);
         }}
         ref={fileInputRef}
+        tabIndex={-1}
         type="file"
       />
 
-      {mode === "auto" && autoDiscoveryPanel ? (
-        <div
-          aria-labelledby={`${modeGroupId}-auto-tab`}
-          id={`${modeGroupId}-auto-panel`}
-          role="tabpanel"
-        >
-          {autoDiscoveryPanel}
-        </div>
-      ) : null}
+      <Tabs className="nft-mode-picker" onValueChange={(nextMode) => selectMode(nextMode as NftAssetInputMode)} value={mode}>
+        <TabsList aria-label="NFT 添加方式" className="nft-mode-tabs">
+          {availableModes.map((option) => (
+            <TabsTrigger
+              disabled={controlsDisabled}
+              key={option.value}
+              value={option.value}
+            >
+              {option.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      {mode === "manual" ? (
-        <div
-          aria-labelledby={`${modeGroupId}-manual-tab`}
-          className="nft-asset-builder-fields"
-          id={`${modeGroupId}-manual-panel`}
-          role="tabpanel"
-        >
-          <div className="field">
-            <label htmlFor="nft-token-expression">Token ID / 区间</label>
-            <input
+        {autoDiscoveryPanel ? <TabsContent value="auto">{autoDiscoveryPanel}</TabsContent> : null}
+
+        <TabsContent className="nft-asset-builder-fields" value="manual">
+          <Field>
+            <FieldLabel htmlFor="nft-token-expression">Token ID / 区间</FieldLabel>
+            <Input
               disabled={controlsDisabled}
               id="nft-token-expression"
               onChange={(event) => {
@@ -294,71 +275,52 @@ export function NftAssetInput({
               spellCheck={false}
               value={tokenExpression}
             />
-          </div>
-          <button className="button primary nft-add-button" disabled={controlsDisabled || !contractAddress.trim() || !tokenExpression.trim()} onClick={addExpression} type="button">
+          </Field>
+          <Button className="nft-add-button" disabled={controlsDisabled || !contractAddress.trim() || !tokenExpression.trim()} onClick={addExpression} type="button">
             加入清单
-          </button>
-        </div>
-      ) : null}
+          </Button>
+          <Button disabled={controlsDisabled} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
+            {importing ? "正在导入" : "导入 TXT/CSV"}
+          </Button>
+        </TabsContent>
+      </Tabs>
 
-      {mode === "file" ? (
-        <div
-          aria-labelledby={`${modeGroupId}-file-tab`}
-          className="form"
-          id={`${modeGroupId}-file-panel`}
-          role="tabpanel"
-        >
-          <p className="hint" id={`${modeGroupId}-file-help`}>
-            每行：合约地址,Token ID。文件仅在当前页面本地解析，最大 512 KB。
-          </p>
-          <div className="nft-discovery-action">
-            <button
-              aria-describedby={`${modeGroupId}-file-help`}
-              className="button primary"
+      <Sheet>
+        <SheetTrigger disabled={controlsDisabled} render={<Button disabled={controlsDisabled} type="button" variant="ghost" />}>
+          原始编辑
+        </SheetTrigger>
+        <SheetContent className="nft-raw-sheet" side="right">
+          <SheetHeader>
+            <SheetTitle>原始资产清单</SheetTitle>
+            <SheetDescription className="sr-only">每行填写合约地址和 Token ID。</SheetDescription>
+          </SheetHeader>
+          <Field className="nft-raw-sheet__field">
+            <FieldLabel htmlFor="nft-asset-raw-input">资产清单</FieldLabel>
+            <Textarea
+              className="collection-asset-textarea"
               disabled={controlsDisabled}
-              onClick={() => fileInputRef.current?.click()}
-              type="button"
-            >
-              {importing ? "正在导入" : "选择 TXT/CSV 文件"}
-            </button>
-          </div>
-        </div>
-      ) : null}
+              id="nft-asset-raw-input"
+              onChange={(event) => {
+                cancelPendingImport();
+                setIssues([]);
+                setMessage("");
+                onChange(event.target.value);
+              }}
+              placeholder="0x合约地址,Token ID"
+              spellCheck={false}
+              value={value}
+            />
+          </Field>
+        </SheetContent>
+      </Sheet>
 
-      {mode === "advanced" ? (
-        <div
-          aria-labelledby={`${modeGroupId}-advanced-tab`}
-          className="field"
-          id={`${modeGroupId}-advanced-panel`}
-          role="tabpanel"
-        >
-          <label htmlFor="nft-asset-raw-input">原始资产清单</label>
-          <textarea
-            aria-describedby={`${modeGroupId}-advanced-help`}
-            className="collection-asset-textarea"
-            disabled={controlsDisabled}
-            id="nft-asset-raw-input"
-            onChange={(event) => {
-              cancelPendingImport();
-              setIssues([]);
-              setMessage("");
-              onChange(event.target.value);
-            }}
-            placeholder={"每行一个 NFT\n0x合约地址,Token ID"}
-            spellCheck={false}
-            value={value}
-          />
-          <p className="hint" id={`${modeGroupId}-advanced-help`}>
-            每行：合约地址,Token ID。
-          </p>
-        </div>
-      ) : null}
-
-      {message ? <p className="hint" role="status">{message}</p> : null}
+      {message ? <Alert><AlertDescription role="status">{message}</AlertDescription></Alert> : null}
       {issues.length ? (
-        <ul className="nft-asset-builder-issues" role="alert">
+        <FieldError className="nft-asset-builder-issues">
+          <ul>
           {issues.slice(0, 5).map((issue, index) => <li key={`${issue.code}-${issue.line || issue.item || index}`}>{issue.message}</li>)}
-        </ul>
+          </ul>
+        </FieldError>
       ) : null}
     </section>
   );

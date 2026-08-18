@@ -1,12 +1,6 @@
 export type ToolCategory = "distribution" | "collection" | "contract" | "utility";
 
-export type ToolChain =
-  | "ethereum"
-  | "bsc"
-  | "base"
-  | "arbitrum"
-  | "polygon"
-  | "solana";
+export type ToolEcosystem = "evm" | "solana";
 
 export type ToolIcon = "send" | "collect" | "nft" | "sol" | "contract" | "format";
 
@@ -17,7 +11,7 @@ export interface ToolDefinition {
   description: string;
   href: string;
   category: ToolCategory;
-  chains: ToolChain[];
+  ecosystems: ToolEcosystem[];
   icon: ToolIcon;
   featured?: boolean;
   badge?: "热门" | "新增";
@@ -31,20 +25,10 @@ export interface ToolCategoryDefinition {
   href: string;
 }
 
-export interface ChainDefinition {
-  id: ToolChain;
+export interface EcosystemDefinition {
+  id: ToolEcosystem;
   label: string;
-  shortLabel: string;
-  color: string;
 }
-
-export const EVM_CHAINS: ToolChain[] = [
-  "ethereum",
-  "bsc",
-  "base",
-  "arbitrum",
-  "polygon"
-];
 
 export const toolCategories: ToolCategoryDefinition[] = [
   {
@@ -73,13 +57,9 @@ export const toolCategories: ToolCategoryDefinition[] = [
   }
 ];
 
-export const supportedChains: ChainDefinition[] = [
-  { id: "ethereum", label: "Ethereum", shortLabel: "ETH", color: "#627eea" },
-  { id: "bsc", label: "BNB Smart Chain", shortLabel: "BSC", color: "#f0b90b" },
-  { id: "base", label: "Base", shortLabel: "BASE", color: "#2458e6" },
-  { id: "arbitrum", label: "Arbitrum", shortLabel: "ARB", color: "#2d6a9f" },
-  { id: "polygon", label: "Polygon", shortLabel: "POL", color: "#8247e5" },
-  { id: "solana", label: "Solana", shortLabel: "SOL", color: "#4e8f78" }
+export const supportedEcosystems: EcosystemDefinition[] = [
+  { id: "evm", label: "EVM" },
+  { id: "solana", label: "Solana" }
 ];
 
 export const tools: ToolDefinition[] = [
@@ -90,7 +70,7 @@ export const tools: ToolDefinition[] = [
     description: "扫描多个 EVM 钱包的代币余额，模拟交易后统一转入目标地址。",
     href: "/evm/collect/",
     category: "collection",
-    chains: EVM_CHAINS,
+    ecosystems: ["evm"],
     icon: "collect",
     featured: true,
     badge: "新增",
@@ -103,7 +83,7 @@ export const tools: ToolDefinition[] = [
     description: "按来源钱包归集 ERC721 与 ERC1155 资产，交易前完成所有权校验。",
     href: "/evm/nft-collect/",
     category: "collection",
-    chains: EVM_CHAINS,
+    ecosystems: ["evm"],
     icon: "nft",
     featured: true,
     badge: "新增",
@@ -116,7 +96,7 @@ export const tools: ToolDefinition[] = [
     description: "批量读取 SOL 余额，预留网络费与保留金额后归集到指定钱包。",
     href: "/sol/collect/",
     category: "collection",
-    chains: ["solana"],
+    ecosystems: ["solana"],
     icon: "sol",
     featured: true,
     badge: "新增",
@@ -129,7 +109,7 @@ export const tools: ToolDefinition[] = [
     description: "校验收款清单并通过连接的钱包批量发送 SOL。",
     href: "/sol/",
     category: "distribution",
-    chains: ["solana"],
+    ecosystems: ["solana"],
     icon: "send",
     featured: true,
     badge: "热门",
@@ -142,7 +122,7 @@ export const tools: ToolDefinition[] = [
     description: "向地址清单批量发送原生币或 ERC20 代币。",
     href: "/evm/",
     category: "distribution",
-    chains: EVM_CHAINS,
+    ecosystems: ["evm"],
     icon: "send",
     featured: true,
     badge: "热门",
@@ -155,7 +135,7 @@ export const tools: ToolDefinition[] = [
     description: "生成并校验确定性部署参数，再由钱包提交部署交易。",
     href: "/evm/deploy/",
     category: "contract",
-    chains: EVM_CHAINS,
+    ecosystems: ["evm"],
     icon: "contract",
     keywords: ["CreateX", "CREATE2", "合约", "部署"]
   },
@@ -166,7 +146,7 @@ export const tools: ToolDefinition[] = [
     description: "把地址与金额整理为批量发送工具可直接校验的清单。",
     href: "/format/",
     category: "utility",
-    chains: [...EVM_CHAINS, "solana"],
+    ecosystems: ["evm", "solana"],
     icon: "format",
     keywords: ["格式", "清单", "地址", "金额"]
   }
@@ -182,6 +162,6 @@ export function getToolsByCategory(category: ToolCategory) {
   return tools.filter((tool) => tool.category === category);
 }
 
-export function getToolsByChain(chain: ToolChain) {
-  return tools.filter((tool) => tool.chains.includes(chain));
+export function getToolsByEcosystem(ecosystem: ToolEcosystem) {
+  return tools.filter((tool) => tool.ecosystems.includes(ecosystem));
 }

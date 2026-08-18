@@ -1,14 +1,16 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
+      "@": resolve(projectRoot, "src"),
       buffer: resolve(projectRoot, "node_modules/buffer/index.js")
     }
   },
@@ -27,6 +29,7 @@ export default defineConfig({
     }
   },
   test: {
-    environment: "node"
+    environment: "node",
+    setupFiles: [resolve(projectRoot, "src/test/setup.ts")]
   }
 });

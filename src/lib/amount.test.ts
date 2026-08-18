@@ -30,16 +30,17 @@ describe("formatLamports", () => {
     expect(formatLamports(1_500_000_000n)).toBe("1.5");
   });
 
-  it("formats displayed balances to at most 2 decimal places", () => {
+  it("keeps two decimal places for ordinary balances and enough precision for small non-zero values", () => {
     expect(formatLamportsForDisplay(1_234_567_890n)).toBe("1.23");
     expect(formatLamportsForDisplay(1_200_000_000n)).toBe("1.2");
-    expect(formatLamportsForDisplay(42n)).toBe("0");
+    expect(formatLamportsForDisplay(9_000_000n)).toBe("0.009");
+    expect(formatLamportsForDisplay(42n)).toBe("0.000000042");
   });
 
   it("formats displayed totals to a requested SOL precision", () => {
     expect(formatLamportsForDisplay(1_234_567_890n, 3)).toBe("1.234");
     expect(formatLamportsForDisplay(1_230_000_000n, 3)).toBe("1.23");
-    expect(formatLamportsForDisplay(999_999n, 3)).toBe("0");
+    expect(formatLamportsForDisplay(999_999n, 3)).toBe("0.00099");
   });
 });
 

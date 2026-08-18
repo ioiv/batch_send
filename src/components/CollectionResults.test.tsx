@@ -1,5 +1,7 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import type { CollectionDisplayResult } from "../lib/collection-results";
 import {
   CollectionResults,
@@ -31,6 +33,8 @@ const results: CollectionDisplayResult[] = [
     status: "error"
   }
 ];
+
+afterEach(cleanup);
 
 describe("CollectionResults", () => {
   it("keeps original result indexes after filtering", () => {
@@ -69,21 +73,18 @@ describe("CollectionResults", () => {
   });
 
   it("labels the export scope and fallback source identities clearly", () => {
-    const markup = renderToStaticMarkup(
-      <CollectionResults exportFilename="collection.csv" results={results} />
-    );
-
-    expect(markup).toContain("导出全部 CSV");
-    expect(markup).toContain("导出失败/跳过项");
-    expect(markup).toContain("资产项");
-    expect(markup).toContain("来源钱包");
-    expect(markup).toContain("来源 1");
-    expect(markup).toContain("运营钱包");
-    expect(markup).toContain('aria-label="查看来源 3的交易"');
+    render(<CollectionResults exportFilename="collection.csv" results={results} />);
+    expect(screen.getByRole("region", { name: "执行结果" })).toHaveAttribute("data-slot", "card");
+    expect(screen.getByRole("button", { name: "导出全部 CSV" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "导出失败/跳过项" })).toBeEnabled();
+    expect(screen.getByLabelText("归集执行统计")).toHaveTextContent("资产项");
+    expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("来源 1");
+    expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("运营钱包");
+    expect(screen.getByRole("link", { name: "查看来源 3的交易" })).toHaveAttribute("href", results[2].explorerUrl);
   });
 
   it("supports an embedded wallet-list presentation", () => {
-    const markup = renderToStaticMarkup(
+    render(
       <CollectionResults
         description="预检后显示余额"
         embedded
@@ -93,12 +94,9 @@ describe("CollectionResults", () => {
         title="钱包清单"
       />
     );
-
-    expect(markup).toContain('class="collection-results is-embedded"');
-    expect(markup).toContain('<h3 class="panel-title" id="collection-results-title">钱包清单</h3>');
-    expect(markup).toContain("钱包清单");
-    expect(markup).toContain("预检后显示余额");
-    expect(markup).toContain("请导入来源钱包");
-    expect(markup).not.toContain('class="panel collection-results');
+    expect(screen.getByRole("heading", { name: "钱包清单", level: 3 })).toBeVisible();
+    expect(screen.getByText("请导入来源钱包")).toBeVisible();
+    expect(screen.getByText("预检后显示余额")).toHaveClass("sr-only");
+    expect(screen.getByRole("button", { name: "导出全部 CSV" })).toBeDisabled();
   });
 });

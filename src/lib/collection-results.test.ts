@@ -38,6 +38,8 @@ describe("collection result helpers", () => {
   });
 
   it("creates a spreadsheet-safe csv without secret material", () => {
+    const evmSecretSentinel = `0x${"ab".repeat(32)}`;
+    const solSecretSentinel = "4vJ9JU1bJJE96FWSJKvHsmmF7o4G1vJYp9wwaWg2kXQn";
     const csv = createCollectionResultsCsv([
       ...results,
       {
@@ -46,14 +48,25 @@ describe("collection result helpers", () => {
         label: "=HYPERLINK(\"https://example.test\")",
         message: " @IMPORTXML(\"https://example.test\")",
         status: "error"
-      }
+      },
+      {
+        address: "0x5",
+        asset: "USDC",
+        message: "已完成",
+        privateKey: evmSecretSentinel,
+        secretKey: solSecretSentinel,
+        status: "success"
+      } as CollectionDisplayResult
     ]);
+    expect(csv.split("\r\n")[0]).toBe("label,address,asset,amount,status,message,transaction_hash,explorer_url");
     expect(csv).toContain('"wallet, one"');
     expect(csv).toContain('"RPC 请求失败\n请重试"');
     expect(csv).toContain('"\'=HYPERLINK(""https://example.test"")"');
     expect(csv).toContain('"\'+SUM(1,1)"');
     expect(csv).toContain('\' @IMPORTXML');
     expect(csv).not.toContain("privateKey");
+    expect(csv).not.toContain(evmSecretSentinel);
+    expect(csv).not.toContain(solSecretSentinel);
   });
 
   it("filters by terminal state and searches across safe display fields", () => {

@@ -6,6 +6,9 @@ import {
 
 export type DistributionAmountMode = "fixed" | "random";
 
+export const MAX_DISTRIBUTION_ROWS = 5_000;
+export const MAX_DISTRIBUTION_INPUT_CHARACTERS = 512 * 1024;
+
 export type GenerateDistributionListArgs = {
   addresses: string;
   addressKind: AddressKind;
@@ -187,8 +190,6 @@ export type ImportedDistributionFile = ImportedDistributionInput & {
   truncated: boolean;
 };
 
-const maximumDistributionFileCharacters = 512 * 1024;
-
 function parseDistributionFileFields(line: string) {
   const normalizedLine = line.includes("\t") && !line.includes(",")
     ? line.replace(/\t/g, ",")
@@ -245,29 +246,34 @@ export function importDistributionInput(input: string): ImportedDistributionInpu
   const addresses: string[] = [];
   const amounts = new Set<string>();
   let hadAmounts = false;
+  let rowsWithAmounts = 0;
 
   rows.forEach((line) => {
     const parts = line.split(",").map((part) => part.trim());
     if (parts[0]) addresses.push(parts[0]);
     if (parts.length === 2 && parts[1]) {
       hadAmounts = true;
+      rowsWithAmounts += 1;
       amounts.add(parts[1]);
     }
   });
 
+  const hasMixedAmounts = amounts.size > 1
+    || (hadAmounts && rowsWithAmounts !== addresses.length);
+
   return {
     addresses: addresses.join("\n"),
-    fixedAmount: amounts.size === 1 ? [...amounts][0] : "",
+    fixedAmount: !hasMixedAmounts && amounts.size === 1 ? [...amounts][0] : "",
     hadAmounts,
-    hasMixedAmounts: amounts.size > 1
+    hasMixedAmounts
   };
 }
 
-export function importDistributionFileText(input: string, maxRows = 5_000): ImportedDistributionFile {
+export function importDistributionFileText(input: string, maxRows = MAX_DISTRIBUTION_ROWS): ImportedDistributionFile {
   if (!Number.isInteger(maxRows) || maxRows <= 0 || maxRows > 10_000) {
     throw new RangeError("maxRows must be an integer between 1 and 10000");
   }
-  if (input.length > maximumDistributionFileCharacters) {
+  if (input.length > MAX_DISTRIBUTION_INPUT_CHARACTERS) {
     throw new RangeError("distribution file text must not exceed 512 KB");
   }
 
@@ -305,7 +311,30 @@ export function importDistributionFileText(input: string, maxRows = 5_000): Impo
 export function generateDistributionList(args: GenerateDistributionListArgs): GeneratedDistributionList {
   assertDecimals(args.decimals);
 
+  if (args.addresses.length > MAX_DISTRIBUTION_INPUT_CHARACTERS) {
+    return {
+      duplicates: 0,
+      invalid: 1,
+      issues: ["清单不能超过 512 KB，请拆分后分批处理"],
+      output: "",
+      total: "0",
+      totalUnits: 0n,
+      validCount: 0
+    };
+  }
+
   const addresses = getAddressRows(args.addresses);
+  if (addresses.length > MAX_DISTRIBUTION_ROWS) {
+    return {
+      duplicates: 0,
+      invalid: addresses.length - MAX_DISTRIBUTION_ROWS,
+      issues: [`清单最多支持 ${MAX_DISTRIBUTION_ROWS} 个地址，请拆分后分批处理`],
+      output: "",
+      total: "0",
+      totalUnits: 0n,
+      validCount: 0
+    };
+  }
   const amountPlan = createAmountPlan(args);
   const seen = new Set<string>();
   const outputRows: string[] = [];

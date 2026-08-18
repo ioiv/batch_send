@@ -1,105 +1,72 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { useState } from "react";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NftAssetInput } from "./NftAssetInput";
 
-describe("NftAssetInput", () => {
-  const renderInput = (props: Partial<Parameters<typeof NftAssetInput>[0]> = {}) => renderToStaticMarkup(
+afterEach(cleanup);
+
+function Harness({ auto = false, disabled = false, initialValue = "" }) {
+  const [value, setValue] = useState(initialValue);
+  const [contractAddress, setContractAddress] = useState("");
+  return (
     <NftAssetInput
-      contractAddress=""
-      onChange={() => undefined}
-      onContractAddressChange={() => undefined}
-      value=""
-      {...props}
+      autoDiscovery={auto ? <div>发现结果</div> : undefined}
+      contractAddress={contractAddress}
+      defaultMode={auto ? "auto" : "manual"}
+      disabled={disabled}
+      onChange={setValue}
+      onContractAddressChange={setContractAddress}
+      value={value}
     />
   );
+}
 
-  it("defaults to the manual mode and exposes one controlled panel", () => {
-    const markup = renderInput();
-
-    expect(markup.match(/role="tab"/g)).toHaveLength(3);
-    expect(markup).toContain("添加方式");
-    expect(markup).toContain("手动添加");
-    expect(markup).toMatch(/<button(?=[^>]*aria-controls="[^"]+-manual-panel")(?=[^>]*aria-selected="true")[^>]*>手动添加<\/button>/);
-    expect(markup).toContain('id="nft-quick-contract"');
-    expect(markup).not.toContain('id="nft-asset-raw-input"');
-    expect(markup).not.toContain("选择 TXT/CSV 文件");
+describe("NftAssetInput", () => {
+  it("merges manual and file entry into one tab", () => {
+    render(<Harness />);
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: "手工 / 文件" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "导入 TXT/CSV" })).toBeEnabled();
+    expect(screen.queryByRole("tab", { name: "文件导入" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "高级编辑" })).not.toBeInTheDocument();
   });
 
-  it("keeps the native file control hidden and only reveals file import in file mode", () => {
-    const markup = renderToStaticMarkup(
+  it("switches between automatic discovery and the merged entry panel", async () => {
+    const user = userEvent.setup();
+    render(<Harness auto />);
+    expect(screen.getByRole("tab", { name: "自动识别" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("发现结果")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    expect(screen.getByLabelText("Token ID / 区间")).toBeVisible();
+  });
+
+  it("keeps advanced raw editing in a Sheet", async () => {
+    const user = userEvent.setup();
+    const value = "0x1111111111111111111111111111111111111111,7";
+    render(<Harness initialValue={value} />);
+    expect(screen.queryByLabelText("资产清单")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "原始编辑" }));
+    expect(screen.getByRole("dialog", { name: "原始资产清单" })).toBeVisible();
+    expect(screen.getByLabelText("资产清单")).toHaveValue(value);
+  });
+
+  it("preserves the controlled contract value and disables every active entry control", () => {
+    const onChange = vi.fn();
+    render(
       <NftAssetInput
-        contractAddress=""
-        defaultMode="file"
-        onChange={() => undefined}
-        onContractAddressChange={() => undefined}
+        contractAddress="0x1111111111111111111111111111111111111111"
+        disabled
+        onChange={onChange}
+        onContractAddressChange={vi.fn()}
         value=""
       />
     );
-
-    expect(markup).toContain('type="file"');
-    expect(markup).toContain("hidden=\"\"");
-    expect(markup).toContain("选择 TXT/CSV 文件");
-    expect(markup).toContain("文件仅在当前页面本地解析");
-    expect(markup).toContain('id="nft-quick-contract"');
-    expect(markup).not.toContain('id="nft-asset-raw-input"');
-  });
-
-  it("preserves the current serialized value in advanced editing mode", () => {
-    const markup = renderInput({
-      defaultMode: "advanced",
-      value: "0x0000000000000000000000000000000000000001,42"
-    });
-
-    expect(markup).toContain('id="nft-asset-raw-input"');
-    expect(markup).toContain("0x0000000000000000000000000000000000000001,42");
-    expect(markup).toContain("合约地址,Token ID");
-    expect(markup).toContain('id="nft-quick-contract"');
-    expect(markup).not.toContain("选择 TXT/CSV 文件");
-  });
-
-  it("adds automatic discovery as the default controlled panel when supplied", () => {
-    const markup = renderInput({
-      autoDiscovery: <div data-testid="auto-discovery">自动发现内容</div>,
-      defaultMode: "auto"
-    });
-
-    expect(markup.match(/role="tab"/g)).toHaveLength(4);
-    expect(markup).toMatch(/<button(?=[^>]*aria-controls="[^"]+-auto-panel")(?=[^>]*aria-selected="true")[^>]*>自动识别<\/button>/);
-    expect(markup).toContain("自动发现内容");
-    expect(markup).toContain('id="nft-quick-contract"');
-    expect(markup).not.toContain('id="nft-asset-raw-input"');
-  });
-
-  it("keeps the controlled contract visible and unchanged across mode switches", () => {
-    const contractAddress = "0x0000000000000000000000000000000000000042";
-    const modes = ["auto", "manual", "file", "advanced"] as const;
-
-    for (const defaultMode of modes) {
-      const markup = renderInput({
-        autoDiscovery: <div>自动发现内容</div>,
-        contractAddress,
-        defaultMode
-      });
-
-      expect(markup.match(/id="nft-quick-contract"/g)).toHaveLength(1);
-      expect(markup).toMatch(new RegExp(`<input(?=[^>]*id="nft-quick-contract")(?=[^>]*value="${contractAddress}")[^>]*>`));
-    }
-  });
-
-  it("disables the mode choices and active controls with the component", () => {
-    const markup = renderInput({ defaultMode: "file", disabled: true });
-
-    expect(markup.match(/<button(?=[^>]*role="tab")(?=[^>]*disabled="")[^>]*>/g)).toHaveLength(3);
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>选择 TXT\/CSV 文件<\/button>/);
-  });
-
-  it("announces contract validity next to the shared contract field", () => {
-    const markup = renderInput({
-      contractAddress: "not-an-address",
-      contractStatus: "invalid"
-    });
-
-    expect(markup).toContain('aria-invalid="true"');
-    expect(markup).toContain("地址格式不正确");
+    expect(screen.getByLabelText("NFT 合约")).toHaveValue("0x1111111111111111111111111111111111111111");
+    expect(screen.getByRole("tab", { name: "手工 / 文件" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "导入 TXT/CSV" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "原始编辑" })).toBeDisabled();
   });
 });

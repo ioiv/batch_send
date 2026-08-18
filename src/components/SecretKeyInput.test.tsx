@@ -1,24 +1,28 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { SecretKeyInput } from "./SecretKeyInput";
 
-describe("SecretKeyInput", () => {
-  it("renders a locally-scoped file picker without weakening secret-field protections", () => {
-    const markup = renderToStaticMarkup(<SecretKeyInput mode="evm" />);
+afterEach(cleanup);
 
-    expect(markup).toContain('type="file"');
-    expect(markup).toContain('accept=".txt,.csv,.json,text/plain,text/csv,application/json"');
-    expect(markup).toContain('autoComplete="off"');
-    expect(markup).toContain('data-1p-ignore="true"');
-    expect(markup).toContain('data-bwignore="true"');
-    expect(markup).toContain('maxLength="524288"');
-    expect(markup).toContain("文件控件读取后会立即清空");
+describe("SecretKeyInput", () => {
+  it("keeps password-manager and browser persistence protections", () => {
+    render(<SecretKeyInput mode="evm" />);
+    const textarea = screen.getByLabelText("来源钱包密钥");
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+
+    expect(fileInput.accept).toBe(".txt,.csv,.json,text/plain,text/csv,application/json");
+    expect(textarea).toHaveAttribute("autocomplete", "off");
+    expect(textarea).toHaveAttribute("data-1p-ignore", "true");
+    expect(textarea).toHaveAttribute("data-bwignore", "true");
+    expect(textarea).toHaveAttribute("maxlength", "524288");
   });
 
   it("disables both input paths while a collection is running", () => {
-    const markup = renderToStaticMarkup(<SecretKeyInput disabled mode="solana" />);
-
-    expect(markup.match(/disabled=""/g)).toHaveLength(2);
-    expect(markup).toContain("secret-file-button is-disabled");
+    render(<SecretKeyInput disabled mode="solana" />);
+    expect(screen.getByLabelText("来源钱包密钥")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导入钱包文件" })).toBeDisabled();
+    expect(document.querySelector('input[type="file"]')).toBeDisabled();
   });
 });

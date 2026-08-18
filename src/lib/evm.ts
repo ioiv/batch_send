@@ -660,7 +660,7 @@ export function getEvmTransactionErrorMessage(error: unknown) {
 
   if (code === 4001 || /reject|declin|cancel/i.test(detail)) return "用户取消了交易确认";
   if (/insufficient|exceeds balance|not enough funds/i.test(detail)) return "钱包余额不足，无法完成本次分发";
-  if (/RPC 网络不匹配|分发合约未部署|分发合约字节码不匹配|Token 合约未部署|Token 余额不足|Token 授权交易已上链但执行失败/i.test(detail)) return detail;
+  if (/RPC 网络不匹配|分发合约未部署|分发合约字节码不匹配|Token 合约未部署|Token 余额不足|Token 授权交易已上链但执行失败|签名前钱包的账户或网络已改变|Token 授权后复检未通过/i.test(detail)) return detail;
   if (/revert|execution reverted|执行失败/i.test(detail)) return "EVM 分发交易执行失败，资金未按清单分发，请打开交易详情核对";
   if (/chain|network|unsupported/i.test(detail)) return "钱包网络切换失败，请检查网络配置";
   if (/failed to fetch|network|fetch|timeout/i.test(detail)) return "RPC 请求失败，请更换 RPC 后重试";
@@ -711,6 +711,43 @@ export async function ensureEvmNetwork(provider: EvmWalletProvider, network: Evm
         rpcUrls: [rpcEndpoint]
       }]
     });
+  }
+}
+
+function parseEvmProviderChainId(value: unknown) {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const normalized = value.trim();
+  if (!/^(?:0x[\da-f]+|\d+)$/i.test(normalized)) return null;
+  try {
+    const parsed = Number(BigInt(normalized));
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function assertEvmWalletContext({
+  account,
+  network,
+  provider
+}: {
+  account: string;
+  network: EvmChainConfig;
+  provider: EvmWalletProvider;
+}) {
+  const [accountsValue, chainIdValue] = await Promise.all([
+    provider.request({ method: "eth_accounts" }),
+    provider.request({ method: "eth_chainId" })
+  ]);
+  const activeAccount = Array.isArray(accountsValue) && typeof accountsValue[0] === "string"
+    ? accountsValue[0]
+    : "";
+  const expectedAccount = getAddress(account);
+
+  if (parseEvmProviderChainId(chainIdValue) !== network.chainId
+    || activeAccount.toLowerCase() !== expectedAccount.toLowerCase()) {
+    throw new Error("签名前钱包的账户或网络已改变，请重新预检");
   }
 }
 
@@ -976,6 +1013,7 @@ export async function preflightEvmDistribution({
 }
 
 export async function sendEvmNativeDistribution({
+  assertWalletContext = assertEvmWalletContext,
   from,
   onSubmitted,
   provider,
@@ -983,6 +1021,7 @@ export async function sendEvmNativeDistribution({
   rpcEndpoint,
   network
 }: {
+  assertWalletContext?: typeof assertEvmWalletContext;
   from: string;
   network: EvmNetworkConfig;
   onSubmitted?: (hash: Hash) => void;
@@ -1013,6 +1052,7 @@ export async function sendEvmNativeDistribution({
     throw new Error(`钱包余额不足：本次至少需要 ${formatWei(totalWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
   }
 
+  await assertWalletContext({ account, network, provider });
   const hash = await walletClient.writeContract({
     abi: disperseAbi,
     account,
@@ -1030,17 +1070,21 @@ export async function sendEvmNativeDistribution({
 }
 
 export async function sendEvmTokenDistribution({
+  assertWalletContext = assertEvmWalletContext,
   from,
   network,
   onStep,
+  postApprovalPreflight = preflightEvmDistribution,
   provider,
   rows,
   rpcEndpoint,
   token
 }: {
+  assertWalletContext?: typeof assertEvmWalletContext;
   from: string;
   network: EvmNetworkConfig;
   onStep?: (step: EvmTokenDistributionStep) => void;
+  postApprovalPreflight?: typeof preflightEvmDistribution;
   provider: EvmWalletProvider;
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
@@ -1092,6 +1136,7 @@ export async function sendEvmTokenDistribution({
   });
 
   if (needsApproval) {
+    await assertWalletContext({ account, network, provider });
     const approvalHash = await walletClient.writeContract({
       abi: erc20Abi,
       account,
@@ -1116,8 +1161,22 @@ export async function sendEvmTokenDistribution({
       totalTransactions: 2,
       type: "approval-confirmed"
     });
+
+    await assertWalletContext({ account, network, provider });
+    const freshPreflight = await postApprovalPreflight({
+      assetMode: "token",
+      from: account,
+      network,
+      rows,
+      rpcEndpoint,
+      token
+    });
+    if (freshPreflight.needsApproval) {
+      throw new Error("Token 授权后复检未通过：授权额度仍不足，请核对授权交易后重新预检");
+    }
   }
 
+  await assertWalletContext({ account, network, provider });
   const hash = await walletClient.writeContract({
     abi: disperseAbi,
     account,

@@ -1,4 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { FieldLabel } from "@/components/ui/field";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ConfirmActionDialog } from "@/components/WorkbenchPrimitives";
 import {
   parseEvmCollectionAssets,
   type EvmCollectionAsset,
@@ -66,7 +74,6 @@ export function NftInventoryReview({
 }: NftInventoryReviewProps) {
   const titleId = useId();
   const descriptionId = useId();
-  const masterCheckboxRef = useRef<HTMLInputElement>(null);
   const parsed = useMemo(
     () => parseEvmCollectionAssets(assetInput, standard),
     [assetInput, standard]
@@ -94,10 +101,6 @@ export function NftInventoryReview({
   const allSelected = validAssetKeys.length > 0 && selectedCount === validAssetKeys.length;
   const partlySelected = selectedCount > 0 && !allSelected;
 
-  useEffect(() => {
-    if (masterCheckboxRef.current) masterCheckboxRef.current.indeterminate = partlySelected;
-  }, [partlySelected]);
-
   const removeAssets = (keys: Iterable<string>) => {
     if (disabled) return;
     const keysToRemove = new Set(keys);
@@ -116,97 +119,86 @@ export function NftInventoryReview({
       <header className="nft-inventory-review__heading">
         <div>
           <h3 id={titleId}>待归集资产</h3>
-          <p id={descriptionId}>
-            有效项均会归集；勾选仅用于移除；无效原始行仍会保留。
-          </p>
+          <p className="sr-only" id={descriptionId}>勾选资产后可从清单移除；无效原始行会保留。</p>
         </div>
-        <span className="pill" aria-live="polite">
+        <Badge aria-live="polite" variant="outline">
           {parsed.assets.length} 个有效{parsed.invalid ? ` · ${parsed.invalid} 行无效` : ""}
-        </span>
+        </Badge>
       </header>
 
       {parsed.rows.length === 0 ? (
-        <div className="nft-inventory-review__empty empty">
-          <span aria-hidden="true">＋</span>
-          <strong>资产清单还是空的</strong>
-          <p>识别、添加或导入 NFT。</p>
-        </div>
+        <Empty className="nft-inventory-review__empty"><EmptyHeader><EmptyTitle>暂无资产</EmptyTitle></EmptyHeader></Empty>
       ) : (
         <>
           <div className="nft-inventory-review__toolbar" role="group" aria-label="资产选择与移除">
-            <label className="nft-inventory-review__select-all">
-              <input
-                className="nft-inventory-review__checkbox"
+            <FieldLabel className="nft-inventory-review__select-all">
+              <Checkbox
                 checked={allSelected}
                 disabled={disabled || validAssetKeys.length === 0}
-                onChange={(event) => setSelectedKeys(event.currentTarget.checked
+                indeterminate={partlySelected}
+                onCheckedChange={(checked) => setSelectedKeys(checked
                   ? new Set(validAssetKeys)
                   : new Set())}
-                ref={masterCheckboxRef}
-                type="checkbox"
               />
-              <span>选择全部用于移除</span>
-            </label>
+              <span>选择全部</span>
+            </FieldLabel>
             <span className="nft-inventory-review__selection-count">已选 {selectedCount} 项待移除</span>
             <div className="nft-inventory-review__actions">
-              <button
-                className="button ghost"
+              <Button
                 disabled={disabled || selectedCount === 0}
                 onClick={() => setSelectedKeys(new Set())}
                 type="button"
-              >清空选择</button>
-              <button
-                className="button ghost"
+                variant="ghost"
+              >清空选择</Button>
+              <Button
                 disabled={disabled || selectedCount === 0}
                 onClick={() => removeAssets(selectedKeys)}
                 type="button"
-              >移除选中项</button>
-              <button
-                className="button ghost nft-inventory-review__clear-all"
+                variant="outline"
+              >移除选中项</Button>
+              <ConfirmActionDialog
+                confirmLabel="移除全部"
+                description={`将从清单移除 ${validAssetKeys.length} 个有效资产。无效原始行仍会保留。`}
                 disabled={disabled || validAssetKeys.length === 0}
-                onClick={() => {
-                  if (!window.confirm(`确认从清单移除全部 ${validAssetKeys.length} 个有效资产？`)) return;
-                  removeAssets(validAssetKeys);
-                }}
-                type="button"
-              >移除全部</button>
+                onConfirm={() => removeAssets(validAssetKeys)}
+                title="移除全部有效资产？"
+                triggerLabel="移除全部"
+                triggerVariant="destructive"
+              />
             </div>
           </div>
 
-          <div className="nft-inventory-review__table-wrap" role="region" aria-label="NFT 资产清单" tabIndex={0}>
-            <table className="nft-inventory-review__table">
-              <caption className="sr-only">
-                {standard === "erc721" ? "ERC721" : "ERC1155"} 待归集资产清单
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">选择</th>
-                  <th scope="col">合约</th>
-                  <th scope="col">Token ID</th>
-                  <th scope="col">数量</th>
-                  <th scope="col">状态</th>
-                  <th scope="col"><span className="sr-only">操作</span></th>
-                </tr>
-              </thead>
-              <tbody>
+          <ScrollArea className="nft-inventory-review__table-wrap">
+            <Table aria-label={`${standard === "erc721" ? "ERC721" : "ERC1155"} 待归集资产清单`} className="nft-inventory-review__table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>选择</TableHead>
+                  <TableHead>合约</TableHead>
+                  <TableHead>Token ID</TableHead>
+                  <TableHead>数量</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead><span className="sr-only">操作</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {parsed.rows.map((row) => {
                   const rawLine = sourceLines[row.line - 1] || "";
                   if (!row.asset || row.status === "invalid") {
                     return (
-                      <tr className="nft-inventory-review__row is-invalid" key={`invalid-${row.line}`}>
-                        <td data-label="选择"><span aria-label="无效行不可选择">—</span></td>
-                        <th data-label="原始输入" scope="row">
+                      <TableRow className="nft-inventory-review__row is-invalid" key={`invalid-${row.line}`}>
+                        <TableCell><span aria-label="无效行不可选择">—</span></TableCell>
+                        <TableCell>
                           <strong>第 {row.line} 行无效</strong>
                           <code>{rawLine || "未能定位原始行"}</code>
-                        </th>
-                        <td data-label="Token ID">—</td>
-                        <td data-label="数量">—</td>
-                        <td data-label="状态">
-                          <span className="collection-status status-error">需修正</span>
+                        </TableCell>
+                        <TableCell>—</TableCell>
+                        <TableCell>—</TableCell>
+                        <TableCell>
+                          <Badge variant="destructive">需修正</Badge>
                           <small>{row.problems.join(" / ")}</small>
-                        </td>
-                        <td data-label="操作"><small>保留原始行</small></td>
-                      </tr>
+                        </TableCell>
+                        <TableCell><small>保留原始行</small></TableCell>
+                      </TableRow>
                     );
                   }
 
@@ -214,64 +206,63 @@ export function NftInventoryReview({
                   const duplicate = row.status === "duplicate";
                   const name = contractLabel(contractLabels, row.asset.contractAddress);
                   return (
-                    <tr
+                    <TableRow
                       className={`nft-inventory-review__row${duplicate ? " is-duplicate" : ""}`}
                       key={`${row.status}-${row.line}-${row.asset.key}`}
                     >
-                      <td data-label="选择">
+                      <TableCell>
                         {duplicate ? (
                           <span aria-label="重复行不可选择">—</span>
                         ) : (
-                          <input
+                          <Checkbox
                             aria-label={`选择第 ${row.line} 行 NFT`}
                             checked={selected}
-                            className="nft-inventory-review__checkbox"
                             disabled={disabled}
-                            onChange={(event) => setSelectedKeys((current) => {
+                            onCheckedChange={(checked) => setSelectedKeys((current) => {
                               const next = new Set(current);
-                              if (event.currentTarget.checked) next.add(row.asset!.key);
+                              if (checked) next.add(row.asset!.key);
                               else next.delete(row.asset!.key);
                               return next;
                             })}
-                            type="checkbox"
                           />
                         )}
-                      </td>
-                      <th data-label="合约" scope="row">
+                      </TableCell>
+                      <TableCell>
                         <strong>{name}</strong>
                         <code title={row.asset.contractAddress}>{shortAddress(row.asset.contractAddress)}</code>
-                      </th>
-                      <td data-label="Token ID"><code>{getAssetTokenId(row.asset)}</code></td>
-                      <td data-label="数量">
+                      </TableCell>
+                      <TableCell><code>{getAssetTokenId(row.asset)}</code></TableCell>
+                      <TableCell>
                         {standard === "erc1155" ? (
                           <span title="执行时读取该 Token ID 的可转余额">全部余额</span>
                         ) : "1 枚"}
-                      </td>
-                      <td data-label="状态">
+                      </TableCell>
+                      <TableCell>
                         {duplicate ? (
                           <>
-                            <span className="collection-status status-skipped">重复行</span>
+                            <Badge variant="outline">重复行</Badge>
                             <small>{row.problems.join(" / ")}</small>
                           </>
-                        ) : <span className="collection-status status-success">可归集</span>}
-                      </td>
-                      <td data-label="操作">
+                        ) : <Badge variant="outline">可归集</Badge>}
+                      </TableCell>
+                      <TableCell>
                         {duplicate ? <small>随对应资产一起移除</small> : (
-                          <button
+                          <Button
                             aria-label={`移除第 ${row.line} 行 NFT`}
-                            className="nft-inventory-review__remove button ghost"
+                            className="nft-inventory-review__remove"
                             disabled={disabled}
                             onClick={() => removeAssets([row.asset!.key])}
                             type="button"
-                          >移除</button>
+                            variant="ghost"
+                          >移除</Button>
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </TableBody>
+            </Table>
+          </ScrollArea>
         </>
       )}
     </section>

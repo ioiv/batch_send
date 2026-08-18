@@ -4,7 +4,9 @@ import {
   generateDistributionList,
   getDistributionAmountStep,
   importDistributionFileText,
-  importDistributionInput
+  importDistributionInput,
+  MAX_DISTRIBUTION_INPUT_CHARACTERS,
+  MAX_DISTRIBUTION_ROWS
 } from "./distribution-generator";
 
 const solanaAddressOne = "11111111111111111111111111111111";
@@ -31,6 +33,28 @@ describe("getDistributionAmountStep", () => {
 });
 
 describe("generateDistributionList fixed amounts", () => {
+  it("blocks oversized pasted text and more than 5000 rows before generation", () => {
+    const tooLarge = generateDistributionList({
+      addresses: "x".repeat(MAX_DISTRIBUTION_INPUT_CHARACTERS + 1),
+      addressKind: "evm",
+      decimals: 18,
+      fixedAmount: "1",
+      mode: "fixed"
+    });
+    expect(tooLarge.output).toBe("");
+    expect(tooLarge.issues).toContain("清单不能超过 512 KB，请拆分后分批处理");
+
+    const tooManyRows = generateDistributionList({
+      addresses: Array.from({ length: MAX_DISTRIBUTION_ROWS + 1 }, () => evmAddressOne).join("\n"),
+      addressKind: "evm",
+      decimals: 18,
+      fixedAmount: "1",
+      mode: "fixed"
+    });
+    expect(tooManyRows.output).toBe("");
+    expect(tooManyRows.issues[0]).toContain("5000 个地址");
+  });
+
   it("generates an ordered Solana list and totals exact bigint units", () => {
     const result = generateDistributionList({
       addresses: `${solanaAddressOne}\n\n${solanaAddressTwo}`,
@@ -260,6 +284,15 @@ describe("importDistributionInput", () => {
     });
   });
 
+  it("does not apply one provided amount to rows whose amount is missing", () => {
+    expect(importDistributionInput(`${evmAddressOne},0.5\n${evmAddressTwo}`)).toEqual({
+      addresses: `${evmAddressOne}\n${evmAddressTwo}`,
+      fixedAmount: "",
+      hadAmounts: true,
+      hasMixedAmounts: true
+    });
+  });
+
   it("keeps pure-address input ready for the default amount", () => {
     expect(importDistributionInput(`${evmAddressOne}\n${evmAddressTwo}`)).toEqual({
       addresses: `${evmAddressOne}\n${evmAddressTwo}`,
@@ -299,6 +332,7 @@ describe("importDistributionFileText", () => {
       truncated: true
     });
     expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo},2`).hasMixedAmounts).toBe(true);
+    expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo}`).hasMixedAmounts).toBe(true);
   });
 
   it("accepts common headers and quoted values while reporting malformed rows", () => {

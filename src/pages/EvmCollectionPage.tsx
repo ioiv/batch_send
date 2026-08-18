@@ -1,18 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createWalletClient, formatUnits, getAddress, http, isAddress, parseUnits, zeroAddress } from "viem";
-import { CollectionSafetyNote } from "../components/CollectionIntro";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { CollectionResults } from "../components/CollectionResults";
 import { NftAssetInput } from "../components/NftAssetInput";
 import { NftInventoryReview } from "../components/NftInventoryReview";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { SecretKeyInput, type SecretKeyInputHandle } from "../components/SecretKeyInput";
-import { ToolPageLayout, type ToolPageStep, type ToolPageStepState } from "../components/ToolPageLayout";
+import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
+import {
+  AdvancedSettings,
+  ConfirmActionDialog,
+  ExecutionProgress,
+  WorkbenchPanel
+} from "../components/WorkbenchPrimitives";
 import {
   executeEvmCollectionPlan,
   parseEvmCollectionAssets,
   parseEvmPrivateKeyInput,
   planEvmCollection,
   preflightEvmCollectionPlan,
+  type EvmCollectionAccount,
+  type EvmCollectionAsset,
   type EvmCollectionPreflightResult,
   type EvmCollectionPlanItem,
   type EvmCollectionProgress,
@@ -63,11 +77,32 @@ type CollectionPreflightSummary = Pick<
   "estimatedNetworkFee" | "executableTransactions"
 >;
 
-const evmCollectionSteps: ToolPageStep[] = [
-  { label: "导入来源", description: "选择网络并准备来源钱包" },
-  { label: "核对资产", description: "读取余额并完成只读预检" },
-  { label: "执行归集", description: "确认目标后本地签名" }
-];
+export function getEvmCollectionWorkbenchStatus(
+  stage: CollectionStage,
+  results: readonly CollectionDisplayResult[]
+): WorkbenchStatus {
+  const hasHash = results.some((result) => Boolean(result.hash));
+  const hasFailure = results.some((result) => result.status === "error");
+  if (stage === "scanning") return "preflight";
+  if (stage === "ready") return "ready";
+  if (stage === "running") return "running";
+  if (stage === "error") return hasHash ? "uncertain" : "error";
+  if (stage === "complete") {
+    if (hasFailure && hasHash) return "uncertain";
+    return hasFailure ? "error" : "success";
+  }
+  return "editing";
+}
+
+const evmStatusLabels: Record<WorkbenchStatus, string> = {
+  editing: "编辑中",
+  error: "需要处理",
+  preflight: "预检中",
+  ready: "等待确认",
+  running: "执行中",
+  success: "已完成",
+  uncertain: "需核对链上状态"
+};
 
 function shorten(value: string, edge = 6) {
   return value.length > edge * 2 + 1 ? `${value.slice(0, edge)}…${value.slice(-edge)}` : value;
@@ -172,6 +207,52 @@ function getProgressStatus(stage: EvmCollectionProgress["stage"]): CollectionRes
   return "error";
 }
 
+function getCollectionPlanInputs(plan: readonly EvmCollectionPlanItem[]) {
+  const accountsByAddress = new Map<string, EvmCollectionAccount>();
+  const assetsByKey = new Map<string, EvmCollectionAsset>();
+
+  plan.forEach((item, index) => {
+    assetsByKey.set(item.asset.key, item.asset);
+    if (!item.account || !item.address) return;
+    const address = getAddress(item.address);
+    if (getAddress(item.account.address) !== address || accountsByAddress.has(address.toLowerCase())) return;
+    accountsByAddress.set(address.toLowerCase(), {
+      account: item.account,
+      address,
+      label: item.label,
+      line: index + 1
+    });
+  });
+
+  return {
+    accounts: [...accountsByAddress.values()],
+    assets: [...assetsByKey.values()]
+  };
+}
+
+function getCollectionPlanSafetyFingerprint(item: EvmCollectionPlanItem) {
+  const tokenId = item.asset.standard === "erc20" ? "" : item.asset.tokenId.toString();
+  return [
+    item.id,
+    item.address?.toLowerCase() || "",
+    item.asset.standard,
+    item.asset.contractAddress.toLowerCase(),
+    tokenId,
+    item.amount.toString(),
+    item.status
+  ].join("|");
+}
+
+export function hasEvmCollectionPlanDrift(
+  previousPlan: readonly EvmCollectionPlanItem[],
+  freshPlan: readonly EvmCollectionPlanItem[]
+) {
+  if (previousPlan.length !== freshPlan.length) return true;
+  const previousFingerprints = previousPlan.map(getCollectionPlanSafetyFingerprint).sort();
+  const freshFingerprints = freshPlan.map(getCollectionPlanSafetyFingerprint).sort();
+  return previousFingerprints.some((fingerprint, index) => fingerprint !== freshFingerprints[index]);
+}
+
 export function EvmCollectionPage({
   fixedStandard
 }: {
@@ -194,12 +275,10 @@ export function EvmCollectionPage({
   const [discoveryMessage, setDiscoveryMessage] = useState("");
   const [contractInspection, setContractInspection] = useState<NftContractInspection | null>(null);
   const [pendingDiscovery, setPendingDiscovery] = useState<PendingNftDiscovery | null>(null);
-  const [partialDiscoveryAccepted, setPartialDiscoveryAccepted] = useState(false);
   const [discoveryRunning, setDiscoveryRunning] = useState(false);
   const [assetImporting, setAssetImporting] = useState(false);
   const [keyImporting, setKeyImporting] = useState(false);
   const [keysCleared, setKeysCleared] = useState(false);
-  const [errorStep, setErrorStep] = useState<0 | 1 | 2>(0);
   const [maxFeeAmount, setMaxFeeAmount] = useState("0.01");
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
   const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
@@ -208,7 +287,6 @@ export function EvmCollectionPage({
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
   const [preflightSummary, setPreflightSummary] = useState<CollectionPreflightSummary | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const assetImportingRef = useRef(false);
   const keyImportingRef = useRef(false);
@@ -246,30 +324,19 @@ export function EvmCollectionPage({
   const discoveryContractIsValid = isAddress(discoveryContract.trim())
     && getAddress(discoveryContract.trim()) !== zeroAddress;
   const sourceKeysReady = sourceKeyLineCount > 0;
-  const sourceSigningReady = sourceKeysReady || stage === "ready" || stage === "running" || stage === "complete";
   const readonlySourcesReady = readonlySourceCount > 0 && readonlySourceIssueCount === 0;
   const discoverySourceReady = sourceInputMode === "readonly" ? readonlySourcesReady : sourceKeysReady;
-  const sourceIdentityReady = sourceKeysReady || readonlySourcesReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
-  const safetySettingsReady = Boolean(effectiveRpcEndpoint) && maximumFeeAmount !== null;
-  const readinessTotal = fixedStandard === "nft" ? 5 : 4;
-  const completedInputCount = Number(sourceSigningReady)
-    + Number(parsedAssetCount > 0)
-    + Number(targetIsValid)
-    + Number(safetySettingsReady)
-    + (fixedStandard === "nft" ? Number(sourceIdentityReady) : 0);
   const readyTransactionCount = preflightSummary?.executableTransactions ?? readyCount;
   const transactionRunning = stage === "scanning" || stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
   const running = operationRunning || assetImporting || keyImporting;
-  const activeStep = stage === "error"
-    ? errorStep
-    : stage === "editing" ? !sourceIdentityReady ? 0 : !parsedAssetCount ? 1 : 2 : stage === "scanning" ? 1 : 2;
-  const stepStates: ToolPageStepState[] | undefined = stage === "complete"
-    ? ["complete", "complete", "complete"]
-    : stage === "error"
-      ? evmCollectionSteps.map((_, index) => index < errorStep ? "complete" : index === errorStep ? "error" : "upcoming")
-      : undefined;
+  const hasSubmittedHash = results.some((result) => Boolean(result.hash));
+  const controlsLocked = running || hasSubmittedHash;
+  const workbenchStatus = getEvmCollectionWorkbenchStatus(stage, results);
+  const completedResultCount = results.filter((result) => (
+    result.status === "success" || result.status === "error" || result.status === "skipped"
+  )).length;
   const networkOptions = useMemo<SearchableSelectOption<EvmDistributionNetworkId>[]>(() => (
     networks.map((network) => ({
       keywords: [String(network.chainId), network.nativeCurrency.symbol],
@@ -296,15 +363,12 @@ export function EvmCollectionPage({
     const resetRestoredPage = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
       planRef.current = [];
-      setConfirmed(false);
       setResults([]);
       setIssues([]);
       setDiscoveryIssues([]);
       setPendingDiscovery(null);
-      setPartialDiscoveryAccepted(false);
       setPreflightSummary(null);
       setMessage("页面从历史记录恢复，签名材料已清除；请重新扫描");
-      setErrorStep(0);
       setStage("editing");
     };
     window.addEventListener("pagehide", discardSigningPlan);
@@ -316,18 +380,11 @@ export function EvmCollectionPage({
     };
   }, []);
 
-  useEffect(() => {
-    // A partial-discovery acknowledgement applies only to the exact result
-    // currently on screen. A rescan or any edit must require it again.
-    setPartialDiscoveryAccepted(false);
-  }, [pendingDiscovery]);
-
   const parseMaximumFee = () => maximumFeeAmount;
 
   const invalidatePlan = (clearResults = true, preserveDiscovery = false) => {
     if (operationRef.current || transactionRunning) return;
     planRef.current = [];
-    setConfirmed(false);
     setPreflightSummary(null);
     if (!preserveDiscovery) {
       setDiscoveryMessage("");
@@ -336,7 +393,6 @@ export function EvmCollectionPage({
     setIssues([]);
     setMessage("");
     setStage("editing");
-    setErrorStep(0);
     if (clearResults) setResults([]);
   };
 
@@ -355,7 +411,6 @@ export function EvmCollectionPage({
     operationRef.current = true;
     setIssues([]);
     setMessage("");
-    setConfirmed(false);
     setPreflightSummary(null);
     planRef.current = [];
     setResults([]);
@@ -386,7 +441,6 @@ export function EvmCollectionPage({
       operationRef.current = false;
       setIssues(nextIssues);
       setStage("error");
-      setErrorStep(0);
       setMessage("请修正输入后重新扫描");
       return;
     }
@@ -436,7 +490,6 @@ export function EvmCollectionPage({
         planRef.current = [];
         setPreflightSummary(null);
         setStage("error");
-        setErrorStep(1);
         setMessage(failed
           ? "资产与交易预检完成，但没有可执行项；请查看失败原因"
           : "所有资产余额为 0 或不属于已导入钱包");
@@ -455,7 +508,6 @@ export function EvmCollectionPage({
       planRef.current = [];
       setPreflightSummary(null);
       setStage("error");
-      setErrorStep(1);
       const detail = error instanceof Error ? error.message : "RPC 请求失败";
       setMessage(detail.includes("RPC 网络不匹配") ? detail : "资产扫描或交易预检失败，请检查网络、RPC 与合约地址");
     } finally {
@@ -763,9 +815,9 @@ export function EvmCollectionPage({
     }
   };
 
-  const applyPendingDiscovery = () => {
+  const applyPendingDiscovery = (allowPartial = false) => {
     if (!pendingDiscovery || operationRef.current || running || standard !== "erc721") return;
-    if (!pendingDiscovery.complete && !partialDiscoveryAccepted) {
+    if (!pendingDiscovery.complete && !allowPartial) {
       setDiscoveryMessage("这是部分发现结果。请先确认仅归集已验证项目，或修正提示后重新扫描完整历史。");
       return;
     }
@@ -791,29 +843,28 @@ export function EvmCollectionPage({
     );
   };
 
-  const addPendingDiscovery = () => applyPendingDiscovery();
-
   const executeCollection = async () => {
     const plan = planRef.current;
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current
-      || stage !== "ready" || !confirmed || !plan.length || !isAddress(targetAddress.trim())) return;
+      || stage !== "ready" || !plan.length || !isAddress(targetAddress.trim())) return;
 
     const target = getAddress(targetAddress.trim());
     const maxFeePerTransactionWei = parseMaximumFee();
     if (maxFeePerTransactionWei === null) {
       invalidatePlan(false);
       setStage("error");
-      setErrorStep(1);
       setMessage("单笔最大网络费已变化，请重新扫描");
       return;
     }
     operationRef.current = true;
     setStage("running");
-    setMessage(`正在执行 ${readyTransactionCount} 笔归集交易；请勿关闭页面`);
+    setMessage("签名前正在重新检查网络、资产余额、所有权、模拟与 Gas");
+    let executionPlan = plan;
+    let signingStarted = false;
 
     const updateProgress = (progress: EvmCollectionProgress) => {
       setResults((current) => current.map((result, index) => {
-        const planItem = plan[index];
+        const planItem = executionPlan[index];
         if (!planItem || planItem.id !== progress.id) return result;
         return {
           ...result,
@@ -829,7 +880,34 @@ export function EvmCollectionPage({
 
     try {
       const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
+      await assertEvmRpcNetwork(publicClient, selectedNetwork);
+      const freshInputs = getCollectionPlanInputs(plan);
+      const freshOwnershipPlan = await planEvmCollection({
+        accounts: freshInputs.accounts,
+        assets: freshInputs.assets,
+        publicClient
+      });
+      const freshPreflight = await preflightEvmCollectionPlan({
+        maxFeePerTransactionWei,
+        plan: freshOwnershipPlan,
+        publicClient,
+        targetAddress: target
+      });
+      executionPlan = freshPreflight.plan;
+      setPreflightSummary({
+        estimatedNetworkFee: freshPreflight.estimatedNetworkFee,
+        executableTransactions: freshPreflight.executableTransactions
+      });
+      setResults(executionPlan.map(planItemToDisplay));
+
+      if (hasEvmCollectionPlanDrift(plan, executionPlan)) {
+        setStage("error");
+        setMessage("签名前检查发现资产余额、所有权或可执行交易已变化，已阻止签名；请重新导入密钥并预检");
+        return;
+      }
+
       const chain = toEvmChain(selectedNetwork, effectiveRpcEndpoint);
+      signingStarted = true;
       const executionResults = await executeEvmCollectionPlan({
         getWalletClient: (account) => createWalletClient({
           account,
@@ -838,12 +916,12 @@ export function EvmCollectionPage({
         }),
         maxFeePerTransactionWei,
         onProgress: updateProgress,
-        plan,
+        plan: executionPlan,
         publicClient,
         targetAddress: target
       });
       setResults(executionResults.map((result, index) => (
-        resultToDisplay(plan[index], result, (hash) => getEvmExplorerUrl(hash, selectedNetwork))
+        resultToDisplay(executionPlan[index], result, (hash) => getEvmExplorerUrl(hash, selectedNetwork))
       )));
       const success = executionResults.filter((result) => result.status === "success").length;
       const failed = executionResults.filter((result) => result.status === "failed").length;
@@ -851,230 +929,429 @@ export function EvmCollectionPage({
       setMessage(`执行结束：${success} 笔确认成功${failed ? `，${failed} 笔失败` : ""}。来源密钥已从页面清除。`);
     } catch {
       setStage("error");
-      setErrorStep(2);
-      setMessage("归集流程意外中断；来源密钥已清除，请先按已显示的交易哈希核对链上状态，再决定是否创建新任务");
+      setMessage(signingStarted
+        ? "归集流程意外中断；来源密钥已清除，请先按已显示的交易哈希核对链上状态，再决定是否创建新任务"
+        : "签名前复检失败，未请求任何签名；请检查网络、余额、所有权与 Gas 后重新预检");
     } finally {
       operationRef.current = false;
       planRef.current = [];
-      setConfirmed(false);
       setPreflightSummary(null);
     }
   };
 
-  const focusControl = (id: string) => {
-    window.requestAnimationFrame(() => {
-      const element = document.getElementById(id);
-      element?.scrollIntoView({ behavior: "smooth", block: "center" });
-      element?.focus({ preventScroll: true });
-    });
+  const focusKeyInput = () => {
+    if (fixedStandard === "nft") setSourceInputMode("keys");
+    window.requestAnimationFrame(() => keyInputRef.current?.focus());
   };
 
-  const needsDiscoverySource = fixedStandard === "nft"
-    && standard === "erc721"
-    && !parsedAssetCount
-    && !discoverySourceReady;
-
-  const handleGuidedAction = () => {
-    if (stage === "ready") {
-      if (confirmed && !running) void executeCollection();
-      return;
-    }
-    if (running) return;
-    if (needsDiscoverySource) {
-      if (sourceInputMode === "readonly") focusControl("nft-discovery-sources");
-      else {
-        window.requestAnimationFrame(() => {
-          document.getElementById("collection-source-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
-          keyInputRef.current?.focus();
-        });
-      }
-      return;
-    }
-    if (!parsedAssetCount) {
-      focusControl(fixedStandard === "nft" ? "nft-quick-contract" : "evm-collection-assets");
-      return;
-    }
-    if (!targetIsValid) {
-      focusControl("evm-collection-target");
-      return;
-    }
-    if (!sourceKeysReady) {
-      setSourceInputMode("keys");
-      window.requestAnimationFrame(() => {
-        document.getElementById("collection-source-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
-        keyInputRef.current?.focus();
-      });
-      return;
-    }
-    if (!safetySettingsReady) {
-      const advancedSettings = document.querySelector<HTMLDetailsElement>(".collection-target-section details.collection-advanced");
-      if (advancedSettings) advancedSettings.open = true;
-      focusControl(effectiveRpcEndpoint ? "evm-collection-max-fee" : "evm-collection-rpc");
-      return;
-    }
-    void scanAssets();
+  const resetTask = () => {
+    keyInputRef.current?.clear();
+    planRef.current = [];
+    setErc20AssetInput("");
+    setNftAssetInputs({ erc721: "", erc1155: "" });
+    setDiscoveryContract("");
+    setDiscoverySourceInput("");
+    setSourceInputMode("readonly");
+    setDiscoveryMode("auto");
+    setDiscoveryStartBlock("");
+    setPendingDiscovery(null);
+    setContractInspection(null);
+    setDiscoveryIssues([]);
+    setDiscoveryMessage("");
+    setNftStandard("erc721");
+    setNftInputResetNonce((current) => current + 1);
+    setTargetAddress("");
+    setMaxFeeAmount("0.01");
+    setResults([]);
+    setKeysCleared(false);
+    setPreflightSummary(null);
+    setIssues([]);
+    setMessage("");
+    setStage("editing");
   };
-
-  const guidedActionLabel = stage === "ready"
-    ? "确认并开始归集"
-    : stage === "scanning"
-      ? "正在扫描与预检"
-      : stage === "running"
-        ? "归集中"
-        : needsDiscoverySource
-          ? sourceInputMode === "readonly" ? "填写只读来源地址" : "导入来源密钥"
-          : !parsedAssetCount
-            ? fixedStandard === "nft" ? "添加 NFT 资产" : "填写资产清单"
-            : !targetIsValid
-              ? "填写目标地址"
-              : !sourceKeysReady
-                ? keysCleared ? "重新导入来源密钥" : "导入来源密钥"
-                : !safetySettingsReady
-                  ? "检查 RPC / Gas 设置"
-              : stage === "error" ? "重新生成归集预览" : "生成归集预览";
-  const guidedActionDisabled = running || (stage === "ready" && !confirmed);
 
   return (
     <ToolPageLayout
-      activeStep={activeStep}
-      categoryHref="/#collection"
-      categoryLabel="资产归集"
+      actions={(
+        <>
+          <Badge variant="outline">{selectedNetwork.label}</Badge>
+          <ConfirmActionDialog
+            confirmLabel="清空任务"
+            description={hasSubmittedHash
+              ? "当前结果包含已提交的交易哈希。清空前请先核对链上状态；清空后本页记录无法恢复。"
+              : "来源密钥、资产清单和当前预检结果将从页面清除。"}
+            disabled={running}
+            onConfirm={resetTask}
+            title="清空当前归集任务？"
+            triggerLabel="清空任务"
+            triggerVariant="destructive"
+          />
+        </>
+      )}
+      className="collection-shell collection-page"
       currentToolId={currentToolId}
-      description={fixedStandard === "erc20"
-        ? "批量归集 ERC20。"
-        : "归集 ERC721 或 ERC1155。"}
-      eyebrow={fixedStandard === "erc20" ? "Many to one · ERC20" : "Many to one · NFT"}
-      mainClassName="collection-shell collection-page"
-      meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">密钥仅在本地内存</span></>}
-      stepStates={stepStates}
-      steps={evmCollectionSteps}
+      status={workbenchStatus}
+      statusLabel={evmStatusLabels[workbenchStatus]}
       title={fixedStandard === "erc20" ? "ERC20 代币归集" : "EVM NFT 归集"}
     >
-        <div className={`workspace collection-workspace${results.length ? " has-results" : ""}`}>
-          <section className="panel collection-workbench-panel" aria-labelledby="collection-config-title">
-            <div className="panel-header">
-              <div>
-                <h2 className="panel-title" id="collection-config-title">批量归集工作台</h2>
-              </div>
-              <span className="collection-ready-count" aria-label={`已准备 ${completedInputCount} / ${readinessTotal} 项`}>
-                {completedInputCount}/{readinessTotal}
-              </span>
-            </div>
-            <div className="form collection-form">
-              <div className="collection-mobile-guide" aria-label="归集准备进度">
-                <span><strong>{completedInputCount}/{readinessTotal}</strong> 项已准备</span>
-                <button
-                  className="button primary"
-                  disabled={guidedActionDisabled}
-                  onClick={handleGuidedAction}
-                  type="button"
-                >{guidedActionLabel}</button>
-              </div>
-
-              {fixedStandard === "nft" ? (
-                <section className="collection-source-section collection-source-board" aria-labelledby="collection-source-title">
-                  <header className="collection-section-heading">
-                    <span className="collection-section-index" aria-hidden="true">01</span>
-                    <div className="collection-section-copy">
-                      <h3 id="collection-source-title">准备来源钱包</h3>
-                      <p className="hint">可先用只读地址识别；执行前需私钥。</p>
-                    </div>
-                    <span className="pill" data-ready={discoverySourceReady ? "true" : "false"}>
-                      {sourceInputMode === "readonly"
-                        ? readonlySourceIssueCount
-                          ? `${readonlySourceIssueCount} 项地址需修正`
-                          : readonlySourceCount ? `${readonlySourceCount} 个只读地址` : "等待只读地址"
-                        : sourceKeysReady ? `${sourceKeyLineCount} 行密钥待校验` : "等待来源密钥"}
-                    </span>
-                  </header>
-
-                  <div className="collection-source-mode" role="group" aria-label="来源钱包输入方式">
-                    <button
-                      aria-pressed={sourceInputMode === "readonly"}
-                      className={sourceInputMode === "readonly" ? "is-active" : undefined}
-                      disabled={running}
-                      onClick={() => setSourceInputMode("readonly")}
-                      type="button"
-                    >
-                      <strong>只读地址识别</strong>
-                      <small>先看持仓，执行前再导入私钥</small>
-                    </button>
-                    <button
-                      aria-pressed={sourceInputMode === "keys"}
-                      className={sourceInputMode === "keys" ? "is-active" : undefined}
-                      disabled={running}
-                      onClick={() => setSourceInputMode("keys")}
-                      type="button"
-                    >
-                      <strong>私钥归集</strong>
-                      <small>本地派生地址，可识别并执行</small>
-                    </button>
-                  </div>
-
-                  <div hidden={sourceInputMode !== "readonly"}>
-                    <div className="field">
-                      <div className="nft-field-label-row">
-                        <label htmlFor="nft-discovery-sources">只读来源地址</label>
-                        <span className={`nft-field-status${readonlySourceIssueCount ? " is-error" : ""}`}>
-                          {readonlySourceIssueCount
-                            ? `${readonlySourceIssueCount} 项需修正`
-                            : readonlySourceCount ? `${readonlySourceCount} 个有效地址` : "等待输入"}
-                        </span>
+      <div className={"workspace collection-workspace" + (results.length ? " has-results" : "")}>
+        <WorkbenchPanel
+          className="collection-workbench-panel"
+          footer={(
+            <div className="actions collection-actions">
+              {stage === "ready" ? (
+                <ConfirmActionDialog
+                  confirmLabel="确认并开始归集"
+                  description={(
+                    <div className="summary-list">
+                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>目标地址</span><strong className="mono">{targetAddress}</strong></div>
+                      <div><span>归集资产</span><strong>{readyCount} 项</strong></div>
+                      <div><span>预计交易</span><strong>{readyTransactionCount} 笔</strong></div>
+                      {preflightSummary ? (
+                        <div>
+                          <span>预检网络费</span>
+                          <strong>
+                            {formatUnits(
+                              preflightSummary.estimatedNetworkFee,
+                              selectedNetwork.nativeCurrency.decimals
+                            )} {selectedNetwork.nativeCurrency.symbol}
+                          </strong>
+                        </div>
+                      ) : null}
+                      <div>
+                        <span>单笔 Gas 上限</span>
+                        <strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong>
                       </div>
-                      <textarea
-                        aria-describedby="nft-discovery-sources-help"
+                    </div>
+                  )}
+                  disabled={running}
+                  onConfirm={executeCollection}
+                  title="确认 EVM 归集？"
+                  triggerLabel="确认并开始归集"
+                />
+              ) : stage === "scanning" || stage === "running" ? (
+                <Button disabled type="button">{stage === "scanning" ? "预检中" : "归集中"}</Button>
+              ) : hasSubmittedHash ? (
+                <Button disabled type="button">请先核对链上结果</Button>
+              ) : keysCleared ? (
+                <Button onClick={focusKeyInput} type="button">重新导入来源密钥</Button>
+              ) : (
+                <Button disabled={running} onClick={() => void scanAssets()} type="button">预检资产与费用</Button>
+              )}
+            </div>
+          )}
+          title="归集设置"
+        >
+          <div className="form collection-form">
+            {fixedStandard === "nft" ? (
+              <>
+                <Tabs
+                  onValueChange={(value) => {
+                    const nextMode = value as NftSourceInputMode;
+                    setSourceInputMode(nextMode);
+                    setPendingDiscovery(null);
+                    setDiscoveryIssues([]);
+                    setDiscoveryMessage("");
+                    invalidatePlan();
+                  }}
+                  value={sourceInputMode}
+                >
+                  <TabsList aria-label="来源模式">
+                    <TabsTrigger disabled={controlsLocked} value="readonly">只读地址</TabsTrigger>
+                    <TabsTrigger disabled={controlsLocked} value="keys">来源密钥</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="readonly">
+                    <Field data-invalid={discoverySourceInput.trim() && readonlySourceIssueCount ? true : undefined}>
+                      <FieldLabel htmlFor="nft-discovery-sources">只读来源地址</FieldLabel>
+                      <Textarea
                         aria-invalid={discoverySourceInput.trim() && readonlySourceIssueCount ? true : undefined}
                         autoCapitalize="none"
                         autoComplete="off"
-                        disabled={running}
+                        disabled={controlsLocked}
                         id="nft-discovery-sources"
                         onChange={(event) => {
                           setDiscoverySourceInput(event.target.value);
                           setPendingDiscovery(null);
                           setDiscoveryIssues([]);
                           setDiscoveryMessage("");
+                          invalidatePlan();
                         }}
-                        placeholder={"每行一个来源钱包\n0x…"}
+                        placeholder="0x…"
                         rows={4}
                         spellCheck={false}
                         value={discoverySourceInput}
                       />
-                      <p className="hint" id="nft-discovery-sources-help">
-                        {readonlySourceIssueCount
-                          ? parsedReadonlySources.issues[0]
-                          : "公开索引查询会暴露钱包地址与 NFT 合约；此模式不会读取或提交私钥。"}
-                      </p>
-                    </div>
-                  </div>
-                  <div hidden={sourceInputMode !== "keys"}>
-                    <SecretKeyInput
-                      disabled={operationRunning || assetImporting}
-                      mode="evm"
-                      onDirty={() => {
-                        setKeysCleared(false);
-                        invalidatePlan();
-                      }}
-                      onImportingChange={handleKeyImportingChange}
-                      onLineCountChange={setSourceKeyLineCount}
-                      ref={keyInputRef}
-                    />
-                  </div>
-                </section>
-              ) : null}
+                      {readonlySourceIssueCount ? <FieldError>{parsedReadonlySources.issues[0]}</FieldError> : null}
+                    </Field>
+                  </TabsContent>
+                  <TabsContent value="keys">
+                    <span className="sr-only">来源密钥输入位于目标地址之后</span>
+                  </TabsContent>
+                </Tabs>
+              </>
+            ) : null}
 
-              {fixedStandard === "erc20" ? (
-                <section className="collection-source-section collection-source-board" aria-labelledby="collection-source-title">
-                  <header className="collection-section-heading">
-                    <span className="collection-section-index" aria-hidden="true">01</span>
-                    <div className="collection-section-copy">
-                      <h3 id="collection-source-title">来源钱包</h3>
-                    </div>
-                    <span className="pill" data-ready={sourceSigningReady ? "true" : "false"}>
-                      {sourceKeysReady ? `${sourceKeyLineCount} 行待校验` : sourceSigningReady ? "预检已载入" : "等待导入"}
-                    </span>
-                  </header>
+            <Field>
+              <FieldLabel htmlFor="evm-collection-network">网络</FieldLabel>
+              <SearchableSelect
+                disabled={controlsLocked}
+                id="evm-collection-network"
+                listboxLabel="EVM 归集网络"
+                metaLabel="Chain ID"
+                onChange={selectNetwork}
+                options={networkOptions}
+                placeholder="搜索网络或 Chain ID"
+                triggerLabel="选择归集网络"
+                value={networkId}
+              />
+            </Field>
+
+            {fixedStandard === "nft" ? (
+              <Field>
+                <FieldLabel>NFT 标准</FieldLabel>
+                <Tabs
+                  onValueChange={(value) => {
+                    const nextStandard = value as "erc721" | "erc1155";
+                    setNftStandard(nextStandard);
+                    if (nextStandard === "erc1155") setSourceInputMode("keys");
+                    setNftInputResetNonce((current) => current + 1);
+                    setPendingDiscovery(null);
+                    setContractInspection(null);
+                    invalidatePlan();
+                  }}
+                  value={nftStandard}
+                >
+                  <TabsList aria-label="NFT 标准">
+                    <TabsTrigger disabled={controlsLocked} value="erc721">ERC721</TabsTrigger>
+                    <TabsTrigger disabled={controlsLocked} value="erc1155">ERC1155</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </Field>
+            ) : null}
+
+            {fixedStandard === "erc20" ? (
+              <>
+                <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
+                  <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
+                  <Input
+                    aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    disabled={controlsLocked}
+                    id="evm-collection-target"
+                    onChange={(event) => {
+                      setTargetAddress(event.target.value);
+                      invalidatePlan();
+                    }}
+                    placeholder="0x…"
+                    spellCheck={false}
+                    value={targetAddress}
+                  />
+                  {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="evm-collection-assets">Token 清单</FieldLabel>
+                  <Textarea
+                    className="collection-asset-textarea"
+                    disabled={controlsLocked}
+                    id="evm-collection-assets"
+                    onChange={(event) => {
+                      setCurrentAssetInput(event.target.value);
+                      invalidatePlan();
+                    }}
+                    placeholder="0x…"
+                    spellCheck={false}
+                    value={assetInput}
+                  />
+                </Field>
+                <SecretKeyInput
+                  disabled={controlsLocked || assetImporting}
+                  mode="evm"
+                  onDirty={() => {
+                    setKeysCleared(false);
+                    invalidatePlan();
+                  }}
+                  onImportingChange={handleKeyImportingChange}
+                  onLineCountChange={setSourceKeyLineCount}
+                  ref={keyInputRef}
+                />
+              </>
+            ) : (
+              <>
+                <NftAssetInput
+                  autoDiscovery={standard === "erc721" ? (
+                    <WorkbenchPanel className="nft-discovery-card" title="自动识别">
+                      {contractInspection ? (
+                        <Alert>
+                          <AlertTitle>{contractInspection.name || "NFT 合约"}</AlertTitle>
+                          <AlertDescription>
+                            <Badge variant="outline">
+                              {contractInspection.symbol ? contractInspection.symbol + " · " : ""}
+                              {contractInspection.standard.toUpperCase()}
+                            </Badge>
+                            <code>{contractInspection.address}</code>
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+
+                      <Button
+                        disabled={controlsLocked || !discoveryContractIsValid || !discoverySourceReady}
+                        onClick={() => void discoverOwnedErc721()}
+                        type="button"
+                      >
+                        {discoveryRunning ? "正在识别" : "识别持仓"}
+                      </Button>
+
+                      <AdvancedSettings disabled={controlsLocked} label="发现方式与事件范围">
+                        <Field>
+                          <FieldLabel>发现方式</FieldLabel>
+                          <Tabs
+                            onValueChange={(value) => {
+                              setDiscoveryMode(value as NftDiscoveryMode);
+                              setPendingDiscovery(null);
+                              setDiscoveryIssues([]);
+                              setDiscoveryMessage("");
+                              invalidatePlan();
+                            }}
+                            value={discoveryMode}
+                          >
+                            <TabsList aria-label="NFT 发现方式">
+                              <TabsTrigger value="auto">自动</TabsTrigger>
+                              <TabsTrigger value="enumerable">原生索引</TabsTrigger>
+                              <TabsTrigger value="transfer">事件回溯</TabsTrigger>
+                            </TabsList>
+                          </Tabs>
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="nft-discovery-start-block">事件起始区块</FieldLabel>
+                          <Input
+                            disabled={controlsLocked || discoveryMode === "enumerable"}
+                            id="nft-discovery-start-block"
+                            inputMode="numeric"
+                            onChange={(event) => {
+                              setDiscoveryStartBlock(event.target.value);
+                              setPendingDiscovery(null);
+                              setDiscoveryIssues([]);
+                              setDiscoveryMessage("");
+                              invalidatePlan();
+                            }}
+                            placeholder="自动定位"
+                            spellCheck={false}
+                            value={discoveryStartBlock}
+                          />
+                        </Field>
+                      </AdvancedSettings>
+
+                      {pendingDiscovery ? (
+                        <Alert>
+                          <AlertTitle>
+                            {pendingDiscovery.complete ? "发现结果已验证" : "部分发现结果"}
+                          </AlertTitle>
+                          <AlertDescription>
+                            <p>{pendingDiscovery.assets.length} 个 Token ID</p>
+                            <code>
+                              {pendingDiscovery.assets.slice(0, 8).map((asset) => asset.tokenId.toString()).join(" · ")}
+                              {pendingDiscovery.assets.length > 8 ? " · …" : ""}
+                            </code>
+                            {pendingDiscovery.complete ? (
+                              <Button
+                                disabled={controlsLocked}
+                                onClick={() => applyPendingDiscovery()}
+                                type="button"
+                              >
+                                加入资产清单
+                              </Button>
+                            ) : (
+                              <ConfirmActionDialog
+                                confirmLabel="确认加入部分结果"
+                                description="只会加入当前已验证的 Token ID；未覆盖的资产不会自动补入，需另行核对。"
+                                disabled={controlsLocked}
+                                onConfirm={() => applyPendingDiscovery(true)}
+                                title="加入部分发现结果？"
+                                triggerLabel="确认并加入部分结果"
+                                triggerVariant="outline"
+                              />
+                            )}
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+
+                      {discoveryMessage ? (
+                        <Alert aria-live="polite">
+                          <AlertTitle>识别状态</AlertTitle>
+                          <AlertDescription>{discoveryMessage}</AlertDescription>
+                        </Alert>
+                      ) : null}
+
+                      {discoveryIssues.length ? (
+                        <Alert variant="destructive">
+                          <AlertTitle>识别提示</AlertTitle>
+                          <AlertDescription>
+                            <ul>
+                              {discoveryIssues.slice(0, 8).map((issue, index) => (
+                                <li key={issue + "-" + index}>{issue}</li>
+                              ))}
+                            </ul>
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+                    </WorkbenchPanel>
+                  ) : undefined}
+                  contractAddress={discoveryContract}
+                  contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
+                  defaultMode={standard === "erc721" ? "auto" : "manual"}
+                  disabled={controlsLocked || keyImporting}
+                  key={[nftInputResetNonce, standard].join("-")}
+                  onChange={(value) => {
+                    setCurrentAssetInput(value);
+                    invalidatePlan();
+                  }}
+                  onContractAddressChange={(value) => {
+                    setDiscoveryContract(value);
+                    setPendingDiscovery(null);
+                    setContractInspection(null);
+                    setDiscoveryMessage("");
+                    setDiscoveryIssues([]);
+                    invalidatePlan();
+                  }}
+                  onImportingChange={handleAssetImportingChange}
+                  value={assetInput}
+                />
+
+                <NftInventoryReview
+                  assetInput={assetInput}
+                  contractLabels={contractLabels}
+                  disabled={controlsLocked}
+                  onChange={(value) => {
+                    setCurrentAssetInput(value);
+                    invalidatePlan();
+                  }}
+                  standard={standard as "erc721" | "erc1155"}
+                />
+
+                <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
+                  <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
+                  <Input
+                    aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    disabled={controlsLocked}
+                    id="evm-collection-target"
+                    onChange={(event) => {
+                      setTargetAddress(event.target.value);
+                      invalidatePlan();
+                    }}
+                    placeholder="0x…"
+                    spellCheck={false}
+                    value={targetAddress}
+                  />
+                  {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                </Field>
+
+                {sourceInputMode === "keys" ? (
                   <SecretKeyInput
-                    disabled={operationRunning || assetImporting}
+                    disabled={controlsLocked || assetImporting}
                     mode="evm"
                     onDirty={() => {
                       setKeysCleared(false);
@@ -1084,530 +1361,92 @@ export function EvmCollectionPage({
                     onLineCountChange={setSourceKeyLineCount}
                     ref={keyInputRef}
                   />
-                </section>
-              ) : null}
-
-              <CollectionResults
-                embedded
-                emptyMessage="预检后显示结果。"
-                emptyTitle="等待预检"
-                exportFilename={`${currentToolId}-results.csv`}
-                results={results}
-                title={fixedStandard === "nft" ? "来源钱包与资产清单" : "来源钱包与代币余额"}
-              />
-
-              <div className="collection-config-primary collection-context-strip">
-                <div className="field">
-                  <label htmlFor="evm-collection-network">网络</label>
-                  <SearchableSelect
-                    disabled={running}
-                    id="evm-collection-network"
-                    listboxLabel="EVM 归集网络"
-                    metaLabel="Chain ID"
-                    onChange={selectNetwork}
-                    options={networkOptions}
-                    placeholder="搜索网络或 Chain ID"
-                    triggerLabel="选择归集网络"
-                    value={networkId}
-                  />
-                </div>
-                {fixedStandard === "nft" ? (
-                  <div className="field">
-                    <label htmlFor="nft-standard">NFT 标准</label>
-                    <select
-                      disabled={running}
-                      id="nft-standard"
-                      onChange={(event) => {
-                        const nextStandard = event.target.value as "erc721" | "erc1155";
-                        setNftStandard(nextStandard);
-                        if (nextStandard === "erc1155") setSourceInputMode("keys");
-                        setNftInputResetNonce((current) => current + 1);
-                        setPendingDiscovery(null);
-                        setContractInspection(null);
-                        invalidatePlan();
-                      }}
-                      value={nftStandard}
-                    >
-                      <option value="erc721">ERC721</option>
-                      <option value="erc1155">ERC1155</option>
-                    </select>
-                  </div>
                 ) : null}
-              </div>
+              </>
+            )}
 
-              <div className="collection-settings-grid">
-              <section className="collection-flow-section collection-asset-section" aria-labelledby="collection-assets-title">
-                <header className="collection-section-heading">
-                  <span className="collection-section-index" aria-hidden="true">02</span>
-                  <div className="collection-section-copy">
-                    <h3 id="collection-assets-title">添加并核对资产</h3>
-                  </div>
-                  <span className="pill" data-ready={parsedAssetCount ? "true" : "false"}>
-                    {parsedAssetCount ? `${parsedAssetCount} 项资产` : "尚未添加"}
-                  </span>
-                </header>
-
-              <div className="field collection-assets-input">
-                {fixedStandard !== "nft" ? <label htmlFor="evm-collection-assets">资产清单</label> : null}
-                {fixedStandard === "nft" ? (
-                  <div className="nft-input-modes">
-                    <NftAssetInput
-                      contractAddress={discoveryContract}
-                      contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
-                      defaultMode={standard === "erc721" ? "auto" : "manual"}
-                      disabled={operationRunning || keyImporting}
-                      key={`${nftInputResetNonce}-${standard}`}
-                      onChange={(value) => {
-                        setCurrentAssetInput(value);
-                        invalidatePlan();
-                      }}
-                      onContractAddressChange={(value) => {
-                        setDiscoveryContract(value);
-                        setPendingDiscovery(null);
-                        setContractInspection(null);
-                        setDiscoveryMessage("");
-                        setDiscoveryIssues([]);
-                        invalidatePlan();
-                      }}
-                      onImportingChange={handleAssetImportingChange}
-                      value={assetInput}
-                    >
-                    {standard === "erc721" ? (
-                      <section className="nft-discovery-card" aria-labelledby="nft-discovery-title">
-                        {contractInspection ? (
-                          <div className="nft-contract-summary" data-status={contractInspection.standard === "unknown" ? "unsupported" : "valid"}>
-                            <strong>{contractInspection.name || "已识别 NFT 合约"}</strong>
-                            <span>
-                              {contractInspection.symbol ? `${contractInspection.symbol} · ` : ""}
-                              {contractInspection.standard.toUpperCase()}
-                              {contractInspection.standard === "erc721"
-                                ? contractInspection.enumerable ? " · Enumerable" : " · 普通 ERC721"
-                                : ""}
-                            </span>
-                            <code title={contractInspection.address}>{contractInspection.address}</code>
-                          </div>
-                        ) : null}
-                        <div className="nft-discovery-simple">
-                          <div>
-                            <h3 id="nft-discovery-title">从来源钱包识别 Token ID</h3>
-                            <p id="nft-discovery-action-help">
-                              只读操作。依次尝试原生索引、公开 Blockscout 候选和链上事件复核。
-                            </p>
-                          </div>
-                          <button
-                            aria-describedby="nft-discovery-action-help"
-                            className="button primary"
-                            disabled={running || !discoveryContractIsValid || !discoverySourceReady}
-                            onClick={() => void discoverOwnedErc721()}
-                            type="button"
-                          >
-                            {discoveryRunning ? "正在识别" : "识别持仓"}
-                          </button>
-                        </div>
-                        {!discoveryContractIsValid ? (
-                          <p className="hint">先填写有效的 NFT 合约地址。</p>
-                        ) : !discoverySourceReady ? (
-                          <p className="hint">先在“来源钱包”中准备当前模式对应的地址或密钥。</p>
-                        ) : null}
-
-                        <details className="collection-advanced">
-                          <summary>发现方式与事件范围</summary>
-                          <div className="collection-advanced-grid">
-                            <fieldset className="nft-discovery-modes field full">
-                              <legend>发现方式</legend>
-                              <label className={"nft-discovery-mode" + (discoveryMode === "auto" ? " is-selected" : "")}>
-                                <input
-                                  checked={discoveryMode === "auto"}
-                                  disabled={running}
-                                  name="nft-discovery-mode"
-                                  onChange={() => {
-                                    setDiscoveryMode("auto");
-                                    setPendingDiscovery(null);
-                                    setDiscoveryIssues([]);
-                                    setDiscoveryMessage("");
-                                  }}
-                                  type="radio"
-                                />
-                                <span><strong>自动</strong><small>Enumerable → Blockscout → 事件</small></span>
-                              </label>
-                              <label className={"nft-discovery-mode" + (discoveryMode === "enumerable" ? " is-selected" : "")}>
-                                <input
-                                  checked={discoveryMode === "enumerable"}
-                                  disabled={running}
-                                  name="nft-discovery-mode"
-                                  onChange={() => {
-                                    setDiscoveryMode("enumerable");
-                                    setPendingDiscovery(null);
-                                    setDiscoveryIssues([]);
-                                    setDiscoveryMessage("");
-                                  }}
-                                  type="radio"
-                                />
-                                <span><strong>仅原生索引</strong><small>只读 ERC721Enumerable</small></span>
-                              </label>
-                              <label className={"nft-discovery-mode" + (discoveryMode === "transfer" ? " is-selected" : "")}>
-                                <input
-                                  checked={discoveryMode === "transfer"}
-                                  disabled={running}
-                                  name="nft-discovery-mode"
-                                  onChange={() => {
-                                    setDiscoveryMode("transfer");
-                                    setPendingDiscovery(null);
-                                    setDiscoveryIssues([]);
-                                    setDiscoveryMessage("");
-                                  }}
-                                  type="radio"
-                                />
-                                <span><strong>仅事件回溯</strong><small>按 Transfer 历史恢复</small></span>
-                              </label>
-                            </fieldset>
-                            <div className="field full">
-                              <label htmlFor="nft-discovery-start-block">事件起始区块（可选）</label>
-                              <input
-                                disabled={running || discoveryMode === "enumerable"}
-                                id="nft-discovery-start-block"
-                                inputMode="numeric"
-                                onChange={(event) => {
-                                  setDiscoveryStartBlock(event.target.value);
-                                  setPendingDiscovery(null);
-                                  setDiscoveryIssues([]);
-                                  setDiscoveryMessage("");
-                                }}
-                                placeholder="留空时自动定位合约部署区块"
-                                spellCheck={false}
-                                value={discoveryStartBlock}
-                              />
-                              <p className="hint">仅用于事件回溯；结果会标注范围。</p>
-                            </div>
-                          </div>
-                        </details>
-                        {pendingDiscovery ? (
-                          <div className="nft-discovery-pending" aria-live="polite">
-                            <div>
-                              <span className="nft-discovery-verdict" data-complete={pendingDiscovery.complete ? "true" : "false"}>
-                                {pendingDiscovery.complete
-                                  ? pendingDiscovery.kind === "transfer" && pendingDiscovery.scope === "full-history"
-                                    ? "完整历史已验证"
-                                    : "扫描范围已验证"
-                                  : "部分候选结果"}
-                              </span>
-                              <strong>已准备 {pendingDiscovery.assets.length} 个 Token ID</strong>
-                              <p>
-                                {pendingDiscovery.kind === "transfer"
-                                  ? "快照区块 " + (pendingDiscovery.latestBlock?.toString() || "—")
-                                    + " · " + (pendingDiscovery.scope === "full-history" ? "合约部署以来" : "指定区块范围")
-                                  : pendingDiscovery.kind === "indexer"
-                                    ? "Blockscout 候选 · 链上快照 " + (pendingDiscovery.latestBlock?.toString() || "—")
-                                    : "通过 ERC721Enumerable 索引读取"}
-                              </p>
-                              <code>
-                                Token ID：{pendingDiscovery.assets.slice(0, 8).map((asset) => asset.tokenId.toString()).join(" · ")}
-                                {pendingDiscovery.assets.length > 8 ? " · …" : ""}
-                              </code>
-                            </div>
-                            <div className="nft-discovery-pending-actions">
-                              {!pendingDiscovery.complete ? (
-                                <label className="nft-discovery-partial-confirm">
-                                  <input
-                                    checked={partialDiscoveryAccepted}
-                                    disabled={running}
-                                    onChange={(event) => setPartialDiscoveryAccepted(event.target.checked)}
-                                    type="checkbox"
-                                  />
-                                  <span>我确认仅归集已验证的部分结果，未覆盖项目不会被静默忽略。</span>
-                                </label>
-                              ) : null}
-                              <div>
-                                <button
-                                  className="button primary"
-                                  disabled={running || (!pendingDiscovery.complete && !partialDiscoveryAccepted)}
-                                  onClick={addPendingDiscovery}
-                                  type="button"
-                                >
-                                  加入资产清单
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
-                        {discoveryMessage ? <p className="hint" role="status">{discoveryMessage}</p> : null}
-                        {discoveryIssues.length ? (
-                          <ul className="nft-discovery-issues" role="alert">
-                            {discoveryIssues.slice(0, 8).map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}
-                            {discoveryIssues.length > 8 ? <li>另有 {discoveryIssues.length - 8} 项提示；建议分批发现并与链上资产清单核对。</li> : null}
-                          </ul>
-                        ) : null}
-                      </section>
-                    ) : null}
-                    </NftAssetInput>
-                  </div>
-                ) : null}
-                {fixedStandard !== "nft" ? (
-                  <textarea
-                    className="collection-asset-textarea"
-                    disabled={running}
-                    id="evm-collection-assets"
-                    onChange={(event) => {
-                      setCurrentAssetInput(event.target.value);
-                      invalidatePlan();
-                    }}
-                    placeholder="每行一个 ERC20 合约地址\n0x…"
-                    spellCheck={false}
-                    value={assetInput}
-                  />
-                ) : null}
-                <p className="hint">
-                  {standard === "erc1155"
-                    ? "同来源、同合约资产会合并转账。"
-                    : standard === "erc721"
-                      ? "没有 owner 私钥的资产会跳过。"
-                      : "余额为 0 的来源会跳过。"}
-                </p>
-              </div>
-
-              {fixedStandard === "nft" ? (
-                <NftInventoryReview
-                  assetInput={assetInput}
-                  contractLabels={contractLabels}
-                  disabled={running}
-                  onChange={(value) => {
-                    setCurrentAssetInput(value);
-                    invalidatePlan();
-                  }}
-                  standard={standard as "erc721" | "erc1155"}
-                />
-              ) : null}
-
-              </section>
-
-              <section className="collection-flow-section collection-target-section" aria-labelledby="collection-target-title">
-                <header className="collection-section-heading">
-                  <span className="collection-section-index" aria-hidden="true">03</span>
-                  <div className="collection-section-copy">
-                    <h3 id="collection-target-title">确认目标与费用</h3>
-                  </div>
-                  <span className="pill" data-ready={targetIsValid ? "true" : "false"}>
-                    {targetIsValid ? "目标有效" : "等待目标地址"}
-                  </span>
-                </header>
-
-              <div className="field">
-                <label htmlFor="evm-collection-target">归集到</label>
-                <input
-                  aria-describedby="evm-collection-target-help"
-                  aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
-                  autoCapitalize="none"
-                  autoComplete="off"
-                  disabled={running}
-                  id="evm-collection-target"
+            <AdvancedSettings disabled={controlsLocked} label="RPC 与 Gas 设置">
+              <Field>
+                <FieldLabel htmlFor="evm-collection-rpc">RPC 地址</FieldLabel>
+                <Input
+                  disabled={controlsLocked}
+                  id="evm-collection-rpc"
                   onChange={(event) => {
-                    setTargetAddress(event.target.value);
+                    setRpcEndpoint(event.target.value);
+                    setPendingDiscovery(null);
+                    setContractInspection(null);
                     invalidatePlan();
                   }}
-                  placeholder="目标钱包 0x…"
                   spellCheck={false}
-                  value={targetAddress}
+                  type="url"
+                  value={rpcEndpoint}
                 />
-                <p className="hint" id="evm-collection-target-help">
-                  {targetAddress.trim() && !targetIsValid
-                    ? "请输入有效的非零 EVM 地址。"
-                    : "签名前会再次显示完整地址。"}
-                </p>
-              </div>
+                <FieldDescription className="sr-only">读写均使用此 RPC</FieldDescription>
+              </Field>
+              <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
+                <FieldLabel htmlFor="evm-collection-max-fee">
+                  单笔 Gas 上限（{selectedNetwork.nativeCurrency.symbol}）
+                </FieldLabel>
+                <Input
+                  aria-invalid={maximumFeeAmount === null ? true : undefined}
+                  disabled={controlsLocked}
+                  id="evm-collection-max-fee"
+                  inputMode="decimal"
+                  min="0"
+                  onChange={(event) => {
+                    setMaxFeeAmount(event.target.value);
+                    invalidatePlan();
+                  }}
+                  step="0.000001"
+                  type="number"
+                  value={maxFeeAmount}
+                />
+                {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
+              </Field>
+            </AdvancedSettings>
 
-              <details className="collection-advanced">
-                <summary>RPC 与 Gas 安全设置</summary>
-                <div className="collection-advanced-grid">
-                  <div className="field full">
-                    <label htmlFor="evm-collection-rpc">RPC 地址</label>
-                    <input
-                      aria-describedby="evm-collection-rpc-help"
-                      disabled={running}
-                      id="evm-collection-rpc"
-                      onChange={(event) => {
-                        setRpcEndpoint(event.target.value);
-                        setPendingDiscovery(null);
-                        setContractInspection(null);
-                        invalidatePlan();
-                      }}
-                      spellCheck={false}
-                      type="url"
-                      value={rpcEndpoint}
-                    />
-                    <p className="hint" id="evm-collection-rpc-help">读写均使用此 RPC。</p>
-                  </div>
-                  <div className="field full">
-                    <label htmlFor="evm-collection-max-fee">
-                      单笔执行 Gas 预算上限（{selectedNetwork.nativeCurrency.symbol}）
-                    </label>
-                    <input
-                      aria-describedby="evm-collection-max-fee-help"
-                      aria-invalid={maximumFeeAmount === null ? true : undefined}
-                      disabled={running}
-                      id="evm-collection-max-fee"
-                      inputMode="decimal"
-                      min="0"
-                      onChange={(event) => {
-                        setMaxFeeAmount(event.target.value);
-                        invalidatePlan();
-                      }}
-                      step="0.000001"
-                      type="number"
-                      value={maxFeeAmount}
-                    />
-                    <p className="hint" id="evm-collection-max-fee-help">
-                      {maximumFeeAmount === null
-                        ? "请输入大于 0 的有效预算。"
-                        : "超出上限将阻止提交；L2 数据费另计。"}
-                    </p>
-                  </div>
-                </div>
-              </details>
+            {issues.length ? (
+              <Alert variant="destructive">
+                <AlertTitle>输入有误</AlertTitle>
+                <AlertDescription>
+                  <ul aria-label="输入问题">
+                    {issues.map((issue, index) => <li key={issue + "-" + index}>{issue}</li>)}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
-              </section>
-              </div>
+            {message ? (
+              <Alert
+                aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
+                variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
+              >
+                <AlertTitle>{evmStatusLabels[workbenchStatus]}</AlertTitle>
+                <AlertDescription>{message}</AlertDescription>
+              </Alert>
+            ) : null}
 
-            <section
-              className="collection-command-panel collection-command-panel--inline"
-              aria-label="归集任务操作"
-              aria-labelledby="collection-command-title"
-            >
-              <div className="panel-header">
-                <div>
-                  <h3 className="panel-title" id="collection-command-title">检查并预检</h3>
-                </div>
-                <span className="pill">仅链上 Gas · 平台费 0</span>
-                <span className="sr-only">不上传密钥、不收平台费、不调用收费归集合约</span>
-              </div>
-              <div className="collection-command-body">
-              <ul className="collection-readiness" aria-label="预检准备项">
-                {fixedStandard === "nft" ? (
-                  <li data-ready={sourceIdentityReady ? "true" : "false"}>
-                    <span aria-hidden="true">{sourceIdentityReady ? "✓" : "1"}</span>
-                    <strong>识别来源</strong>
-                  </li>
-                ) : null}
-                <li data-ready={parsedAssetCount ? "true" : "false"}>
-                  <span aria-hidden="true">{parsedAssetCount ? "✓" : fixedStandard === "nft" ? "2" : "1"}</span>
-                  <strong>{fixedStandard === "nft" ? "NFT 资产" : "ERC20 资产"}</strong>
-                </li>
-                <li data-ready={targetIsValid ? "true" : "false"}>
-                  <span aria-hidden="true">{targetIsValid ? "✓" : fixedStandard === "nft" ? "3" : "2"}</span>
-                  <strong>目标地址</strong>
-                </li>
-                <li data-ready={sourceSigningReady ? "true" : "false"}>
-                  <span aria-hidden="true">{sourceSigningReady ? "✓" : fixedStandard === "nft" ? "4" : "3"}</span>
-                  <strong>签名密钥</strong>
-                </li>
-                <li data-ready={safetySettingsReady ? "true" : "false"}>
-                  <span aria-hidden="true">{safetySettingsReady ? "✓" : fixedStandard === "nft" ? "5" : "4"}</span>
-                  <strong>RPC 与 Gas</strong>
-                </li>
-              </ul>
+            {stage === "running" ? (
+              <ExecutionProgress
+                current={completedResultCount}
+                label="EVM 归集进度"
+                total={readyTransactionCount || results.length}
+              />
+            ) : null}
+          </div>
+        </WorkbenchPanel>
 
-              {issues.length ? (
-                <ul className="collection-issue-list" aria-label="输入问题" role="alert">
-                  {issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}
-                </ul>
-              ) : null}
-
-              {message ? (
-                <div className="collection-inline-status" data-status={stage === "error" ? "error" : stage === "complete" ? "success" : stage} aria-live={stage === "error" ? "assertive" : "polite"} role={stage === "error" ? "alert" : "status"}>
-                  <strong>{stage === "ready" ? "等待最终确认" : stage === "complete" ? "任务已结束" : "任务状态"}</strong>
-                  <p>{message}</p>
-                </div>
-              ) : null}
-
-              {stage === "ready" ? (
-                <div className="collection-final-confirm">
-                  <strong>将执行 {readyTransactionCount} 笔交易，归集 {readyCount} 项资产</strong>
-                  <p>目标：{targetAddress}</p>
-                  {preflightSummary ? (
-                    <p>
-                      预检时预计网络费：{formatUnits(
-                        preflightSummary.estimatedNetworkFee,
-                        selectedNetwork.nativeCurrency.decimals
-                      )} {selectedNetwork.nativeCurrency.symbol}；提交前会重新估算。
-                    </p>
-                  ) : null}
-                  <p>
-                    执行 Gas 预算上限：每笔 {maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}；按交易数合计 {(() => {
-                      const maximumFee = parseMaximumFee();
-                      return maximumFee === null
-                        ? "—"
-                        : formatUnits(maximumFee * BigInt(readyTransactionCount), selectedNetwork.nativeCurrency.decimals);
-                    })()} {selectedNetwork.nativeCurrency.symbol}。部分 L2 的 L1 数据费不包含在此预算中。
-                  </p>
-                  <label className="collection-confirm-check">
-                    <input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
-                    <span>我已核对网络、目标地址和下方资产明细，并理解交易一旦确认不可撤销。</span>
-                  </label>
-                </div>
-              ) : null}
-
-              <div className="actions collection-actions">
-                <button className="button danger" disabled={running} onClick={() => {
-                  const hasTaskContent = Boolean(targetAddress.trim() || assetInput.trim() || keyInputRef.current?.read().trim() || results.length);
-                  if (hasTaskContent && !window.confirm("确认清空当前归集任务？来源密钥、资产清单和预检结果将无法恢复。")) return;
-                  keyInputRef.current?.clear();
-                  planRef.current = [];
-                  setErc20AssetInput("");
-                  setNftAssetInputs({ erc721: "", erc1155: "" });
-                  setDiscoveryContract("");
-                  setDiscoverySourceInput("");
-                  setSourceInputMode("readonly");
-                  setDiscoveryMode("auto");
-                  setDiscoveryStartBlock("");
-                  setPendingDiscovery(null);
-                  setContractInspection(null);
-                  setPartialDiscoveryAccepted(false);
-                  setDiscoveryIssues([]);
-                  setDiscoveryMessage("");
-                  setNftInputResetNonce((current) => current + 1);
-                  setTargetAddress("");
-                  setMaxFeeAmount("0.01");
-                  setResults([]);
-                  setKeysCleared(false);
-                  setPreflightSummary(null);
-                  setIssues([]);
-                  setMessage("");
-                  setConfirmed(false);
-                  setStage("editing");
-                  setErrorStep(0);
-                }} type="button">清空任务</button>
-                <button
-                  aria-describedby="collection-preview-readiness"
-                  className="button primary"
-                  disabled={guidedActionDisabled}
-                  onClick={handleGuidedAction}
-                  type="button"
-                >{guidedActionLabel}</button>
-              </div>
-
-              {stage !== "ready" && stage !== "running" ? (
-                <p className="hint" id="collection-preview-readiness">
-                  {needsDiscoverySource
-                    ? sourceInputMode === "readonly"
-                      ? "下一步：填写只读来源地址。"
-                      : "下一步：导入来源密钥。"
-                    : !parsedAssetCount
-                    ? "下一步：加入有效资产。"
-                    : !targetIsValid
-                      ? "下一步：填写目标地址。"
-                      : !sourceKeysReady
-                        ? "下一步：导入 owner 私钥。"
-                        : !safetySettingsReady
-                          ? "下一步：检查 RPC 与 Gas。"
-                      : "准备就绪，可开始预检。"}
-                </p>
-              ) : null}
-
-              <CollectionSafetyNote />
-            </div>
-            </section>
-            </div>
-          </section>
-        </div>
+        <WorkbenchPanel className="collection-results-panel" title="预检与结果">
+          <CollectionResults
+            embedded
+            emptyMessage="预检后显示资产与交易。"
+            emptyTitle="等待预检"
+            exportFilename={currentToolId + "-results.csv"}
+            results={results}
+            title={fixedStandard === "nft" ? "NFT 归集结果" : "ERC20 归集结果"}
+          />
+        </WorkbenchPanel>
+      </div>
     </ToolPageLayout>
   );
 }

@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { FieldError } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { DistributionListEditor } from "./DistributionListEditor";
 import { getDuplicateAddressKey, type AddressKind } from "../lib/address";
 import {
   dedupeDistributionAddresses,
@@ -210,7 +216,7 @@ export function DistributionListGenerator({
         return;
       }
       if (imported.hasMixedAmounts) {
-        setImportMessage("检测到逐行不同金额；当前工具只支持统一金额或随机区间，未修改当前清单");
+        setImportMessage("检测到金额列不完整或逐行金额不同；当前工具只支持统一金额或随机区间，未修改当前清单");
         return;
       }
 
@@ -241,168 +247,104 @@ export function DistributionListGenerator({
       className={`distribution-generator${controlsDisabled ? " disabled" : ""}${generationDisabled ? " generation-disabled" : ""}`}
       aria-label="批量金额清单生成器"
     >
-      <div className="generator-heading">
-        <label htmlFor={`${instanceId}-addresses`}>收款地址</label>
-        <div className="generator-heading-actions">
-          <input
-            accept=".txt,.csv,text/plain,text/csv"
-            className="sr-only"
-            disabled={controlsDisabled}
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              void importAddressFile(file);
-            }}
-            ref={fileInputRef}
-            tabIndex={-1}
-            type="file"
-          />
-          <button
-            className="button ghost generator-import-button"
-            disabled={controlsDisabled}
-            onClick={() => fileInputRef.current?.click()}
-            type="button"
-          >导入 TXT/CSV</button>
-          <span className={`pill generator-status${statusClassName}`} aria-live="polite">
-            {statusLabel}
-          </span>
-        </div>
+      <div className="generator-heading-actions justify-end">
+        <Input
+          accept=".txt,.csv,text/plain,text/csv"
+          aria-hidden="true"
+          disabled={controlsDisabled}
+          hidden
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = "";
+            void importAddressFile(file);
+          }}
+          ref={fileInputRef}
+          tabIndex={-1}
+          type="file"
+        />
+        <Button
+          className="generator-import-button"
+          disabled={controlsDisabled}
+          onClick={() => fileInputRef.current?.click()}
+          type="button"
+          variant="outline"
+        >导入 TXT/CSV</Button>
+        <Badge className={`generator-status${statusClassName}`} aria-live="polite" variant="outline">
+          {statusLabel}
+        </Badge>
       </div>
 
       {importMessage ? <p className="hint generator-import-message" role="status">{importMessage}</p> : null}
 
       {unavailableMessage ? (
-        <div className="notice compact-notice">
-          <strong>金额生成暂不可用</strong>
-          <span>{unavailableMessage}</span>
-        </div>
+        <Alert className="compact-notice">
+          <AlertTitle>金额生成暂不可用</AlertTitle>
+          <AlertDescription>{unavailableMessage}</AlertDescription>
+        </Alert>
       ) : null}
 
-      <div className="field">
-        <textarea
-          className="address-only-input"
-          disabled={controlsDisabled}
-          id={`${instanceId}-addresses`}
-          placeholder={addressKind === "evm"
-            ? "0x0000000000000000000000000000000000000001\n0x0000000000000000000000000000000000000002"
-            : "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"}
-          spellCheck={false}
-          value={addresses}
-          onChange={(event) => updateAddresses(event.target.value)}
-        />
-      </div>
-
-      <div className="mode-row generator-mode-row" role="radiogroup" aria-label="批量金额模式">
-        <label className="mode">
-          <span className="mode-head">
-            <input
-              checked={mode === "fixed"}
-              disabled={controlsDisabled || generationDisabled}
-              name={`${instanceId}-amount-mode`}
-              type="radio"
-              value="fixed"
-              onChange={() => {
-                onDirty?.();
-                setMode("fixed");
-              }}
-            />
-            固定金额
-          </span>
-        </label>
-        <label className="mode">
-          <span className="mode-head">
-            <input
-              checked={mode === "random"}
-              disabled={controlsDisabled || generationDisabled}
-              name={`${instanceId}-amount-mode`}
-              type="radio"
-              value="random"
-              onChange={() => {
-                setMode("random");
-                regenerateRandomAmounts();
-              }}
-            />
-            随机区间
-          </span>
-        </label>
-      </div>
-
-      {mode === "fixed" ? (
-        <div className="amount-grid generator-amount-grid fixed">
-          <div className="field">
-            <label htmlFor={`${instanceId}-fixed-amount`}>每个地址的金额（{symbol}）</label>
-            <input
-              disabled={controlsDisabled || generationDisabled}
-              id={`${instanceId}-fixed-amount`}
-              min="0"
-              step={fixedStep}
-              type="number"
-              value={fixedAmount}
-              onChange={(event) => updateValue(setFixedAmount, event.target.value)}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="amount-grid generator-amount-grid random">
-          <div className="field">
-            <label htmlFor={`${instanceId}-min-amount`}>随机最小值（{symbol}）</label>
-            <input
-              disabled={controlsDisabled || generationDisabled}
-              id={`${instanceId}-min-amount`}
-              min="0"
-              step={randomStep}
-              type="number"
-              value={minAmount}
-              onChange={(event) => updateValue(setMinAmount, event.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor={`${instanceId}-max-amount`}>随机最大值（{symbol}）</label>
-            <input
-              disabled={controlsDisabled || generationDisabled}
-              id={`${instanceId}-max-amount`}
-              min="0"
-              step={randomStep}
-              type="number"
-              value={maxAmount}
-              onChange={(event) => updateValue(setMaxAmount, event.target.value)}
-            />
-          </div>
-        </div>
-      )}
+      <DistributionListEditor
+        addressPlaceholder={addressKind === "evm"
+          ? "0x0000000000000000000000000000000000000001\n0x0000000000000000000000000000000000000002"
+          : "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"}
+        addresses={addresses}
+        disabled={controlsDisabled}
+        fixedAmount={fixedAmount}
+        fixedAmountStep={fixedStep}
+        generationDisabled={generationDisabled}
+        idPrefix={instanceId}
+        maxAmount={maxAmount}
+        minAmount={minAmount}
+        mode={mode}
+        onAddressesChange={updateAddresses}
+        onFixedAmountChange={(value) => updateValue(setFixedAmount, value)}
+        onMaxAmountChange={(value) => updateValue(setMaxAmount, value)}
+        onMinAmountChange={(value) => updateValue(setMinAmount, value)}
+        onModeChange={(nextMode) => {
+          if (nextMode === "fixed") {
+            onDirty?.();
+            setMode("fixed");
+          } else {
+            setMode("random");
+            regenerateRandomAmounts();
+          }
+        }}
+        randomAmountStep={randomStep}
+        symbol={symbol}
+      />
 
       <div className="actions generator-actions">
         <div className="action-group">
           {mode === "random" ? (
-            <button
-              className="button ghost"
+            <Button
               disabled={controlsDisabled || generationDisabled || !result.output}
               type="button"
               onClick={regenerateRandomAmounts}
-            >重新随机</button>
+              variant="outline"
+            >重新随机</Button>
           ) : null}
-          <button
-            className="button ghost"
+          <Button
             disabled={controlsDisabled || result.duplicates === 0}
             type="button"
             onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind))}
-          >去重</button>
-          <button
-            className="button danger"
+            variant="outline"
+          >去重</Button>
+          <Button
             disabled={controlsDisabled || !addresses.trim()}
             type="button"
             onClick={() => {
               updateAddresses("");
               setRandomEntropies(new Map());
             }}
-          >清空</button>
+            variant="destructive"
+          >清空</Button>
         </div>
       </div>
 
-      <div className="invalid-list" aria-live="polite">
+      <FieldError className="invalid-list" aria-live="polite">
         {result.issues.slice(0, 5).map((issue) => <div key={issue}>{issue}</div>)}
         {result.duplicates > 0 ? <div>发现 {result.duplicates} 个重复地址，请先去重后再发送。</div> : null}
-      </div>
+      </FieldError>
     </section>
   );
 }

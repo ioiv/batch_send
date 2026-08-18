@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import type { DistributionRow } from "../lib/distribution";
 import { formatLamports } from "../lib/amount";
 
@@ -15,9 +17,9 @@ export function DistributionReview({
 
   if (rows.length === 0) {
     return (
-      <div className="review-list">
-        <div className="empty">暂无清单</div>
-      </div>
+      <Empty className="review-list">
+        <EmptyHeader><EmptyTitle>暂无清单</EmptyTitle></EmptyHeader>
+      </Empty>
     );
   }
 
@@ -42,12 +44,13 @@ export function DistributionReview({
         );
       })}
       {rows.length > collapsedRowCount ? (
-        <button
+        <Button
           aria-expanded={expanded}
-          className="button ghost review-expand-button"
+          className="review-expand-button"
           type="button"
           onClick={() => setExpanded((current) => !current)}
-        >{expanded ? "收起清单" : `展开全部 ${rows.length} 行`}</button>
+          variant="ghost"
+        >{expanded ? "收起清单" : `展开全部 ${rows.length} 行`}</Button>
       ) : null}
     </div>
   );

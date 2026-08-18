@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Metric } from "./Metric";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
+import { Metric } from "@/components/Metric";
 import {
   downloadCollectionResults,
   filterCollectionResults,
@@ -7,7 +22,7 @@ import {
   type CollectionDisplayResult,
   type CollectionResultFilter,
   type CollectionResultStatus
-} from "../lib/collection-results";
+} from "@/lib/collection-results";
 
 const statusLabels: Record<CollectionResultStatus, string> = {
   confirming: "确认中",
@@ -33,11 +48,7 @@ type IndexedCollectionResult = {
 };
 
 export function getCollectionResultSetIdentity(results: CollectionDisplayResult[]) {
-  return JSON.stringify(results.map((result) => [
-    result.address,
-    result.asset,
-    result.label || ""
-  ]));
+  return JSON.stringify(results.map((result) => [result.address, result.asset, result.label || ""]));
 }
 
 export function getIndexedCollectionResults(
@@ -70,10 +81,6 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
     () => getIndexedCollectionResults(results, filter, query),
     [filter, query, results]
   );
-  const clearFilters = () => {
-    setFilter("all");
-    setQuery("");
-  };
 
   useEffect(() => {
     if (!previousHasActiveResultsRef.current && hasActiveResults) {
@@ -85,7 +92,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
 
   return (
     <div className="collection-results-body">
-      <div className="stats collection-stats" aria-label="归集执行统计">
+      <div className="metric-grid" aria-label="归集执行统计">
         <Metric label="资产项" value={String(counts.total)} />
         <Metric label="来源钱包" value={String(sourceCount)} />
         <Metric label="完成" value={String(counts.success)} />
@@ -93,71 +100,76 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
         <Metric label="失败" value={String(counts.error)} />
       </div>
 
-      <div className="collection-results-toolbar">
-        <div className="collection-filter-tabs" role="group" aria-label="筛选执行结果">
-          {filterOptions.map((option) => (
-            <button
-              aria-pressed={filter === option.value}
-              className={filter === option.value ? "is-active" : undefined}
-              key={option.value}
-              onClick={() => setFilter(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <label className="collection-result-search">
-          <span className="sr-only">搜索执行结果</span>
-          <input
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索地址、备注或资产"
-            type="search"
-            value={query}
-          />
-        </label>
+      <div className="collection-result-toolbar">
+        <Tabs onValueChange={(value) => setFilter(value as CollectionResultFilter)} value={filter}>
+          <TabsList aria-label="筛选执行结果">
+            {filterOptions.map((option) => (
+              <TabsTrigger key={option.value} value={option.value}>{option.label}</TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <Input
+          aria-label="搜索执行结果"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="搜索地址、备注或资产"
+          type="search"
+          value={query}
+        />
       </div>
 
-      {filteredResults.length ? <div className="collection-result-list" role="list">
-        {filteredResults.map(({ originalIndex, result }) => {
-          const resultLabel = result.label || `来源 ${originalIndex + 1}`;
-          return (
-            <article className={`collection-result-row status-${result.status}`} key={originalIndex} role="listitem">
-              <div className="collection-result-main">
-                <div className="collection-result-title">
-                  <strong>{resultLabel}</strong>
-                  <span className={`collection-status status-${result.status}`}>{statusLabels[result.status]}</span>
-                </div>
-                <code>{result.address}</code>
-                <p>{result.message}</p>
-              </div>
-              <div className="collection-result-asset">
-                <span>{result.asset}</span>
-                <strong>{result.amount || "—"}</strong>
-              </div>
-              <div className="collection-result-link">
-                {result.explorerUrl && result.hash ? (
-                  <a
-                    aria-label={`查看${resultLabel}的交易`}
-                    href={result.explorerUrl}
-                    rel="noreferrer"
-                    target="_blank"
-                  >查看交易</a>
-                ) : result.hash ? <code>{result.hash}</code> : <span>—</span>}
-              </div>
-            </article>
-          );
-        })}
-      </div> : (
-        <div className="empty collection-filter-empty">
-          <div role="status">
-            <strong>当前筛选没有匹配结果</strong>
-            <p>清除筛选可查看全部 {results.length} 条结果。</p>
-          </div>
-          <button className="button ghost compact-button" onClick={clearFilters} type="button">
-            清除筛选
-          </button>
-        </div>
+      {filteredResults.length ? (
+        <ScrollArea className="collection-result-table">
+          <Table aria-label="归集结果">
+            <TableHeader>
+              <TableRow>
+                <TableHead>来源</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>资产</TableHead>
+                <TableHead>数量</TableHead>
+                <TableHead>交易</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredResults.map(({ originalIndex, result }) => {
+                const resultLabel = result.label || `来源 ${originalIndex + 1}`;
+                return (
+                  <TableRow data-status={result.status} key={originalIndex}>
+                    <TableCell>
+                      <strong>{resultLabel}</strong>
+                      <code className="collection-result-address">{result.address}</code>
+                      <span className="collection-result-message">{result.message}</span>
+                    </TableCell>
+                    <TableCell>
+                      <Badge data-status={result.status} variant={result.status === "error" ? "destructive" : "outline"}>
+                        {statusLabels[result.status]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{result.asset}</TableCell>
+                    <TableCell className="mono">{result.amount || "—"}</TableCell>
+                    <TableCell>
+                      {result.explorerUrl && result.hash ? (
+                        <a
+                          aria-label={`查看${resultLabel}的交易`}
+                          className={buttonVariants({ variant: "link" })}
+                          href={result.explorerUrl}
+                          rel="noreferrer"
+                          target="_blank"
+                        >查看交易</a>
+                      ) : result.hash ? <code>{result.hash}</code> : "—"}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </ScrollArea>
+      ) : (
+        <Empty className="collection-filter-empty">
+          <EmptyHeader><EmptyTitle>无匹配结果</EmptyTitle></EmptyHeader>
+          <EmptyContent>
+            <Button onClick={() => { setFilter("all"); setQuery(""); }} type="button" variant="outline">清除筛选</Button>
+          </EmptyContent>
+        </Empty>
       )}
     </div>
   );
@@ -187,48 +199,43 @@ export function CollectionResults({
   );
   const reviewExportFilename = exportFilename.replace(/\.csv$/i, "-needs-review.csv");
   const Heading = embedded ? "h3" : "h2";
-
-  return (
-    <section
-      className={`${embedded ? "" : "panel "}collection-results${embedded ? " is-embedded" : ""}`}
-      aria-labelledby="collection-results-title"
-    >
+  const content = (
+    <>
       <div className="panel-header collection-results-header">
         <div>
           <Heading className="panel-title" id="collection-results-title">{title}</Heading>
-          {description ? <p className="panel-note">{description}</p> : null}
+          {description ? <p className="sr-only">{description}</p> : null}
         </div>
         <div className="action-group">
-          <button
-            className="button ghost compact-button"
-            disabled={!results.length}
-            onClick={() => downloadCollectionResults(results, exportFilename)}
-            type="button"
-          >
-            导出全部 CSV
-          </button>
-          <button
-            className="button ghost compact-button"
-            disabled={!reviewResults.length}
-            onClick={() => downloadCollectionResults(reviewResults, reviewExportFilename)}
-            type="button"
-          >
-            导出失败/跳过项
-          </button>
+          <Button disabled={!results.length} onClick={() => downloadCollectionResults(results, exportFilename)} type="button" variant="outline">导出全部 CSV</Button>
+          <Button disabled={!reviewResults.length} onClick={() => downloadCollectionResults(reviewResults, reviewExportFilename)} type="button" variant="outline">导出失败/跳过项</Button>
         </div>
       </div>
 
       {results.length ? (
         <CollectionResultsBody key={resultSetIdentity} results={results} />
       ) : (
-        <div className="empty collection-empty">
-          <div>
-            <span className="collection-empty-mark" aria-hidden="true">↙</span>
-            <strong>{emptyTitle}</strong>
-            <p>{emptyMessage}</p>
-          </div>
-        </div>
+        <Empty className="collection-empty">
+          <EmptyHeader>
+            <EmptyTitle>{emptyTitle}</EmptyTitle>
+            <EmptyDescription className="sr-only">{emptyMessage}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
-    </section>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <section aria-labelledby="collection-results-title" className="collection-results is-embedded">
+        {content}
+      </section>
+    );
+  }
+
+  return (
+    <Card aria-labelledby="collection-results-title" className="collection-results" role="region">
+      {content}
+    </Card>
   );
 }

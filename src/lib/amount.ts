@@ -18,7 +18,10 @@ export function formatLamportsForDisplay(lamports: bigint, maxFractionDigits = 2
   const [integer, fraction = ""] = formatLamports(lamports).split(".");
   if (maxFractionDigits <= 0 || !fraction) return integer;
 
-  const displayFraction = fraction.slice(0, maxFractionDigits).replace(/0+$/, "");
+  const firstSignificantIndex = fraction.search(/[1-9]/);
+  const significantPrecision = firstSignificantIndex >= 0 ? firstSignificantIndex + 2 : maxFractionDigits;
+  const displayPrecision = Math.min(fraction.length, Math.max(maxFractionDigits, significantPrecision));
+  const displayFraction = fraction.slice(0, displayPrecision).replace(/0+$/, "");
   return displayFraction ? `${integer}.${displayFraction}` : integer;
 }
 

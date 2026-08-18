@@ -1,6 +1,20 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
-import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
+import { SearchableSelect } from "../components/SearchableSelect";
+import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
+import {
+  AdvancedSettings,
+  ConfirmActionDialog,
+  ExecutionProgress,
+  ResultTable,
+  WorkbenchPanel
+} from "../components/WorkbenchPrimitives";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import {
@@ -20,11 +34,13 @@ import {
 } from "../lib/createx";
 import {
   disperseContractAddress,
+  evmNetworks,
   formatWeiForDisplay,
   getEvmNativeCurrencyMetadata,
   isEvmNativeCurrencyEnabled,
   registerVerifiedEvmDistributionNetwork,
-  type EvmChainConfig
+  type EvmChainConfig,
+  type EvmDistributionNetworkId
 } from "../lib/evm";
 
 type DeploymentPageStatus =
@@ -36,6 +52,31 @@ type DeploymentPageStatus =
   | "success"
   | "already-deployed"
   | "error";
+
+export function getDeploymentSafetyState(status: DeploymentPageStatus, hash: string) {
+  const deploymentComplete = status === "success" || status === "already-deployed";
+  const submittedButUncertain = status === "error" && Boolean(hash);
+  const workbenchStatus: WorkbenchStatus = submittedButUncertain
+    ? "uncertain"
+    : deploymentComplete
+      ? "success"
+      : status === "error"
+        ? "error"
+        : status === "validating"
+          ? "preflight"
+          : status === "ready"
+            ? "ready"
+            : status === "awaiting-wallet" || status === "confirming"
+              ? "running"
+              : "editing";
+
+  return {
+    canRetryValidation: (status === "idle" || status === "error") && !submittedButUncertain && !deploymentComplete,
+    deploymentComplete,
+    submittedButUncertain,
+    workbenchStatus
+  };
+}
 
 type DeploymentPageState = {
   checks: DisperseDeploymentCheck[];
@@ -63,7 +104,7 @@ const initialDeploymentState: DeploymentPageState = {
   checks: [],
   contextKey: "",
   hash: "",
-  message: "填写可信的 HTTPS RPC 并连接钱包后，先执行部署前校验。",
+  message: "",
   network: null,
   preflight: null,
   status: "idle"
@@ -81,12 +122,6 @@ const initialCustomNetworkMetadataState: CustomNetworkMetadataState = {
   nativeCurrencySymbol: ""
 };
 
-const deploymentSteps: ToolPageStep[] = [
-  { label: "配置", description: "连接钱包并识别网络" },
-  { label: "校验", description: "检查地址、代码与费用" },
-  { label: "部署", description: "签名并验证链上结果" }
-];
-
 function customNetworkMetadataIsComplete(metadata: CustomNetworkMetadataState) {
   const decimals = metadata.nativeCurrencyDecimals.trim();
   return Boolean(
@@ -101,14 +136,7 @@ function customNetworkMetadataIsComplete(metadata: CustomNetworkMetadataState) {
 function getPendingCheckDetail(id: DisperseDeploymentCheck["id"], status: DeploymentPageStatus) {
   if (id === "receipt" || id === "runtime") return "部署交易确认后执行";
   if (status === "validating") return "等待前序校验";
-  return "尚未校验";
-}
-
-function getCheckMark(status?: DisperseDeploymentCheck["status"]) {
-  if (status === "pass") return "✓";
-  if (status === "fail") return "×";
-  if (status === "skipped") return "–";
-  return "·";
+  return "—";
 }
 
 function isOptionalHttpsUrl(value: string) {
@@ -121,8 +149,10 @@ function isOptionalHttpsUrl(value: string) {
 }
 
 export function EvmContractDeployPage() {
-  const [rpcEndpoint, setRpcEndpoint] = useState("");
-  const [blockExplorerUrl, setBlockExplorerUrl] = useState("");
+  const [networkSource, setNetworkSource] = useState<"known" | "custom">("known");
+  const [knownNetworkId, setKnownNetworkId] = useState<EvmDistributionNetworkId>(evmNetworks[0].id);
+  const [rpcEndpoint, setRpcEndpoint] = useState(evmNetworks[0].rpcEndpoint);
+  const [blockExplorerUrl, setBlockExplorerUrl] = useState(evmNetworks[0].blockExplorerUrl);
   const [networkDiscovery, setNetworkDiscovery] = useState<DisperseDeploymentNetworkDiscovery | null>(null);
   const [manualMetadataOverride, setManualMetadataOverride] = useState(false);
   const [nativeMetadataConfirmed, setNativeMetadataConfirmed] = useState(false);
@@ -132,6 +162,17 @@ export function EvmContractDeployPage() {
   const [distributionChainName, setDistributionChainName] = useState("");
   const [distributionRegistration, setDistributionRegistration] = useState<DistributionRegistrationState>(initialDistributionRegistrationState);
   const wallet = useEvmWallet();
+
+  const knownNetworkOptions = useMemo(() => evmNetworks.map((network) => ({
+    keywords: [network.id, network.nativeCurrency.name, network.nativeCurrency.symbol],
+    label: network.label,
+    meta: String(network.chainId),
+    value: network.id
+  })), []);
+  const selectedKnownNetwork = useMemo(
+    () => evmNetworks.find((network) => network.id === knownNetworkId) || evmNetworks[0],
+    [knownNetworkId]
+  );
 
   const effectiveRpcEndpoint = rpcEndpoint.trim();
   const effectiveBlockExplorerUrl = blockExplorerUrl.trim().replace(/\/+$/, "");
@@ -155,7 +196,7 @@ export function EvmContractDeployPage() {
   const hash = stateIsCurrent ? deploymentState.hash : "";
   const message = stateIsCurrent ? deploymentState.message : initialDeploymentState.message;
   const network = stateIsCurrent ? deploymentState.network : null;
-  const displayNetwork = network || networkDiscovery;
+  const displayNetwork = network || networkDiscovery || (networkSource === "known" ? selectedKnownNetwork : null);
   const automaticRegistryMetadata = networkDiscovery?.metadataSource === "viem"
     && networkDiscovery.metadataStatus === "suggested"
     && networkDiscovery.nativeCurrency
@@ -168,6 +209,8 @@ export function EvmContractDeployPage() {
   const customMetadataReady = customNetworkMetadataIsComplete(customNetworkMetadata);
   const provider = wallet.getProvider();
   const busy = status === "validating" || status === "awaiting-wallet" || status === "confirming";
+  const safetyState = getDeploymentSafetyState(status, hash);
+  const submittedButUncertain = safetyState.submittedButUncertain;
   const canValidate = wallet.connected
     && Boolean(wallet.address)
     && Boolean(provider)
@@ -175,7 +218,8 @@ export function EvmContractDeployPage() {
     && blockExplorerUrlIsValid
     && !busy;
   const canDeploy = canValidate && status === "ready";
-  const deploymentComplete = status === "success" || status === "already-deployed";
+  const deploymentComplete = safetyState.deploymentComplete;
+  const configurationLocked = busy || deploymentComplete || submittedButUncertain;
   const explorerUrl = hash && network ? getDisperseDeploymentExplorerUrl(hash, network) : "";
   const nativeCurrencyEnabled = network ? isEvmNativeCurrencyEnabled(network) : false;
   const nativeCurrencyMetadata = network ? getEvmNativeCurrencyMetadata(network) : null;
@@ -184,6 +228,16 @@ export function EvmContractDeployPage() {
       ? `${formatWeiForDisplay(preflight.estimatedFee, network.nativeCurrency.decimals, 8)} ${network.nativeCurrency.symbol}`
       : `${preflight.estimatedFee.toLocaleString()} base units`
     : "--";
+  const workbenchStatus = safetyState.workbenchStatus;
+  const workbenchStatusLabel = submittedButUncertain
+    ? "交易状态待确认"
+    : status === "already-deployed"
+      ? "合约已存在"
+      : status === "awaiting-wallet"
+        ? "等待钱包签名"
+        : status === "confirming"
+          ? "链上验证中"
+          : undefined;
 
   const isOperationCurrent = (operationId: number, expectedContextKey: string) => (
     operationIdRef.current === operationId && latestContextKeyRef.current === expectedContextKey
@@ -194,6 +248,37 @@ export function EvmContractDeployPage() {
     setDeploymentState(initialDeploymentState);
     setDistributionChainName("");
     setDistributionRegistration(initialDistributionRegistrationState);
+  };
+
+  const resetDiscoveredNetwork = () => {
+    setNetworkDiscovery(null);
+    setManualMetadataOverride(false);
+    setNativeMetadataConfirmed(false);
+    setSelectedMetadataCandidateKey("");
+    setCustomNetworkMetadata(initialCustomNetworkMetadataState);
+    resetDeploymentState();
+  };
+
+  const selectKnownNetwork = (nextNetworkId: EvmDistributionNetworkId) => {
+    const nextNetwork = evmNetworks.find((item) => item.id === nextNetworkId) || evmNetworks[0];
+    setKnownNetworkId(nextNetwork.id);
+    setRpcEndpoint(nextNetwork.rpcEndpoint);
+    setBlockExplorerUrl(nextNetwork.blockExplorerUrl);
+    resetDiscoveredNetwork();
+  };
+
+  const selectNetworkSource = (nextSource: "known" | "custom") => {
+    if (nextSource === networkSource) return;
+    setNetworkSource(nextSource);
+    if (nextSource === "known") {
+      const nextNetwork = evmNetworks.find((item) => item.id === knownNetworkId) || evmNetworks[0];
+      setRpcEndpoint(nextNetwork.rpcEndpoint);
+      setBlockExplorerUrl(nextNetwork.blockExplorerUrl);
+    } else {
+      setRpcEndpoint("");
+      setBlockExplorerUrl("");
+    }
+    resetDiscoveredNetwork();
   };
 
   const enableManualMetadataOverride = () => {
@@ -318,7 +403,7 @@ export function EvmContractDeployPage() {
         hash: "",
         message: nextPreflight.status === "already-deployed"
           ? `${resolvedNetwork.label} 已经部署并通过官方 runtime hash 校验`
-          : "全部部署前校验通过。下一步会在签名前再执行一次完整校验。",
+          : "全部部署前校验通过",
         network: resolvedNetwork,
         preflight: nextPreflight,
         status: nextPreflight.status === "already-deployed" ? "already-deployed" : "ready"
@@ -448,384 +533,413 @@ export function EvmContractDeployPage() {
       : { message: "浏览器未能保存链配置，请检查本地存储权限", status: "error" });
   };
 
-  const primaryButtonLabel = !wallet.connected
-    ? "先连接钱包"
-    : status === "validating"
-      ? "校验中"
-      : status === "awaiting-wallet"
-        ? "等待钱包确认"
-        : status === "confirming"
-          ? "等待链上确认"
-          : status === "ready"
-            ? "确认并部署"
-            : status === "success"
-              ? "部署完成"
-              : status === "already-deployed"
-                ? "已经部署"
-                : status === "error"
-                  ? "重新校验"
-                  : "校验部署条件";
-
-  const activeStep = status === "ready"
-    ? 1
-    : status === "awaiting-wallet" || status === "confirming" || status === "success" || status === "already-deployed" || Boolean(hash)
-      ? 2
-      : 0;
-
   return (
     <ToolPageLayout
-      activeStep={activeStep}
-      categoryHref="/#contract"
-      categoryLabel="合约工具"
+      actions={(
+        <>
+          <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
+          {status !== "idle" ? (
+            <ConfirmActionDialog
+              confirmLabel="新建部署任务"
+              description={hash
+                ? "当前任务已产生交易哈希。请先核验链上状态；清空只会删除本地任务记录，不会撤销交易，也不代表可以安全重试。"
+                : "当前部署校验与本地结果将被清除，网络选择将保留。"}
+              disabled={busy}
+              onConfirm={resetDeploymentState}
+              title="清空并新建部署任务？"
+              triggerLabel="新建部署任务"
+              triggerVariant="destructive"
+            />
+          ) : null}
+        </>
+      )}
+      className="page-deploy"
       currentToolId="evm-contract-deploy"
-      description="通过 CreateX 部署固定 Disperse 合约。"
-      eyebrow="Deterministic deploy · EVM"
-      mainClassName="page-deploy"
-      meta={<><span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span><span className="pill">页面不接触私钥</span></>}
-      steps={deploymentSteps}
+      status={workbenchStatus}
+      statusLabel={workbenchStatusLabel}
       title="CreateX 合约部署"
     >
-        <section className="workspace deploy-workspace">
-          <section className="panel deploy-panel" aria-labelledby="deploy-title">
-            <div className="panel-header">
-              <div>
-                <h2 className="panel-title" id="deploy-title">部署配置</h2>
-              </div>
-              <span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span>
-            </div>
-
-            <div className="form">
-              <div className="batch-command">
-                <div className="command-copy">
-                  <strong>{wallet.connected ? "部署钱包已连接" : wallet.status === "connecting" ? "等待钱包确认" : "连接 EVM 钱包"}</strong>
-                  <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后切换网络并签署部署交易。"}</span>
-                </div>
-                <EvmWalletConnectionControl wallet={wallet} />
-              </div>
-
-              <div className="transaction-options deployment-route" aria-label="部署 RPC 配置">
-                <div className="route-fields deploy-route-fields">
-                  <div className="field route-card rpc-field">
-                    <label htmlFor="deployRpcEndpoint">主 HTTPS RPC</label>
-                    <input
-                      id="deployRpcEndpoint"
-                      type="url"
-                      inputMode="url"
-                      autoComplete="off"
-                      placeholder="https://your-evm-rpc.example"
-                      value={rpcEndpoint}
-                      disabled={busy}
-                      onChange={(event) => {
-                        setRpcEndpoint(event.target.value);
-                        setNetworkDiscovery(null);
-                        setManualMetadataOverride(false);
-                        setNativeMetadataConfirmed(false);
-                        setSelectedMetadataCandidateKey("");
-                        setCustomNetworkMetadata(initialCustomNetworkMetadataState);
-                        resetDeploymentState();
-                      }}
-                    />
-                  </div>
-                  <div className="field route-card rpc-field">
-                    <label htmlFor="deployBlockExplorerUrl">区块浏览器地址（可选）</label>
-                    <input
-                      id="deployBlockExplorerUrl"
-                      type="url"
-                      inputMode="url"
-                      autoComplete="off"
-                      placeholder="https://scan.example.com"
-                      value={blockExplorerUrl}
-                      disabled={busy}
-                      aria-invalid={!blockExplorerUrlIsValid}
-                      onChange={(event) => {
-                        setBlockExplorerUrl(event.target.value);
-                        resetDeploymentState();
-                      }}
-                    />
-                  </div>
-                </div>
-                <p className={`hint deployment-rpc-hint${blockExplorerUrlIsValid ? "" : " error"}`}>
-                  {blockExplorerUrlIsValid
-                    ? "校验与确认使用主 RPC；浏览器地址可留空。"
-                    : "区块浏览器地址必须是有效的 HTTPS URL。"}
-                </p>
-                {automaticRegistryMetadata && automaticRegistryCurrency ? (
-                  <div className="deployment-contract-card automatic-network-metadata" aria-label="自动匹配的链元数据">
-                    <div className="summary-list">
-                      <div><span>注册表匹配</span><strong>{automaticRegistryMetadata.label}</strong></div>
-                      <div>
-                        <span>原生币</span>
-                        <strong>{automaticRegistryCurrency.symbol} · {automaticRegistryCurrency.decimals} decimals</strong>
-                      </div>
-                      <div><span>元数据来源</span><strong>viem {automaticRegistryMetadata.sourceVersion}</strong></div>
-                      <div><span>原生币能力</span><strong>已按注册表自动开放</strong></div>
-                    </div>
-                    <p className="hint">将用此配置换算原生币，可手动修改。</p>
-                    <div className="action-group network-config-actions">
-                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>手动修改</button>
-                    </div>
-                  </div>
+      <div className="workbench-grid">
+        <WorkbenchPanel
+          actions={<Badge variant="outline">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "网络待校验"}</Badge>}
+          className="deploy-panel"
+          footer={(
+            <div className="actions">
+              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : status === "ready" ? "部署参数已就绪" : ""}</span>
+              <div className="action-group">
+                {safetyState.canRetryValidation ? (
+                  <Button disabled={!canValidate || deploymentComplete} onClick={() => void runValidation()} type="button">
+                    {status === "error" ? "重新校验" : "校验部署条件"}
+                  </Button>
                 ) : null}
-                {metadataConflict && !manualMetadataOverride ? (
-                  <div className="deployment-contract-card custom-network-metadata" aria-label="链元数据存在冲突">
-                    <div>
-                      <strong>同一 Chain ID 存在多套原生币配置</strong>
-                      <p className="hint">不会自动选择；确认后才开放原生币。</p>
-                    </div>
-                    <div className="metadata-candidate-list">
-                      {metadataConflict.metadataCandidates.map((candidate) => (
-                        <div className="metadata-candidate" key={`${candidate.key}-${candidate.nativeCurrency.symbol}`}>
-                          <span><strong>{candidate.label}</strong> · {candidate.nativeCurrency.name}</span>
-                          <span>{candidate.nativeCurrency.symbol} · {candidate.nativeCurrency.decimals} decimals</span>
-                          <button
-                            aria-label={`选择并确认 ${candidate.label} ${candidate.nativeCurrency.symbol}`}
-                            className="button ghost"
-                            type="button"
-                            disabled={busy}
-                            onClick={() => selectMetadataCandidate(candidate)}
-                          >选择并确认</button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="action-group network-config-actions">
-                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>手动填写</button>
-                    </div>
-                  </div>
-                ) : null}
-                {metadataUnavailable && !manualMetadataOverride ? (
-                  <div className="deployment-contract-card automatic-network-metadata" aria-label="未找到原生币元数据">
-                    <div className="summary-list">
-                      <div><span>Chain ID</span><strong>{metadataUnavailable.chainId}</strong></div>
-                      <div><span>自动匹配</span><strong>未找到注册表记录</strong></div>
-                      <div><span>当前能力</span><strong>合约部署 + Token 分发</strong></div>
-                    </div>
-                    <p className="hint">仍可部署和分发 Token；使用原生币前请查官方文档。</p>
-                    <div className="action-group network-config-actions">
-                      <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>配置原生币（可选）</button>
-                    </div>
-                  </div>
-                ) : null}
-                {networkDiscovery && manualMetadataOverride ? (
-                  <div className="custom-network-metadata" aria-label="未知链原生币元数据">
-                    <div className="route-fields deploy-route-fields">
-                      <div className="field route-card">
-                        <label htmlFor="customChainName">链名称</label>
-                        <input
-                          id="customChainName"
-                          type="text"
-                          autoComplete="off"
-                          value={customNetworkMetadata.chainName}
-                          disabled={busy}
-                          onChange={(event) => {
-                            setCustomNetworkMetadata((current) => ({ ...current, chainName: event.target.value }));
-                            setNativeMetadataConfirmed(false);
-                            setSelectedMetadataCandidateKey("");
-                            resetDeploymentState();
-                          }}
-                          placeholder={`EVM Chain ${networkDiscovery.chainId}`}
-                        />
-                      </div>
-                      <div className="field route-card">
-                        <label htmlFor="nativeCurrencyName">原生币名称</label>
-                        <input
-                          id="nativeCurrencyName"
-                          type="text"
-                          autoComplete="off"
-                          value={customNetworkMetadata.nativeCurrencyName}
-                          disabled={busy}
-                          onChange={(event) => {
-                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyName: event.target.value }));
-                            setNativeMetadataConfirmed(false);
-                            setSelectedMetadataCandidateKey("");
-                            resetDeploymentState();
-                          }}
-                          placeholder="例如 Ether"
-                        />
-                      </div>
-                      <div className="field route-card">
-                        <label htmlFor="nativeCurrencySymbol">原生币符号</label>
-                        <input
-                          id="nativeCurrencySymbol"
-                          type="text"
-                          autoComplete="off"
-                          value={customNetworkMetadata.nativeCurrencySymbol}
-                          disabled={busy}
-                          onChange={(event) => {
-                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencySymbol: event.target.value }));
-                            setNativeMetadataConfirmed(false);
-                            setSelectedMetadataCandidateKey("");
-                            resetDeploymentState();
-                          }}
-                          placeholder="例如 ETH"
-                        />
-                      </div>
-                      <div className="field route-card">
-                        <label htmlFor="nativeCurrencyDecimals">原生币 decimals</label>
-                        <input
-                          id="nativeCurrencyDecimals"
-                          type="number"
-                          inputMode="numeric"
-                          min="0"
-                          max="255"
-                          step="1"
-                          value={customNetworkMetadata.nativeCurrencyDecimals}
-                          disabled={busy}
-                          onChange={(event) => {
-                            setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyDecimals: event.target.value }));
-                            setNativeMetadataConfirmed(false);
-                            setSelectedMetadataCandidateKey("");
-                            resetDeploymentState();
-                          }}
-                          placeholder="请从官方文档确认"
-                        />
-                      </div>
-                    </div>
-                    <p className={`hint deployment-rpc-hint${customMetadataReady || !nativeMetadataConfirmed ? "" : " error"}`}>
-                      Chain ID {networkDiscovery.chainId}。不确认时仍可部署并分发 Token。
-                    </p>
-                    <div className="action-group network-config-actions">
-                      {!nativeMetadataConfirmed ? (
-                        <button className="button primary" type="button" disabled={busy || !customMetadataReady} onClick={confirmManualMetadata}>确认并开放原生币</button>
-                      ) : <span className="pill">原生币元数据已确认</span>}
-                      <button className="button ghost" type="button" disabled={busy} onClick={restoreAutomaticMetadata}>
-                        {networkDiscovery.metadataStatus === "suggested" ? "恢复注册表建议" : "暂不配置原生币"}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="deployment-contract-card" aria-label="固定部署参数">
-                <div className="summary-list">
-                  <div><span>部署方式</span><strong>CreateX.deployCreate2(bytes32,bytes)</strong></div>
-                  <div><span>CreateX</span><strong title={createXContractAddress}>{shortenAddress(createXContractAddress)}</strong></div>
-                  <div><span>目标地址</span><strong title={disperseContractAddress}>{disperseContractAddress}</strong></div>
-                  <div><span>交易 value</span><strong>0（不转移原生币）</strong></div>
-                  <div><span>协议手续费</span><strong>无，仅支付网络 Gas</strong></div>
-                </div>
-              </div>
-
-              <div className={`confirm transaction-status deployment-status ${status}`} aria-live="polite">
-                <strong>{status === "ready"
-                  ? "部署前校验通过"
-                  : status === "success"
-                    ? "部署与最终校验完成"
-                    : status === "already-deployed"
-                      ? "官方合约已经存在"
-                      : status === "error"
-                        ? "校验或部署未完成"
-                        : busy
-                          ? "正在处理部署流程"
-                          : "尚未执行部署校验"}</strong>
-                <span>{message}</span>
-                {preflight?.status === "ready" ? (
+                {busy ? <Button disabled type="button">{status === "validating" ? "校验中" : status === "awaiting-wallet" ? "等待钱包签名" : "链上验证中"}</Button> : null}
+                {status === "ready" && network && preflight ? (
                   <>
-                    <div className="summary-list deployment-estimate">
-                      <div><span>最高 Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
-                      <div><span>交易请求 Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
-                      <div><span>EVM 执行费上限</span><strong>{estimatedFee}</strong></div>
-                    </div>
-                    <span className="hint">签名将绑定上述参数；L2 数据费另计。</span>
+                    <ConfirmActionDialog
+                      confirmLabel="签名并部署"
+                      description={(
+                        <div className="summary-list">
+                          <div><span>网络</span><strong>{network.label} · {network.chainId}</strong></div>
+                          <div><span>部署方式</span><strong>CreateX.deployCreate2(bytes32,bytes)</strong></div>
+                          <div><span>CreateX</span><strong title={createXContractAddress}>{shortenAddress(createXContractAddress)}</strong></div>
+                          <div><span>目标地址</span><strong title={disperseContractAddress}>{disperseContractAddress}</strong></div>
+                          <div><span>交易 value</span><strong>0</strong></div>
+                          <div><span>Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
+                          <div><span>Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
+                          <div><span>执行费上限</span><strong>{estimatedFee}</strong></div>
+                        </div>
+                      )}
+                      disabled={!canDeploy}
+                      onConfirm={deployContract}
+                      title="确认 CreateX 部署"
+                      triggerLabel="确认部署"
+                    />
+                    <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
                   </>
                 ) : null}
-                {hash && explorerUrl ? (
-                  <div className="signature-list">
-                    <a href={explorerUrl} target="_blank" rel="noreferrer">部署交易：{shortenAddress(hash)}</a>
-                  </div>
-                ) : null}
               </div>
+            </div>
+          )}
+          title="部署配置"
+        >
+          <Tabs
+            aria-label="网络来源"
+            onValueChange={(value) => {
+              if (value === "known" || value === "custom") selectNetworkSource(value);
+            }}
+            value={networkSource}
+          >
+            <TabsList>
+              <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
+              <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
+            </TabsList>
+            <TabsContent value="known">
+              <Field>
+                <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
+                <SearchableSelect
+                  disabled={configurationLocked}
+                  emptyMessage="未找到匹配的 EVM 链"
+                  id="deployKnownNetwork"
+                  listboxLabel="已知 EVM 网络"
+                  metaLabel="Chain ID"
+                  metaPrefix="ID "
+                  onChange={selectKnownNetwork}
+                  options={knownNetworkOptions}
+                  placeholder="搜索链名称或 Chain ID"
+                  searchLabel="搜索已知 EVM 网络"
+                  value={knownNetworkId}
+                />
+              </Field>
+            </TabsContent>
+            <TabsContent value="custom">
+              <Field>
+                <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
+                <Input
+                  autoComplete="off"
+                  disabled={configurationLocked}
+                  id="deployCustomRpcEndpoint"
+                  inputMode="url"
+                  onChange={(event) => {
+                    setRpcEndpoint(event.target.value);
+                    resetDiscoveredNetwork();
+                  }}
+                  placeholder="https://your-evm-rpc.example"
+                  spellCheck={false}
+                  type="url"
+                  value={rpcEndpoint}
+                />
+              </Field>
+            </TabsContent>
+          </Tabs>
 
-              {deploymentComplete && network ? (
-                <div className="deployment-contract-card distribution-registration-card" aria-label="添加到 EVM 分发">
-                  <div className="field">
-                    <label htmlFor="distributionChainName">链名称</label>
-                    <input
-                      id="distributionChainName"
-                      type="text"
-                      value={distributionChainName}
-                      placeholder={`例如：${network.label}`}
-                      onChange={(event) => {
-                        setDistributionChainName(event.target.value);
-                        setDistributionRegistration(initialDistributionRegistrationState);
-                      }}
-                    />
-                  </div>
+          <AdvancedSettings disabled={configurationLocked} label="RPC、浏览器与链元数据">
+            {networkSource === "known" ? (
+              <Field>
+                <FieldLabel htmlFor="deployKnownRpcEndpoint">HTTPS RPC</FieldLabel>
+                <Input
+                  autoComplete="off"
+                  disabled={configurationLocked}
+                  id="deployKnownRpcEndpoint"
+                  inputMode="url"
+                  readOnly
+                  spellCheck={false}
+                  type="url"
+                  value={rpcEndpoint}
+                />
+              </Field>
+            ) : null}
+            <Field data-invalid={!blockExplorerUrlIsValid || undefined}>
+              <FieldLabel htmlFor="deployBlockExplorerUrl">区块浏览器地址</FieldLabel>
+              <Input
+                aria-invalid={!blockExplorerUrlIsValid || undefined}
+                autoComplete="off"
+                disabled={configurationLocked}
+                id="deployBlockExplorerUrl"
+                inputMode="url"
+                onChange={(event) => {
+                  setBlockExplorerUrl(event.target.value);
+                  resetDeploymentState();
+                }}
+                placeholder="https://scan.example.com"
+                spellCheck={false}
+                type="url"
+                value={blockExplorerUrl}
+              />
+              {!blockExplorerUrlIsValid ? <FieldError>区块浏览器地址必须是 HTTPS URL</FieldError> : null}
+            </Field>
+
+            {automaticRegistryMetadata && automaticRegistryCurrency ? (
+              <Alert>
+                <AlertTitle>已匹配 {automaticRegistryMetadata.label}</AlertTitle>
+                <AlertDescription>
                   <div className="summary-list">
-                    <div><span>Chain ID</span><strong>{network.chainId}</strong></div>
-                    <div><span>分发能力</span><strong>{nativeCurrencyEnabled ? `Token + ${network.nativeCurrency.symbol}` : "仅 Token"}</strong></div>
-                    <div>
-                      <span>原生币依据</span>
-                      <strong>{nativeCurrencyMetadata?.source === "viem"
-                        ? `viem ${nativeCurrencyMetadata.sourceVersion}`
-                        : nativeCurrencyMetadata?.source === "manual"
-                          ? "用户手动确认"
-                          : nativeCurrencyMetadata?.source === "built-in"
-                            ? "项目内置配置"
-                            : "未配置"}</strong>
-                    </div>
+                    <div><span>原生币</span><strong>{automaticRegistryCurrency.symbol} · {automaticRegistryCurrency.decimals} decimals</strong></div>
+                    <div><span>来源</span><strong>viem {automaticRegistryMetadata.sourceVersion}</strong></div>
                   </div>
-                  <p className="hint">保存 RPC 与元数据；未确认原生币时仅启用 Token。</p>
-                  {distributionRegistration.message ? (
-                    <p className={`hint distribution-registration-message ${distributionRegistration.status}`} role="status">{distributionRegistration.message}</p>
-                  ) : null}
-                </div>
-              ) : null}
+                </AlertDescription>
+                <Button disabled={configurationLocked} onClick={enableManualMetadataOverride} type="button" variant="outline">手动修改</Button>
+              </Alert>
+            ) : null}
 
-              <div className="actions">
+            {metadataConflict && !manualMetadataOverride ? (
+              <>
+                <Alert variant="destructive">
+                  <AlertTitle>原生币元数据存在冲突</AlertTitle>
+                  <AlertDescription>请选择一项或手动填写。</AlertDescription>
+                </Alert>
+                <ResultTable<DisperseDeploymentNetworkMetadataCandidate>
+                  caption="原生币元数据候选"
+                  columns={[
+                    { header: "网络", key: "network", render: (candidate) => candidate.label },
+                    { header: "原生币", key: "currency", render: (candidate) => `${candidate.nativeCurrency.symbol} · ${candidate.nativeCurrency.decimals}` },
+                    {
+                      header: "操作",
+                      key: "action",
+                      render: (candidate) => (
+                        <Button
+                          aria-label={`选择并确认 ${candidate.label} ${candidate.nativeCurrency.symbol}`}
+                          disabled={configurationLocked}
+                          onClick={() => selectMetadataCandidate(candidate)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >选择并确认</Button>
+                      )
+                    }
+                  ]}
+                  getRowKey={(candidate) => candidate.key}
+                  rows={metadataConflict.metadataCandidates}
+                />
+                <Button disabled={configurationLocked} onClick={enableManualMetadataOverride} type="button" variant="outline">手动填写</Button>
+              </>
+            ) : null}
+
+            {metadataUnavailable && !manualMetadataOverride ? (
+              <Alert>
+                <AlertTitle>未找到原生币元数据</AlertTitle>
+                <AlertDescription>Chain ID {metadataUnavailable.chainId} 当前仅注册 Token 分发能力。</AlertDescription>
+                <Button disabled={configurationLocked} onClick={enableManualMetadataOverride} type="button" variant="outline">配置原生币</Button>
+              </Alert>
+            ) : null}
+
+            {networkDiscovery && manualMetadataOverride ? (
+              <FieldGroup aria-label="自定义链元数据">
+                <div className="field-row">
+                  <Field>
+                    <FieldLabel htmlFor="customChainName">链名称</FieldLabel>
+                    <Input
+                      autoComplete="off"
+                      disabled={configurationLocked}
+                      id="customChainName"
+                      onChange={(event) => {
+                        setCustomNetworkMetadata((current) => ({ ...current, chainName: event.target.value }));
+                        setNativeMetadataConfirmed(false);
+                        setSelectedMetadataCandidateKey("");
+                        resetDeploymentState();
+                      }}
+                      placeholder={`EVM Chain ${networkDiscovery.chainId}`}
+                      type="text"
+                      value={customNetworkMetadata.chainName}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="nativeCurrencyName">原生币名称</FieldLabel>
+                    <Input
+                      autoComplete="off"
+                      disabled={configurationLocked}
+                      id="nativeCurrencyName"
+                      onChange={(event) => {
+                        setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyName: event.target.value }));
+                        setNativeMetadataConfirmed(false);
+                        setSelectedMetadataCandidateKey("");
+                        resetDeploymentState();
+                      }}
+                      type="text"
+                      value={customNetworkMetadata.nativeCurrencyName}
+                    />
+                  </Field>
+                </div>
+                <div className="field-row">
+                  <Field>
+                    <FieldLabel htmlFor="nativeCurrencySymbol">原生币符号</FieldLabel>
+                    <Input
+                      autoComplete="off"
+                      disabled={configurationLocked}
+                      id="nativeCurrencySymbol"
+                      onChange={(event) => {
+                        setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencySymbol: event.target.value }));
+                        setNativeMetadataConfirmed(false);
+                        setSelectedMetadataCandidateKey("");
+                        resetDeploymentState();
+                      }}
+                      type="text"
+                      value={customNetworkMetadata.nativeCurrencySymbol}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="nativeCurrencyDecimals">原生币 decimals</FieldLabel>
+                    <Input
+                      disabled={configurationLocked}
+                      id="nativeCurrencyDecimals"
+                      inputMode="numeric"
+                      max="255"
+                      min="0"
+                      onChange={(event) => {
+                        setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyDecimals: event.target.value }));
+                        setNativeMetadataConfirmed(false);
+                        setSelectedMetadataCandidateKey("");
+                        resetDeploymentState();
+                      }}
+                      step="1"
+                      type="number"
+                      value={customNetworkMetadata.nativeCurrencyDecimals}
+                    />
+                  </Field>
+                </div>
                 <div className="action-group">
-                  <button
-                    className="button primary"
-                    type="button"
-                    disabled={!canValidate || deploymentComplete}
-                    onClick={() => {
-                      if (canDeploy) void deployContract();
-                      else void runValidation();
-                    }}
-                  >
-                    {primaryButtonLabel}
-                  </button>
-                  {status === "ready" ? (
-                    <button className="button ghost" type="button" disabled={busy} onClick={() => void runValidation()}>重新校验</button>
-                  ) : null}
-                  {deploymentComplete ? (
-                    <button className="button primary" type="button" disabled={!distributionChainName.trim()} onClick={addToEvmDistribution}>添加到 EVM 分发</button>
-                  ) : null}
-                  {deploymentComplete ? <a className="button ghost" href="/evm/">前往 EVM 分发</a> : null}
+                  {!nativeMetadataConfirmed ? (
+                    <Button disabled={configurationLocked || !customMetadataReady} onClick={confirmManualMetadata} type="button">确认原生币元数据</Button>
+                  ) : <Badge variant="outline">原生币元数据已确认</Badge>}
+                  <Button disabled={configurationLocked} onClick={restoreAutomaticMetadata} type="button" variant="outline">
+                    {networkDiscovery.metadataStatus === "suggested" ? "恢复注册表建议" : "暂不配置原生币"}
+                  </Button>
                 </div>
-              </div>
-            </div>
-          </section>
+              </FieldGroup>
+            ) : null}
+          </AdvancedSettings>
 
-          <aside className="panel review-panel deployment-review" aria-labelledby="deployment-checks-title">
-            <div className="panel-header">
+          {message ? (
+            <Alert variant={status === "error" ? "destructive" : "default"}>
+              <AlertTitle>{status === "ready"
+                ? "部署校验通过"
+                : status === "success"
+                  ? "部署与 runtime 验证完成"
+                  : status === "already-deployed"
+                    ? "合约已存在"
+                    : status === "error"
+                      ? submittedButUncertain ? "交易状态待确认" : "部署已阻断"
+                      : "部署处理中"}</AlertTitle>
+              <AlertDescription>{message}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {hash ? (
+            <div className="summary-list" aria-label="部署交易">
               <div>
-                <h2 className="panel-title" id="deployment-checks-title">部署校验</h2>
+                <span>交易哈希</span>
+                <strong title={hash}>{explorerUrl
+                  ? <a href={explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(hash)}</a>
+                  : shortenAddress(hash)}</strong>
               </div>
             </div>
-            <div className="form">
-              <div className="deployment-check-list">
-                {disperseDeploymentCheckDefinitions.map((definition) => {
-                  const check = checks.find((item) => item.id === definition.id);
-                  const checkStatus = check?.status || "pending";
-                  return (
-                    <div className={`deployment-check ${checkStatus}`} key={definition.id}>
-                      <span className="deployment-check-mark" aria-hidden="true">{getCheckMark(check?.status)}</span>
-                      <span className="deployment-check-copy">
-                        <strong>{definition.label}</strong>
-                        <span>{check?.detail || getPendingCheckDetail(definition.id, status)}</span>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
+          ) : null}
 
-              <div className="notice deployment-safety-note">
-                <strong>签名前核对</strong>
-                <span>钱包弹窗的交互地址必须是 {createXContractAddress}，发送金额必须为 0。页面不会要求 Token 授权。</span>
+          {submittedButUncertain ? (
+            <Alert>
+              <AlertTitle>禁止直接重试部署</AlertTitle>
+              <AlertDescription>交易已提交。请先在区块浏览器或 RPC 中核对哈希与目标地址状态。</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {deploymentComplete && network ? (
+            <FieldGroup aria-label="加入 EVM 分发">
+              <Field data-invalid={distributionRegistration.status === "error" || undefined}>
+                <FieldLabel htmlFor="distributionChainName">EVM 分发链名称</FieldLabel>
+                <Input
+                  aria-invalid={distributionRegistration.status === "error" || undefined}
+                  id="distributionChainName"
+                  onChange={(event) => {
+                    setDistributionChainName(event.target.value);
+                    setDistributionRegistration(initialDistributionRegistrationState);
+                  }}
+                  placeholder={network.label}
+                  type="text"
+                  value={distributionChainName}
+                />
+                {distributionRegistration.status === "error" ? <FieldError>{distributionRegistration.message}</FieldError> : null}
+              </Field>
+              <div className="summary-list">
+                <div><span>Chain ID</span><strong>{network.chainId}</strong></div>
+                <div><span>分发能力</span><strong>{nativeCurrencyEnabled ? `Token + ${network.nativeCurrency.symbol}` : "仅 Token"}</strong></div>
+                <div><span>原生币依据</span><strong>{nativeCurrencyMetadata?.source === "viem"
+                  ? `viem ${nativeCurrencyMetadata.sourceVersion}`
+                  : nativeCurrencyMetadata?.source === "manual"
+                    ? "用户手动确认"
+                    : nativeCurrencyMetadata?.source === "built-in"
+                      ? "项目内置配置"
+                      : "未配置"}</strong></div>
               </div>
+              <div className="action-group">
+                <Button disabled={!distributionChainName.trim()} onClick={addToEvmDistribution} type="button">加入 EVM 分发</Button>
+                <a className={buttonVariants({ variant: "outline" })} href="/evm/">前往 EVM 分发</a>
+              </div>
+              {distributionRegistration.status === "success" ? (
+                <Alert>
+                  <AlertTitle>链配置已加入</AlertTitle>
+                  <AlertDescription>{distributionRegistration.message}</AlertDescription>
+                </Alert>
+              ) : null}
+            </FieldGroup>
+          ) : null}
+        </WorkbenchPanel>
+
+        <WorkbenchPanel
+          actions={<Badge variant="outline">{checks.length}/{disperseDeploymentCheckDefinitions.length}</Badge>}
+          className="deployment-review"
+          title="部署校验"
+        >
+          {busy ? <ExecutionProgress current={checks.length} label="部署校验进度" total={disperseDeploymentCheckDefinitions.length} /> : null}
+          {preflight?.status === "ready" ? (
+            <div className="summary-list" aria-label="Gas 预检结果">
+              <div><span>Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
+              <div><span>Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
+              <div><span>执行费上限</span><strong>{estimatedFee}</strong></div>
             </div>
-          </aside>
-        </section>
+          ) : null}
+          <ResultTable<{ detail: string; id: DisperseDeploymentCheck["id"]; label: string; status: DisperseDeploymentCheck["status"] | "pending" }>
+            caption="CreateX 部署校验结果"
+            columns={[
+              { header: "检查项", key: "label", render: (row) => row.label },
+              {
+                header: "状态",
+                key: "status",
+                render: (row) => <Badge variant={row.status === "fail" ? "destructive" : row.status === "skipped" ? "secondary" : "outline"}>{row.status === "pass" ? "通过" : row.status === "fail" ? "失败" : row.status === "skipped" ? "跳过" : "待检查"}</Badge>
+              },
+              { header: "详情", key: "detail", render: (row) => <span title={row.detail}>{row.detail}</span> }
+            ]}
+            getRowKey={(row) => row.id}
+            rows={disperseDeploymentCheckDefinitions.map((definition) => {
+              const check = checks.find((item) => item.id === definition.id);
+              return {
+                detail: check?.detail || getPendingCheckDetail(definition.id, status),
+                id: definition.id,
+                label: definition.label,
+                status: check?.status || "pending"
+              };
+            })}
+          />
+        </WorkbenchPanel>
+      </div>
     </ToolPageLayout>
   );
 }
