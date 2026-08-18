@@ -9,6 +9,7 @@ import {
   parseSolanaSecretKeyLine,
   parseSolanaSourceKeys,
   planSolCollection,
+  preflightSolCollectionSources,
   type SolCollectionConnection,
   type SolCollectionProgress,
   type SolCollectionSource
@@ -193,6 +194,61 @@ describe("SOL collection planning", () => {
     expect(decoded.fromPubkey.equals(source.publicKey)).toBe(true);
     expect(decoded.toPubkey.equals(destination.publicKey)).toBe(true);
     expect(decoded.lamports).toBe(12_345n);
+  });
+
+  it("preflights balances and fees without signing or broadcasting", async () => {
+    const readySource = makeSource(23);
+    const emptySource = makeSource(24);
+    const destination = makeKeypair(25).publicKey;
+    const connection = makeConnection({
+      getBalance: vi.fn(async (publicKey: PublicKey) => (
+        publicKey.equals(readySource.keypair.publicKey) ? 100_000 : 0
+      ))
+    });
+
+    const result = await preflightSolCollectionSources({
+      connection,
+      destination,
+      minCollectionLamports: 1n,
+      reserveLamports: 10_000n,
+      sources: [readySource, emptySource]
+    });
+
+    expect(result).toMatchObject({
+      errorSources: 0,
+      estimatedNetworkFeeLamports: 5_000n,
+      executableSources: 1,
+      skippedSources: 1,
+      totalBalanceLamports: 100_000n,
+      totalTransferLamports: 85_000n
+    });
+    expect(result.items.map((item) => item.status)).toEqual(["ready", "skipped"]);
+    expect(connection.sendRawTransaction).not.toHaveBeenCalled();
+    expect(connection.confirmTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps per-source RPC failures in the read-only preflight result", async () => {
+    const source = makeSource(26);
+    const connection = makeConnection({
+      getBalance: vi.fn(async () => {
+        throw new Error("failed to fetch");
+      })
+    });
+
+    const result = await preflightSolCollectionSources({
+      connection,
+      destination: makeKeypair(27).publicKey,
+      minCollectionLamports: 1n,
+      reserveLamports: 0n,
+      sources: [source]
+    });
+
+    expect(result.errorSources).toBe(1);
+    expect(result.executableSources).toBe(0);
+    expect(result.items[0]).toMatchObject({
+      message: "RPC 网络请求失败，请检查节点后重试",
+      status: "error"
+    });
   });
 });
 

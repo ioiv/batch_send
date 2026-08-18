@@ -2,6 +2,7 @@ import {
   getAddress,
   isAddress,
   parseAbi,
+  zeroAddress,
   type Address,
   type PublicClient
 } from "viem";
@@ -12,6 +13,8 @@ import type { EvmCollectionAsset } from "./evm-collection";
 const erc721InterfaceId = "0x80ac58cd" as const;
 /** ERC165 interface id for the optional ERC721Enumerable extension. */
 const erc721EnumerableInterfaceId = "0x780e9d63" as const;
+const erc165InterfaceId = "0x01ffc9a7" as const;
+const invalidErc165InterfaceId = "0xffffffff" as const;
 
 export const erc721DiscoveryAbi = parseAbi([
   "function supportsInterface(bytes4 interfaceId) view returns (bool)",
@@ -68,6 +71,8 @@ export type Erc721DiscoveryResult = {
   owners: Erc721DiscoveryOwner[];
   /** Number of attempted `readContract` RPC calls, including failed calls. */
   rpcRequests: number;
+  /** All balance and index reads are pinned to this block when present. */
+  snapshotBlock: bigint | null;
 };
 
 type ReadContractParameters = Parameters<PublicClient["readContract"]>[0];
@@ -83,7 +88,7 @@ export type DiscoverEnumerableErc721AssetsParameters = {
   maxTokensPerOwner?: number;
   onProgress?: (progress: Erc721DiscoveryProgress) => void;
   ownerAddresses: readonly string[];
-  publicClient: Pick<PublicClient, "readContract">;
+  publicClient: Pick<PublicClient, "getBlockNumber" | "readContract">;
   /** Intended for deterministic tests and alternate transports. */
   readContract?: Erc721DiscoveryReadContract;
 };
@@ -94,7 +99,8 @@ const absoluteMaxTokensPerOwner = 2_000;
 const absoluteMaxTokensPerContract = 5_000;
 export const MAX_ERC721_DISCOVERY_OWNERS = maximumCollectionSources;
 export const MAX_ERC721_DISCOVERY_RPC_REQUESTS = maximumEvmCollectionChecks;
-const minimumErc165Requests = 2;
+const minimumErc165Requests = 4;
+const minimumDiscoveryRequests = minimumErc165Requests + 1;
 const secretPattern = /0x[0-9a-fA-F]{64}/g;
 const rpcUrlPattern = /https?:\/\/\S+/gi;
 
@@ -157,7 +163,7 @@ function normalizeInputs({
   "contractAddress" | "maxRpcRequests" | "maxTokensPerContract" | "maxTokensPerOwner" | "ownerAddresses"
 >) {
   const issues: Erc721DiscoveryIssue[] = [];
-  if (!isAddress(contractAddress)) {
+  if (!isAddress(contractAddress) || getAddress(contractAddress).toLowerCase() === zeroAddress) {
     issues.push(invalidIssue("ERC721 合约地址格式不正确"));
     return { contract: null, contractLimit: 0, issues, ownerLimit: 0, owners: [] as Address[], rpcBudget: 0 };
   }
@@ -186,9 +192,24 @@ function normalizeInputs({
       rpcBudget: 0
     };
   }
-  if (!Number.isSafeInteger(maxRpcRequests) || maxRpcRequests < minimumErc165Requests) {
+  if (Number.isSafeInteger(maxRpcRequests) && maxRpcRequests < minimumDiscoveryRequests) {
+    issues.push(limitIssue(
+      "rpc-budget-exceeded",
+      contract,
+      "完成快照与 ERC165 接口检查至少需要 " + minimumDiscoveryRequests + " 次 RPC 请求"
+    ));
+    return {
+      contract,
+      contractLimit: 0,
+      issues,
+      ownerLimit: 0,
+      owners: [] as Address[],
+      rpcBudget: 0
+    };
+  }
+  if (!Number.isSafeInteger(maxRpcRequests)) {
     issues.push(invalidIssue(
-      `RPC 请求预算必须是 ${minimumErc165Requests}-${MAX_ERC721_DISCOVERY_RPC_REQUESTS} 的整数`
+      `RPC 请求预算必须是 ${minimumDiscoveryRequests}-${MAX_ERC721_DISCOVERY_RPC_REQUESTS} 的整数`
     ));
     return {
       contract,
@@ -234,23 +255,40 @@ function normalizeInputs({
 
   const owners: Address[] = [];
   const seen = new Set<string>();
+  let hasInvalidOwner = false;
   for (const owner of ownerAddresses) {
     if (!isAddress(owner)) {
-      issues.push(invalidIssue("已忽略格式不正确的来源钱包地址"));
+      hasInvalidOwner = true;
+      issues.push(invalidIssue("来源钱包地址格式不正确"));
       continue;
     }
     const address = getAddress(owner);
+    if (address.toLowerCase() === zeroAddress) {
+      hasInvalidOwner = true;
+      issues.push(invalidIssue("来源钱包不能是零地址"));
+      continue;
+    }
     const key = address.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     owners.push(address);
   }
+  if (hasInvalidOwner) {
+    return {
+      contract,
+      contractLimit: 0,
+      issues,
+      ownerLimit: 0,
+      owners: [] as Address[],
+      rpcBudget: 0
+    };
+  }
   if (owners.length === 0) issues.push(invalidIssue("至少需要一个有效的来源钱包地址"));
-  if (owners.length > 0 && minimumErc165Requests + owners.length > maxRpcRequests) {
+  if (owners.length > 0 && minimumDiscoveryRequests + owners.length > maxRpcRequests) {
     issues.push(limitIssue(
       "rpc-budget-exceeded",
       contract,
-      `仅完成接口检查与来源余额读取至少需要 ${minimumErc165Requests + owners.length} 次 RPC 请求，超过本次 ${maxRpcRequests} 次预算`
+      `仅完成快照、接口检查与来源余额读取至少需要 ${minimumDiscoveryRequests + owners.length} 次 RPC 请求，超过本次 ${maxRpcRequests} 次预算`
     ));
     return {
       contract,
@@ -280,8 +318,36 @@ export async function discoverEnumerableErc721Assets(
   parameters: DiscoverEnumerableErc721AssetsParameters
 ): Promise<Erc721DiscoveryResult> {
   const { contract, contractLimit, issues, ownerLimit, owners, rpcBudget } = normalizeInputs(parameters);
-  const result: Erc721DiscoveryResult = { assets: [], issues, owners: [], rpcRequests: 0 };
+  const result: Erc721DiscoveryResult = {
+    assets: [],
+    issues,
+    owners: [],
+    rpcRequests: 0,
+    snapshotBlock: null
+  };
   if (!contract || contractLimit === 0 || ownerLimit === 0 || owners.length === 0 || rpcBudget === 0) {
+    return result;
+  }
+
+  let snapshotBlock: bigint;
+  try {
+    result.rpcRequests += 1;
+    snapshotBlock = await parameters.publicClient.getBlockNumber();
+    result.snapshotBlock = snapshotBlock;
+  } catch (error) {
+    result.issues.push({
+      code: "interface-check-failed",
+      contractAddress: contract,
+      message: getErrorMessage(error, "无法固定 NFT 扫描区块；请检查 RPC 后重试"),
+      ownerAddress: null
+    });
+    result.owners = owners.map((ownerAddress) => ({
+      balance: null,
+      discovered: 0,
+      ownerAddress,
+      scanned: 0,
+      status: "unsupported"
+    }));
     return result;
   }
 
@@ -292,7 +358,7 @@ export async function discoverEnumerableErc721Assets(
       throw new RpcBudgetExceededError();
     }
     result.rpcRequests += 1;
-    return unmeteredReadContract(readParameters);
+    return unmeteredReadContract({ ...readParameters, blockNumber: snapshotBlock });
   };
   const emit = (progress: Omit<Erc721DiscoveryProgress, "contractAddress">) => {
     emitProgress(parameters.onProgress, { contractAddress: contract, ...progress });
@@ -308,10 +374,24 @@ export async function discoverEnumerableErc721Assets(
   } satisfies Omit<Erc721DiscoveryProgress, "contractAddress" | "stage">;
   emit({ ...commonProgress, stage: "checking-contract" });
 
+  let supportsErc165: unknown;
+  let rejectsInvalidInterface: unknown;
   let isErc721: unknown;
   let isEnumerable: unknown;
   try {
-    [isErc721, isEnumerable] = await Promise.all([
+    [supportsErc165, rejectsInvalidInterface, isErc721, isEnumerable] = await Promise.all([
+      readContract({
+        abi: erc721DiscoveryAbi,
+        address: contract,
+        args: [erc165InterfaceId],
+        functionName: "supportsInterface"
+      }),
+      readContract({
+        abi: erc721DiscoveryAbi,
+        address: contract,
+        args: [invalidErc165InterfaceId],
+        functionName: "supportsInterface"
+      }),
       readContract({
         abi: erc721DiscoveryAbi,
         address: contract,
@@ -344,11 +424,28 @@ export async function discoverEnumerableErc721Assets(
     return result;
   }
 
-  if (typeof isErc721 !== "boolean" || typeof isEnumerable !== "boolean") {
+  if (typeof supportsErc165 !== "boolean" || typeof rejectsInvalidInterface !== "boolean"
+    || typeof isErc721 !== "boolean" || typeof isEnumerable !== "boolean") {
     result.issues.push({
       code: "invalid-response",
       contractAddress: contract,
       message: "ERC165 接口检测返回格式不正确；请手动填写 Token ID",
+      ownerAddress: null
+    });
+    result.owners = owners.map((ownerAddress) => ({
+      balance: null,
+      discovered: 0,
+      ownerAddress,
+      scanned: 0,
+      status: "unsupported"
+    }));
+    return result;
+  }
+  if (!supportsErc165 || rejectsInvalidInterface !== false) {
+    result.issues.push({
+      code: "not-erc721",
+      contractAddress: contract,
+      message: "该合约未通过 ERC165 规范校验，已停止 Token ID 自动发现",
       ownerAddress: null
     });
     result.owners = owners.map((ownerAddress) => ({

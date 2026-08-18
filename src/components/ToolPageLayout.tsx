@@ -7,7 +7,9 @@ export type ToolPageStep = {
   label: string;
 };
 
-function getStepState(index: number, activeStep: number) {
+export type ToolPageStepState = "active" | "complete" | "error" | "upcoming";
+
+function getStepState(index: number, activeStep: number): ToolPageStepState {
   if (index < activeStep) return "complete";
   if (index === activeStep) return "active";
   return "upcoming";
@@ -23,8 +25,10 @@ export function ToolPageLayout({
   eyebrow,
   mainClassName = "",
   meta,
+  stepStates,
   steps,
-  title
+  title,
+  trustLabel = "本地执行 · 签名前预检"
 }: {
   activeStep: number;
   categoryHref: string;
@@ -35,49 +39,63 @@ export function ToolPageLayout({
   eyebrow: string;
   mainClassName?: string;
   meta?: ReactNode;
+  stepStates?: ToolPageStepState[];
   steps: ToolPageStep[];
   title: string;
+  trustLabel?: ReactNode;
 }) {
   const headingId = `${currentToolId}-page-title`;
 
   return (
-    <div className="site-page site-tool-page">
+    <div className="site-page site-tool-page" data-tool={currentToolId}>
       <SiteHeader currentToolId={currentToolId} />
       <main className={`shell tool-shell site-tool-shell ${mainClassName}`.trim()} id="main">
         <section className="site-tool-heading" aria-labelledby={headingId}>
-          <nav className="site-tool-breadcrumb" aria-label="面包屑">
-            <a href="/">工具箱</a>
-            <span aria-hidden="true">/</span>
-            <a href={categoryHref}>{categoryLabel}</a>
-          </nav>
-
-          <div className="site-tool-heading__copy">
-            <span className="site-tool-kicker">{eyebrow}</span>
-            <h1 id={headingId}>{title}</h1>
-            <p>{description}</p>
-            {meta ? <div className="site-tool-heading__meta">{meta}</div> : null}
+          <div className="site-tool-context">
+            <nav className="site-tool-breadcrumb" aria-label="面包屑">
+              <a href="/">工具箱</a>
+              <span aria-hidden="true">/</span>
+              <a href={categoryHref}>{categoryLabel}</a>
+            </nav>
+            <span className="site-tool-trust"><i aria-hidden="true" />{trustLabel}</span>
           </div>
 
-          <ol className="site-tool-steps" aria-label="操作步骤">
-            {steps.map((step, index) => {
-              const state = getStepState(index, activeStep);
-              return (
-                <li
-                  aria-current={state === "active" ? "step" : undefined}
-                  className={`site-tool-step is-${state}`}
-                  key={`${step.label}-${index}`}
-                >
-                  <span className="site-tool-step__number" aria-hidden="true">
-                    {state === "complete" ? "✓" : index + 1}
-                  </span>
-                  <span className="site-tool-step__copy">
-                    <strong>{step.label}</strong>
-                    <span>{step.description}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
+          <div className="site-tool-heading__body">
+            <div className="site-tool-heading__copy">
+              <div className="site-tool-title-row">
+                <div className="site-tool-title-block">
+                  <span className="site-tool-kicker">{eyebrow}</span>
+                  <h1 id={headingId}>{title}</h1>
+                </div>
+                {meta ? <div className="site-tool-heading__meta">{meta}</div> : null}
+              </div>
+              <p>{description}</p>
+            </div>
+
+            <div className="site-tool-flow">
+              <p className="site-tool-flow__label">执行路径</p>
+              <ol className="site-tool-steps" aria-label="操作步骤">
+                {steps.map((step, index) => {
+                  const state = stepStates?.[index] || getStepState(index, activeStep);
+                  return (
+                    <li
+                      aria-current={state === "active" ? "step" : undefined}
+                      className={`site-tool-step is-${state}`}
+                      key={`${step.label}-${index}`}
+                    >
+                      <span className="site-tool-step__number" aria-hidden="true">
+                        {state === "complete" ? "✓" : state === "error" ? "!" : index + 1}
+                      </span>
+                      <span className="site-tool-step__copy">
+                        <strong>{step.label}</strong>
+                        <span className="sr-only">{step.description}；{state === "complete" ? "已完成" : state === "error" ? "需要处理错误" : state === "active" ? "当前步骤" : "尚未开始"}</span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </div>
         </section>
 
         {children}

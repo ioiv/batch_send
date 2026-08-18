@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CollectionDisplayResult } from "../lib/collection-results";
 import {
   CollectionResults,
+  getCollectionResultSourceCount,
   getCollectionResultSetIdentity,
   getIndexedCollectionResults
 } from "./CollectionResults";
@@ -57,12 +58,25 @@ describe("CollectionResults", () => {
     expect(getCollectionResultSetIdentity([])).not.toBe(getCollectionResultSetIdentity(results));
   });
 
+  it("counts unique source wallets separately from transaction items", () => {
+    const repeatedSource = [
+      results[0],
+      { ...results[0], asset: "ERC721 #8" },
+      results[1]
+    ];
+
+    expect(getCollectionResultSourceCount(repeatedSource)).toBe(2);
+  });
+
   it("labels the export scope and fallback source identities clearly", () => {
     const markup = renderToStaticMarkup(
       <CollectionResults exportFilename="collection.csv" results={results} />
     );
 
     expect(markup).toContain("导出全部 CSV");
+    expect(markup).toContain("导出失败/跳过项");
+    expect(markup).toContain("资产项");
+    expect(markup).toContain("来源钱包");
     expect(markup).toContain("来源 1");
     expect(markup).toContain("运营钱包");
     expect(markup).toContain('aria-label="查看来源 3的交易"');

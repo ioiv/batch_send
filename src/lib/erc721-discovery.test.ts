@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PublicClient } from "viem";
+import { zeroAddress, type PublicClient } from "viem";
 import {
   discoverEnumerableErc721Assets,
   MAX_ERC721_DISCOVERY_OWNERS,
@@ -20,6 +20,7 @@ type ReadParameters = {
 
 function makeParameters(readContract: (parameters: ReadParameters) => Promise<unknown>) {
   const injectedRead = vi.fn(readContract) as unknown as Erc721DiscoveryReadContract;
+  const publicBlock = vi.fn(async () => 12_345n);
   const publicRead = vi.fn(async () => {
     throw new Error("injected readContract should be used");
   });
@@ -28,16 +29,24 @@ function makeParameters(readContract: (parameters: ReadParameters) => Promise<un
     parameters: {
       contractAddress,
       ownerAddresses: [ownerOne, ownerTwo],
-      publicClient: { readContract: publicRead } as unknown as Pick<PublicClient, "readContract">,
+      publicClient: {
+        getBlockNumber: publicBlock,
+        readContract: publicRead
+      } as unknown as Pick<PublicClient, "getBlockNumber" | "readContract">,
       readContract: injectedRead
     },
+    publicBlock,
     publicRead
   };
 }
 
+function supportsInterfaceResponse(args?: readonly unknown[]) {
+  return args?.[0] !== "0xffffffff";
+}
+
 function enumerableRead(tokenIdsByOwner: Record<string, readonly bigint[]>) {
   return async ({ args, functionName }: ReadParameters) => {
-    if (functionName === "supportsInterface") return true;
+    if (functionName === "supportsInterface") return supportsInterfaceResponse(args);
     const owner = String(args?.[0]).toLowerCase();
     const ids = tokenIdsByOwner[owner] || [];
     if (functionName === "balanceOf") return BigInt(ids.length);
@@ -90,14 +99,15 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(result.issues).toEqual([]);
     expect(progress).toHaveBeenCalled();
     expect(publicRead).not.toHaveBeenCalled();
-    expect(injectedRead).toHaveBeenCalledTimes(7);
-    expect(result.rpcRequests).toBe(7);
+    expect(injectedRead).toHaveBeenCalledTimes(9);
+    expect(result.rpcRequests).toBe(10);
+    expect(result.snapshotBlock).toBe(12_345n);
   });
 
   it("stops before balances when ERC165 says the ERC721 contract is not enumerable", async () => {
     const { injectedRead, parameters } = makeParameters(async ({ args, functionName }) => {
       if (functionName !== "supportsInterface") throw new Error("balance must not be read");
-      return args?.[0] === "0x80ac58cd";
+      return args?.[0] !== "0xffffffff" && args?.[0] !== "0x780e9d63";
     });
 
     const result = await discoverEnumerableErc721Assets(parameters);
@@ -105,7 +115,7 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(result.assets).toEqual([]);
     expect(result.issues).toEqual([expect.objectContaining({ code: "not-enumerable" })]);
     expect(result.owners.map((owner) => owner.status)).toEqual(["unsupported", "unsupported"]);
-    expect(injectedRead).toHaveBeenCalledTimes(2);
+    expect(injectedRead).toHaveBeenCalledTimes(4);
   });
 
   it("reports and redacts ERC165 RPC errors without claiming the contract is unsupported", async () => {
@@ -114,19 +124,19 @@ describe("discoverEnumerableErc721Assets", () => {
     });
 
     const result = await discoverEnumerableErc721Assets(parameters);
-    const serialized = JSON.stringify(result);
+    const serialized = JSON.stringify(result, (_key, value) => typeof value === "bigint" ? value.toString() : value);
 
     expect(result.issues).toEqual([expect.objectContaining({ code: "interface-check-failed" })]);
     expect(serialized).toContain("[RPC 地址已隐藏]");
     expect(serialized).toContain("[已隐藏敏感内容]");
     expect(serialized).not.toContain("provider.test");
     expect(serialized).not.toContain(secret);
-    expect(result.rpcRequests).toBe(2);
+    expect(result.rpcRequests).toBe(5);
   });
 
   it("does not partially scan an owner whose declared balance exceeds the owner limit", async () => {
-    const { injectedRead, parameters } = makeParameters(async ({ functionName }) => {
-      if (functionName === "supportsInterface") return true;
+    const { injectedRead, parameters } = makeParameters(async ({ args, functionName }) => {
+      if (functionName === "supportsInterface") return supportsInterfaceResponse(args);
       if (functionName === "balanceOf") return 3n;
       throw new Error("token read must not run");
     });
@@ -140,7 +150,7 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(result.issues).toHaveLength(2);
     expect(result.issues.every((issue) => issue.code === "balance-limit-exceeded")).toBe(true);
     expect(result.owners.every((owner) => owner.status === "limit-exceeded")).toBe(true);
-    expect(injectedRead).toHaveBeenCalledTimes(4);
+    expect(injectedRead).toHaveBeenCalledTimes(6);
   });
 
   it("enforces a separate hard token-read limit for the whole contract", async () => {
@@ -160,12 +170,12 @@ describe("discoverEnumerableErc721Assets", () => {
       ownerAddress: ownerTwo
     })]);
     expect(result.owners[1]).toMatchObject({ scanned: 0, status: "limit-exceeded" });
-    expect(injectedRead).toHaveBeenCalledTimes(6);
+    expect(injectedRead).toHaveBeenCalledTimes(8);
   });
 
   it("keeps earlier assets, marks an owner incomplete, and redacts token read failures", async () => {
     const { parameters } = makeParameters(async ({ args, functionName }) => {
-      if (functionName === "supportsInterface") return true;
+      if (functionName === "supportsInterface") return supportsInterfaceResponse(args);
       if (functionName === "balanceOf") return args?.[0] === ownerOne ? 3n : 0n;
       if (args?.[1] === 0n) return 8n;
       throw new Error(`failed ${secret} via https://provider.test/private`);
@@ -179,7 +189,7 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(result.issues).toEqual([expect.objectContaining({ code: "token-read-failed", tokenIndex: 1n })]);
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain("provider.test");
-    expect(result.rpcRequests).toBe(6);
+    expect(result.rpcRequests).toBe(9);
   });
 
   it("deduplicates owner inputs and malicious duplicate token ids", async () => {
@@ -215,12 +225,26 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(injectedRead).not.toHaveBeenCalled();
   });
 
+  it("rejects the zero address as a source before making discovery requests", async () => {
+    const { injectedRead, parameters, publicBlock } = makeParameters(enumerableRead({}));
+
+    const result = await discoverEnumerableErc721Assets({
+      ...parameters,
+      ownerAddresses: [zeroAddress]
+    });
+
+    expect(result.issues).toEqual([expect.objectContaining({ code: "invalid-input" })]);
+    expect(result.rpcRequests).toBe(0);
+    expect(publicBlock).not.toHaveBeenCalled();
+    expect(injectedRead).not.toHaveBeenCalled();
+  });
+
   it("rejects a budget below the known minimum before making RPC calls", async () => {
     const { injectedRead, parameters } = makeParameters(enumerableRead({}));
 
     const result = await discoverEnumerableErc721Assets({
       ...parameters,
-      maxRpcRequests: 3
+      maxRpcRequests: 4
     });
 
     expect(result.issues).toEqual([expect.objectContaining({ code: "rpc-budget-exceeded" })]);
@@ -229,15 +253,15 @@ describe("discoverEnumerableErc721Assets", () => {
   });
 
   it("does not start token reads that would exceed the total RPC budget", async () => {
-    const { injectedRead, parameters } = makeParameters(async ({ functionName }) => {
-      if (functionName === "supportsInterface") return true;
+    const { injectedRead, parameters } = makeParameters(async ({ args, functionName }) => {
+      if (functionName === "supportsInterface") return supportsInterfaceResponse(args);
       if (functionName === "balanceOf") return 1n;
       throw new Error("token read must not run");
     });
 
     const result = await discoverEnumerableErc721Assets({
       ...parameters,
-      maxRpcRequests: 3,
+      maxRpcRequests: 6,
       ownerAddresses: [ownerOne]
     });
 
@@ -249,8 +273,8 @@ describe("discoverEnumerableErc721Assets", () => {
     expect(result.owners).toEqual([
       { balance: 1n, discovered: 0, ownerAddress: ownerOne, scanned: 0, status: "limit-exceeded" }
     ]);
-    expect(result.rpcRequests).toBe(3);
-    expect(injectedRead).toHaveBeenCalledTimes(3);
+    expect(result.rpcRequests).toBe(6);
+    expect(injectedRead).toHaveBeenCalledTimes(5);
   });
 
   it("returns input issues without making RPC calls", async () => {

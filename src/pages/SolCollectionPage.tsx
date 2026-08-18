@@ -4,14 +4,17 @@ import { CollectionSafetyNote } from "../components/CollectionIntro";
 import { CollectionResults } from "../components/CollectionResults";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { SecretKeyInput, type SecretKeyInputHandle } from "../components/SecretKeyInput";
-import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
+import { ToolPageLayout, type ToolPageStep, type ToolPageStepState } from "../components/ToolPageLayout";
 import { formatLamports, parseSolToLamports } from "../lib/amount";
 import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
 import { validateSolCollectionWorkload } from "../lib/collection-workload";
 import {
   collectSolFromSources,
   parseSolanaSourceKeys,
+  preflightSolCollectionSources,
   type SolCollectionItemResult,
+  type SolCollectionPreflightItem,
+  type SolCollectionPreflightResult,
   type SolCollectionProgress
 } from "../lib/sol-collection";
 import {
@@ -22,7 +25,7 @@ import {
   type SolanaNetworkId
 } from "../lib/solana";
 
-type CollectionStage = "editing" | "ready" | "running" | "complete" | "error";
+type CollectionStage = "editing" | "checking" | "ready" | "running" | "complete" | "error";
 
 const solCollectionSteps: ToolPageStep[] = [
   { label: "配置来源", description: "设置网络、保留额与目标" },
@@ -53,6 +56,19 @@ function itemToDisplay(item: SolCollectionItemResult, networkId: SolanaNetworkId
   };
 }
 
+function preflightItemToDisplay(item: SolCollectionPreflightItem): CollectionDisplayResult {
+  return {
+    address: item.address,
+    amount: item.transferLamports > 0n ? formatLamports(item.transferLamports) : "0",
+    asset: "SOL",
+    label: item.label,
+    message: item.status === "ready"
+      ? `${item.message} · 预计归集 ${formatLamports(item.transferLamports)} SOL`
+      : item.message,
+    status: item.status === "ready" ? "pending" : item.status
+  };
+}
+
 function progressStatus(phase: SolCollectionProgress["phase"]): CollectionResultStatus {
   if (phase === "preparing") return "scanning";
   if (phase === "submitted") return "confirming";
@@ -71,16 +87,23 @@ export function SolCollectionPage() {
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
+  const [preflight, setPreflight] = useState<SolCollectionPreflightResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [errorStep, setErrorStep] = useState<0 | 1 | 2>(0);
   const [keyImporting, setKeyImporting] = useState(false);
+  const [keysCleared, setKeysCleared] = useState(false);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
   const selectedNetwork = getNetworkConfig(networkId);
-  const taskRunning = stage === "running";
+  const taskRunning = stage === "running" || stage === "checking";
   const running = taskRunning || keyImporting;
-  const activeStep = stage === "error" ? errorStep : stage === "editing" ? 0 : stage === "ready" ? 1 : 2;
+  const activeStep = stage === "error" ? errorStep : stage === "editing" ? 0 : stage === "checking" || stage === "ready" ? 1 : 2;
+  const stepStates: ToolPageStepState[] | undefined = stage === "complete"
+    ? ["complete", "complete", "complete"]
+    : stage === "error"
+      ? solCollectionSteps.map((_, index) => index < errorStep ? "complete" : index === errorStep ? "error" : "upcoming")
+      : undefined;
 
   const handleKeyImportingChange = useCallback((importing: boolean) => {
     keyImportingRef.current = importing;
@@ -103,10 +126,11 @@ export function SolCollectionPage() {
     setConfirmed(false);
     setMessage("");
     setIssues([]);
+    setPreflight(null);
     if (clearResults) setResults([]);
   };
 
-  const prepareCollection = () => {
+  const prepareCollection = async () => {
     if (operationRef.current || keyImportingRef.current || running) return;
     operationRef.current = true;
     const nextIssues: string[] = [];
@@ -130,6 +154,7 @@ export function SolCollectionPage() {
     if (nextIssues.length || reserveLamports === null || minCollectionLamports === null) {
       operationRef.current = false;
       setIssues(nextIssues);
+      setPreflight(null);
       setStage("error");
       setErrorStep(0);
       setMessage("请修正输入后重新检查");
@@ -138,18 +163,57 @@ export function SolCollectionPage() {
 
     setIssues([]);
     setConfirmed(false);
+    setPreflight(null);
     setResults(parsedSources.sources.map((source) => ({
       address: source.address,
-      amount: "待计算",
+      amount: "读取中",
       asset: "SOL",
       label: source.label,
-      message: "将在执行时读取余额、计算手续费与可归集金额",
+      message: "正在只读检查余额、手续费和可归集金额",
       status: source.address === normalizedTarget ? "skipped" : "pending"
     })));
-    setStage("ready");
+    setStage("checking");
     setErrorStep(0);
-    setMessage(`已解析 ${parsedSources.sources.length} 个来源地址。下一步将在每笔签名前读取实时余额与手续费。`);
-    operationRef.current = false;
+    setMessage(`正在对 ${parsedSources.sources.length} 个来源地址执行只读预检，不会签名或提交交易。`);
+
+    const connection = new Connection(rpcEndpoint.trim(), "confirmed");
+    try {
+      await assertSolanaRpcNetwork(connection, networkId);
+      const nextPreflight = await preflightSolCollectionSources({
+        connection,
+        destination: normalizedTarget,
+        minCollectionLamports,
+        reserveLamports,
+        sources: parsedSources.sources
+      });
+      setPreflight(nextPreflight);
+      setResults(nextPreflight.items.map(preflightItemToDisplay));
+
+      if (nextPreflight.errorSources > 0) {
+        setStage("error");
+        setErrorStep(1);
+        setMessage(`${nextPreflight.errorSources} 个来源预检失败。请检查 RPC 后重试；尚未签名或提交任何交易。`);
+        return;
+      }
+      if (nextPreflight.executableSources === 0) {
+        setStage("error");
+        setErrorStep(1);
+        setMessage("没有满足余额、手续费、保留额和最小金额条件的来源钱包，未执行任何交易。");
+        return;
+      }
+
+      setStage("ready");
+      setErrorStep(0);
+      setMessage(`只读预检完成：${nextPreflight.executableSources} 个来源可归集，${nextPreflight.skippedSources} 个将跳过。`);
+    } catch (error) {
+      setStage("error");
+      setErrorStep(1);
+      setMessage(error instanceof Error && error.message.includes("RPC 网络不匹配")
+        ? error.message
+        : "只读预检失败，请检查 RPC 后重试；尚未签名或提交任何交易。");
+    } finally {
+      operationRef.current = false;
+    }
   };
 
   const executeCollection = async () => {
@@ -175,7 +239,6 @@ export function SolCollectionPage() {
 
     operationRef.current = true;
     const connection = new Connection(rpcEndpoint.trim(), "confirmed");
-    keyInputRef.current?.clear();
     setStage("running");
     setConfirmed(false);
     setMessage("正在校验 RPC 网络；校验通过后才会读取余额和签名");
@@ -191,6 +254,9 @@ export function SolCollectionPage() {
       operationRef.current = false;
       return;
     }
+
+    keyInputRef.current?.clear();
+    setKeysCleared(true);
 
     setMessage(`正在处理 ${parsedSources.sources.length} 个来源钱包；已提交的交易请勿盲目重试`);
 
@@ -232,11 +298,11 @@ export function SolCollectionPage() {
       const skipped = collectionResults.filter((item) => item.status === "skipped").length;
       const failed = collectionResults.filter((item) => item.status === "error").length;
       setStage("complete");
-      setMessage(`执行结束：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`);
+      setMessage(`执行结束：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}。来源密钥已从页面清除。`);
     } catch {
       setStage("error");
       setErrorStep(2);
-      setMessage("归集流程意外中断；请先按已显示的交易哈希核对链上状态，再决定是否重试");
+      setMessage("归集流程意外中断；来源密钥已清除，请先按已显示的交易哈希核对链上状态，再决定是否创建新任务");
     } finally {
       operationRef.current = false;
     }
@@ -252,6 +318,7 @@ export function SolCollectionPage() {
       eyebrow="Many to one · Solana"
       mainClassName="collection-shell collection-page"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">密钥仅在本地内存</span></>}
+      stepStates={stepStates}
       steps={solCollectionSteps}
       title="SOL 归集"
     >
@@ -350,7 +417,10 @@ export function SolCollectionPage() {
               <SecretKeyInput
                 disabled={taskRunning}
                 mode="solana"
-                onDirty={() => invalidateConfirmation()}
+                onDirty={() => {
+                  setKeysCleared(false);
+                  invalidateConfirmation();
+                }}
                 onImportingChange={handleKeyImportingChange}
                 ref={keyInputRef}
               />
@@ -362,30 +432,42 @@ export function SolCollectionPage() {
               ) : null}
 
               {message ? (
-                <div className="collection-inline-status" data-status={stage === "error" ? "error" : stage === "complete" ? "success" : stage} aria-live="polite">
-                  <strong>{stage === "ready" ? "等待最终确认" : stage === "complete" ? "任务已结束" : "任务状态"}</strong>
+                <div className="collection-inline-status" data-status={stage === "error" ? "error" : stage === "complete" ? "success" : stage} aria-live={stage === "error" ? "assertive" : "polite"} role={stage === "error" ? "alert" : "status"}>
+                  <strong>{stage === "checking" ? "正在只读预检" : stage === "ready" ? "等待最终确认" : stage === "complete" ? "任务已结束" : "任务状态"}</strong>
                   <p>{message}</p>
                 </div>
               ) : null}
 
-              {stage === "ready" ? (
+              {stage === "ready" && preflight ? (
                 <div className="collection-final-confirm">
-                  <strong>准备处理 {results.length} 个来源钱包</strong>
-                  <p>目标：{targetAddress}</p>
+                  <strong>最终确认：将从 {preflight.executableSources} 个来源发起归集</strong>
+                  <div className="summary-list">
+                    <div><span>目标地址</span><strong>{targetAddress}</strong></div>
+                    <div><span>来源检查</span><strong>{results.length} 个</strong></div>
+                    <div><span>预计执行</span><strong>{preflight.executableSources} 笔</strong></div>
+                    <div><span>预计跳过</span><strong>{preflight.skippedSources} 个</strong></div>
+                    <div><span>预计归集</span><strong>{formatLamports(preflight.totalTransferLamports)} SOL</strong></div>
+                    <div><span>预计总手续费</span><strong>{formatLamports(preflight.estimatedNetworkFeeLamports)} SOL</strong></div>
+                    <div><span>每钱包保留</span><strong>{reserveAmount || "0"} SOL</strong></div>
+                  </div>
                   <label className="collection-confirm-check">
                     <input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
-                    <span>我已核对网络、目标地址、保留金额和来源地址，并理解已提交交易不可撤销。</span>
+                    <span>我已核对上方只读预检结果、目标地址和跳过项，并理解余额与手续费会在签名前再次读取。</span>
                   </label>
                 </div>
               ) : null}
 
               <div className="actions collection-actions">
-                <button className="button ghost" disabled={running} onClick={() => {
+                <button className="button danger" disabled={running} onClick={() => {
+                  const hasTaskContent = Boolean(targetAddress.trim() || keyInputRef.current?.read().trim() || results.length);
+                  if (hasTaskContent && !window.confirm("确认清空当前归集任务？来源密钥和预检结果将无法恢复。")) return;
                   keyInputRef.current?.clear();
                   setTargetAddress("");
                   setReserveAmount("0.002");
                   setMinimumAmount("0.001");
                   setResults([]);
+                  setPreflight(null);
+                  setKeysCleared(false);
                   setIssues([]);
                   setMessage("");
                   setConfirmed(false);
@@ -394,8 +476,12 @@ export function SolCollectionPage() {
                 }} type="button">清空任务</button>
                 {stage === "ready" ? (
                   <button className="button primary" disabled={!confirmed || running} onClick={executeCollection} type="button">确认并开始归集</button>
+                ) : stage === "running" || stage === "checking" ? (
+                  <button className="button primary" disabled type="button">{stage === "checking" ? "只读预检中" : "归集中"}</button>
+                ) : keysCleared ? (
+                  <button className="button primary" onClick={() => keyInputRef.current?.focus()} type="button">重新导入来源密钥</button>
                 ) : (
-                  <button className="button primary" disabled={running} onClick={prepareCollection} type="button">检查来源钱包</button>
+                  <button className="button primary" disabled={running} onClick={prepareCollection} type="button">检查余额与费用</button>
                 )}
               </div>
 
@@ -406,7 +492,7 @@ export function SolCollectionPage() {
           </section>
 
           <CollectionResults
-            emptyMessage="填写目标地址和来源钱包后，先生成不含密钥的地址预览。余额和手续费会在执行时读取。"
+            emptyMessage="填写目标地址和来源钱包后，先执行不会签名的只读预检；余额、手续费、预计归集额和跳过原因会显示在这里。"
             exportFilename="sol-collection-results.csv"
             results={results}
           />

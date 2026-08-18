@@ -21,7 +21,32 @@ const formatSteps: ToolPageStep[] = [
 
 const distributionFileTypes = new Set(["", "application/csv", "application/vnd.ms-excel", "text/csv", "text/plain"]);
 
+export function getFormatOutputGate({
+  duplicates,
+  invalid,
+  output
+}: {
+  duplicates: number;
+  invalid: number;
+  output: string;
+}) {
+  const blockers = [
+    invalid > 0 ? `${invalid} 条输入需要修正` : "",
+    duplicates > 0 ? `${duplicates} 个重复地址需要去重` : ""
+  ].filter(Boolean);
+  const blocked = blockers.length > 0;
+
+  return {
+    blocked,
+    canUseOutput: Boolean(output) && !blocked,
+    message: blocked
+      ? `${blockers.join("，")}。为避免漏发或重复发送，处理完成前不能复制或进入分发。`
+      : ""
+  };
+}
+
 export function FormatGeneratorPage() {
+  const addressInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importEpochRef = useRef<LocalFileImportEpoch>({ current: 0 });
   const [addresses, setAddresses] = useState("");
@@ -30,6 +55,7 @@ export function FormatGeneratorPage() {
   const [minAmount, setMinAmount] = useState("0.5");
   const [maxAmount, setMaxAmount] = useState("1");
   const [copyLabel, setCopyLabel] = useState("复制结果");
+  const [copyFeedback, setCopyFeedback] = useState<{ kind: "error" | "success"; message: string } | null>(null);
   const [generationNonce, setGenerationNonce] = useState(1);
   const [importMessage, setImportMessage] = useState("");
   const [importing, setImporting] = useState(false);
@@ -102,11 +128,16 @@ export function FormatGeneratorPage() {
 
   const isMixedList = result.solanaCount > 0 && result.evmCount > 0;
   const distributionTargetPage = getDistributionTargetPage(result.output);
+  const outputGate = getFormatOutputGate(result);
+  const hasAddressIssues = result.issues.some((issue) => /^第 \d+ 行地址格式不正确$/.test(issue));
   const resultNote = isMixedList
     ? "请拆成 Solana 和 EVM 两份清单后分别进入对应分发页。"
     : result.evmCount > 0
       ? "复制后可直接粘贴到 EVM 分发页，也可以直接跳转。"
       : "复制后可直接粘贴到 SOL 分发页，也可以直接跳转。";
+  const resultAnnouncement = addresses.trim()
+    ? `生成结果：${result.validCount} 条有效，${result.invalid} 条需修正，${result.duplicates} 条重复。`
+    : "尚未输入地址。";
 
   const cancelPendingImport = useCallback(() => {
     cancelLocalFileImport(importEpochRef.current);
@@ -123,6 +154,7 @@ export function FormatGeneratorPage() {
     setter(value);
     setGenerationNonce((current) => current + 1);
     setCopyLabel("复制结果");
+    setCopyFeedback(null);
   };
 
   const dedupeAddresses = () => {
@@ -138,15 +170,32 @@ export function FormatGeneratorPage() {
     updateAndRegenerate(setAddresses, deduped.join("\n"));
   };
 
+  const focusFirstInvalidInput = () => {
+    if (hasAddressIssues) {
+      addressInputRef.current?.focus();
+      return;
+    }
+    document.getElementById(mode === "fixed" ? "fixedAmount" : "minAmount")?.focus();
+  };
+
   const copyOutput = async () => {
-    if (!result.output) return;
-    await copyText(result.output);
+    if (!outputGate.canUseOutput) return;
+    const copied = await copyText(result.output);
+    if (!copied) {
+      setCopyLabel("重试复制");
+      setCopyFeedback({
+        kind: "error",
+        message: "浏览器未允许访问剪贴板，请在右侧结果框中手动选择并复制。"
+      });
+      return;
+    }
     setCopyLabel("已复制");
+    setCopyFeedback({ kind: "success", message: "结果已复制到剪贴板。" });
     window.setTimeout(() => setCopyLabel("复制结果"), 1200);
   };
 
   const goToDistributor = () => {
-    if (!result.output || !distributionTargetPage) return;
+    if (!outputGate.canUseOutput || !distributionTargetPage) return;
     window.location.href = getDistributionTransferHref(result.output, distributionTargetPage);
   };
 
@@ -186,6 +235,7 @@ export function FormatGeneratorPage() {
       }
       setGenerationNonce((current) => current + 1);
       setCopyLabel("复制结果");
+      setCopyFeedback(null);
       setImportMessage(imported.hadAmounts
         ? `已导入 ${imported.addresses.split("\n").length} 个地址及统一金额 ${imported.fixedAmount}`
         : `已导入 ${imported.addresses.split("\n").length} 个地址`);
@@ -199,7 +249,7 @@ export function FormatGeneratorPage() {
     }
   };
 
-  const activeStep = result.output ? 2 : addresses.trim() ? 1 : 0;
+  const activeStep = outputGate.canUseOutput ? 2 : addresses.trim() ? 1 : 0;
 
   return (
     <ToolPageLayout
@@ -213,6 +263,7 @@ export function FormatGeneratorPage() {
       meta={<><span className="pill">本地生成</span><span className="pill">不连接钱包</span></>}
       steps={formatSteps}
       title="分发格式生成"
+      trustLabel="本地生成 · 不连接钱包"
     >
         <section className="workspace flow-workspace">
           <section className="panel input-panel" aria-labelledby="input-title">
@@ -247,6 +298,7 @@ export function FormatGeneratorPage() {
                 <p className="hint">支持粘贴多行地址，会做基础格式校验和重复项统计。</p>
                 <textarea
                   id="addresses"
+                  ref={addressInputRef}
                   spellCheck={false}
                   value={addresses}
                   onChange={(event) => updateAndRegenerate(setAddresses, event.target.value)}
@@ -273,27 +325,53 @@ export function FormatGeneratorPage() {
                 </label>
               </div>
 
-              <div className="amount-grid">
-                <div className="field">
-                  <label htmlFor="fixedAmount">固定金额</label>
-                  <input id="fixedAmount" type="number" min="0" step={fixedAmountStep} value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
-                </div>
-                <div className="field">
-                  <label htmlFor="minAmount">随机最小值</label>
-                  <input id="minAmount" type="number" min="0" step={randomAmountStep} value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
-                </div>
-                <div className="field">
-                  <label htmlFor="maxAmount">随机最大值</label>
-                  <input id="maxAmount" type="number" min="0" step={randomAmountStep} value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
-                </div>
+              <div className={`amount-grid generator-amount-grid ${mode}`}>
+                {mode === "fixed" ? (
+                  <div className="field">
+                    <label htmlFor="fixedAmount">固定金额</label>
+                    <input id="fixedAmount" type="number" min="0" step={fixedAmountStep} value={fixedAmount} onChange={(event) => updateAndRegenerate(setFixedAmount, event.target.value)} />
+                  </div>
+                ) : (
+                  <>
+                    <div className="field">
+                      <label htmlFor="minAmount">随机最小值</label>
+                      <input id="minAmount" type="number" min="0" step={randomAmountStep} value={minAmount} onChange={(event) => updateAndRegenerate(setMinAmount, event.target.value)} />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="maxAmount">随机最大值</label>
+                      <input id="maxAmount" type="number" min="0" step={randomAmountStep} value={maxAmount} onChange={(event) => updateAndRegenerate(setMaxAmount, event.target.value)} />
+                    </div>
+                  </>
+                )}
               </div>
+
+              {outputGate.blocked ? (
+                <div className="confirm transaction-status error" id="format-output-blocker" role="alert">
+                  <strong>请先修正清单</strong>
+                  <span>{outputGate.message}</span>
+                  <span>具体行号和原因已列在右侧“生成结果”下方。</span>
+                  <div className="action-group">
+                    {result.invalid > 0 ? (
+                      <button className="button ghost compact-button" type="button" onClick={focusFirstInvalidInput}>
+                        {hasAddressIssues ? "回到地址列表修正" : "回到金额设置修正"}
+                      </button>
+                    ) : null}
+                    {result.duplicates > 0 ? (
+                      <button className="button ghost compact-button" type="button" onClick={dedupeAddresses}>
+                        立即去重
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="actions">
                 <div className="action-group">
                   <button
                     className="button primary"
                     type="button"
-                    disabled={!result.output || !distributionTargetPage}
+                    aria-describedby={outputGate.blocked ? "format-output-blocker" : isMixedList ? "format-result-note" : undefined}
+                    disabled={!outputGate.canUseOutput || !distributionTargetPage}
                     title={isMixedList ? "同一清单不能同时进入 SOL 和 EVM 分发页，请先拆分。" : undefined}
                     onClick={goToDistributor}
                   >
@@ -302,8 +380,21 @@ export function FormatGeneratorPage() {
                   <button className="button ghost" type="button" disabled={!addresses.trim()} onClick={dedupeAddresses}>去重</button>
                   <button className="button ghost" type="button" onClick={() => updateAndRegenerate(setAddresses, "")}>清空</button>
                 </div>
-                <button className="button" type="button" disabled={!result.output} onClick={copyOutput}>{copyLabel}</button>
+                <button
+                  aria-describedby={outputGate.blocked ? "format-output-blocker" : copyFeedback ? "format-copy-feedback" : undefined}
+                  className="button"
+                  type="button"
+                  disabled={!outputGate.canUseOutput}
+                  onClick={copyOutput}
+                >{copyLabel}</button>
               </div>
+              {copyFeedback ? (
+                <p
+                  className={`hint${copyFeedback.kind === "error" ? " error" : ""}`}
+                  id="format-copy-feedback"
+                  role={copyFeedback.kind === "error" ? "alert" : "status"}
+                >{copyFeedback.message}</p>
+              ) : null}
             </div>
 
             <div className="stats" aria-label="生成统计">
@@ -318,15 +409,16 @@ export function FormatGeneratorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="result-title">生成结果</h2>
-                <p className="panel-note">{resultNote}</p>
+                <p className="panel-note" id="format-result-note">{resultNote}</p>
               </div>
               <span className="pill">{mode === "fixed" ? "固定金额" : "随机区间"}</span>
             </div>
             <div className="form">
-              <div className="result" aria-live="polite">
+              <p className="sr-only" aria-atomic="true" aria-live="polite">{resultAnnouncement}</p>
+              <div className="result">
                 {result.output ? <pre>{result.output}</pre> : <div className="empty">生成后会显示为：<br />地址,金额</div>}
               </div>
-              <div className="invalid-list">
+              <div className="invalid-list" id="format-result-issues">
                 {result.issues.slice(0, 5).map((issue) => (
                   <div key={issue}>{issue}</div>
                 ))}

@@ -125,6 +125,7 @@ export type EvmCollectionProgressStage =
   | "skipped"
   | "simulating"
   | "estimating"
+  | "ready"
   | "submitting"
   | "confirming"
   | "success"
@@ -184,7 +185,8 @@ export const erc721CollectionAbi = parseAbi([
 
 export const erc1155CollectionAbi = parseAbi([
   "function balanceOf(address account, uint256 id) view returns (uint256)",
-  "function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)"
+  "function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)",
+  "function safeBatchTransferFrom(address from, address to, uint256[] ids, uint256[] values, bytes data)"
 ]);
 
 const privateKeyPattern = /^0x[0-9a-fA-F]{64}$/;
@@ -199,6 +201,18 @@ export const maximumEvmPrivateKeyInputEntries = maximumCollectionSources;
 export const maximumEvmCollectionAssetInputEntries = maximumEvmCollectionAssets;
 export const maximumEvmTokenIdDigits = 78;
 export const maximumEvmTokenId = (1n << 256n) - 1n;
+/**
+ * ERC1155 transfers are grouped per source wallet and contract. Keeping a
+ * finite batch avoids provider/contract calldata limits while still replacing
+ * many per-token transactions with one native standard transaction.
+ */
+export const maximumErc1155BatchTransferItems = 100;
+
+export type EvmCollectionPreflightResult = {
+  estimatedNetworkFee: bigint;
+  executableTransactions: number;
+  plan: EvmCollectionPlanItem[];
+};
 
 type BoundedInputIssue = {
   line: number;
@@ -796,6 +810,163 @@ function emitProgress(
   }
 }
 
+type EvmCollectionExecutionEntry = {
+  index: number;
+  item: EvmCollectionPlanItem;
+};
+
+type EvmCollectionExecutionOperation = {
+  entries: EvmCollectionExecutionEntry[];
+  kind: "single" | "erc1155-batch";
+};
+
+function canBatchErc1155Item(item: EvmCollectionPlanItem) {
+  if (item.status !== "ready" || item.asset.standard !== "erc1155" || item.amount <= 0n
+    || !item.account || !item.address) return false;
+  return getAddress(item.account.address) === getAddress(item.address);
+}
+
+function getErc1155BatchGroupKey(item: EvmCollectionPlanItem) {
+  if (!canBatchErc1155Item(item) || item.asset.standard !== "erc1155" || !item.address) return null;
+  return `${item.address.toLowerCase()}:${item.asset.contractAddress.toLowerCase()}`;
+}
+
+/**
+ * Builds transaction operations without changing the result granularity: a
+ * batched ERC1155 transaction still produces one result row per Token ID.
+ */
+function buildCollectionExecutionOperations(plan: readonly EvmCollectionPlanItem[]) {
+  const groups = new Map<string, EvmCollectionExecutionEntry[]>();
+  for (const [index, item] of plan.entries()) {
+    const groupKey = getErc1155BatchGroupKey(item);
+    if (!groupKey) continue;
+    const entries = groups.get(groupKey) || [];
+    entries.push({ index, item });
+    groups.set(groupKey, entries);
+  }
+
+  const batchAtIndex = new Map<number, EvmCollectionExecutionOperation>();
+  const batchedIndexes = new Set<number>();
+  for (const entries of groups.values()) {
+    if (entries.length < 2) continue;
+    for (let start = 0; start < entries.length; start += maximumErc1155BatchTransferItems) {
+      const chunk = entries.slice(start, start + maximumErc1155BatchTransferItems);
+      if (chunk.length < 2) continue;
+      batchAtIndex.set(chunk[0].index, { entries: chunk, kind: "erc1155-batch" });
+      chunk.forEach((entry) => batchedIndexes.add(entry.index));
+    }
+  }
+
+  const operations: EvmCollectionExecutionOperation[] = [];
+  for (const [index, item] of plan.entries()) {
+    const batch = batchAtIndex.get(index);
+    if (batch) {
+      operations.push(batch);
+      continue;
+    }
+    if (batchedIndexes.has(index)) continue;
+    operations.push({ entries: [{ index, item }], kind: "single" });
+  }
+  return operations;
+}
+
+function getOperationPrimaryItem(operation: EvmCollectionExecutionOperation) {
+  const item = operation.entries[0]?.item;
+  if (!item) throw new EvmCollectionCoreError("invalid-input", "归集计划缺少可执行项");
+  return item;
+}
+
+function getOperationSigner(operation: EvmCollectionExecutionOperation) {
+  const primary = getOperationPrimaryItem(operation);
+  if (!primary.account || !primary.address || primary.amount <= 0n) {
+    throw new EvmCollectionCoreError("invalid-input", "归集计划缺少可执行的账户或数量");
+  }
+  if (getAddress(primary.account.address) !== getAddress(primary.address)) {
+    throw new EvmCollectionCoreError("invalid-input", "签名账户与来源地址不匹配");
+  }
+
+  if (operation.kind === "erc1155-batch") {
+    if (primary.asset.standard !== "erc1155") {
+      throw new EvmCollectionCoreError("invalid-input", "ERC1155 批量归集包含了非 ERC1155 资产");
+    }
+    const sourceKey = primary.address.toLowerCase();
+    const contractKey = primary.asset.contractAddress.toLowerCase();
+    for (const { item } of operation.entries) {
+      if (!item.account || !item.address || item.amount <= 0n || item.asset.standard !== "erc1155"
+        || item.address.toLowerCase() !== sourceKey
+        || item.asset.contractAddress.toLowerCase() !== contractKey
+        || getAddress(item.account.address) !== getAddress(item.address)) {
+        throw new EvmCollectionCoreError("invalid-input", "ERC1155 批量归集计划不一致");
+      }
+    }
+  }
+  return primary;
+}
+
+function getOperationDescription(operation: EvmCollectionExecutionOperation) {
+  return operation.kind === "erc1155-batch"
+    ? `ERC1155 批量归集（${operation.entries.length} 个 Token ID）`
+    : "归集交易";
+}
+
+function emitOperationProgress(
+  onProgress: ((progress: EvmCollectionProgress) => void) | undefined,
+  operation: EvmCollectionExecutionOperation,
+  stage: EvmCollectionProgressStage,
+  total: number,
+  message: string,
+  hash: Hash | null = null
+) {
+  operation.entries.forEach(({ index, item }) => {
+    emitProgress(onProgress, item, stage, index, total, message, hash);
+  });
+}
+
+function encodeCollectionTransferData(item: EvmCollectionPlanItem, targetAddress: Address) {
+  if (!item.address) throw new EvmCollectionCoreError("invalid-input", "归集计划缺少来源地址");
+  if (item.asset.standard === "erc20") {
+    return encodeFunctionData({
+      abi: erc20CollectionAbi,
+      args: [targetAddress, item.amount],
+      functionName: "transfer"
+    });
+  }
+  if (item.asset.standard === "erc721") {
+    return encodeFunctionData({
+      abi: erc721CollectionAbi,
+      args: [item.address, targetAddress, item.asset.tokenId],
+      functionName: "safeTransferFrom"
+    });
+  }
+  return encodeFunctionData({
+    abi: erc1155CollectionAbi,
+    args: [item.address, targetAddress, item.asset.tokenId, item.amount, "0x"],
+    functionName: "safeTransferFrom"
+  });
+}
+
+function encodeCollectionOperationData(
+  operation: EvmCollectionExecutionOperation,
+  targetAddress: Address
+) {
+  const primary = getOperationSigner(operation);
+  if (operation.kind === "single") return encodeCollectionTransferData(primary, targetAddress);
+  if (primary.asset.standard !== "erc1155" || !primary.address) {
+    throw new EvmCollectionCoreError("invalid-input", "ERC1155 批量归集缺少来源地址");
+  }
+  return encodeFunctionData({
+    abi: erc1155CollectionAbi,
+    args: [
+      primary.address,
+      targetAddress,
+      operation.entries.map(({ item }) => (item.asset as Extract<EvmCollectionAsset, { standard: "erc1155" }>).tokenId),
+      operation.entries.map(({ item }) => item.amount),
+      "0x"
+    ],
+    functionName: "safeBatchTransferFrom"
+  });
+}
+
 async function simulateCollectionTransfer(
   publicClient: EvmCollectionPublicClient,
   item: EvmCollectionPlanItem,
@@ -838,27 +1009,199 @@ async function simulateCollectionTransfer(
   return { request };
 }
 
-function encodeCollectionTransferData(item: EvmCollectionPlanItem, targetAddress: Address) {
-  if (!item.address) throw new EvmCollectionCoreError("invalid-input", "归集计划缺少来源地址");
-  if (item.asset.standard === "erc20") {
-    return encodeFunctionData({
-      abi: erc20CollectionAbi,
-      args: [targetAddress, item.amount],
-      functionName: "transfer"
-    });
+async function simulateCollectionOperation(
+  publicClient: EvmCollectionPublicClient,
+  operation: EvmCollectionExecutionOperation,
+  targetAddress: Address
+): Promise<{ request: unknown }> {
+  const primary = getOperationSigner(operation);
+  if (operation.kind === "single") return simulateCollectionTransfer(publicClient, primary, targetAddress);
+  if (primary.asset.standard !== "erc1155" || !primary.account || !primary.address) {
+    throw new EvmCollectionCoreError("invalid-input", "ERC1155 批量归集缺少签名账户");
   }
-  if (item.asset.standard === "erc721") {
-    return encodeFunctionData({
-      abi: erc721CollectionAbi,
-      args: [item.address, targetAddress, item.asset.tokenId],
-      functionName: "safeTransferFrom"
-    });
-  }
-  return encodeFunctionData({
+  const { request } = await publicClient.simulateContract({
     abi: erc1155CollectionAbi,
-    args: [item.address, targetAddress, item.asset.tokenId, item.amount, "0x"],
-    functionName: "safeTransferFrom"
+    account: primary.account,
+    address: primary.asset.contractAddress,
+    args: [
+      primary.address,
+      targetAddress,
+      operation.entries.map(({ item }) => (item.asset as Extract<EvmCollectionAsset, { standard: "erc1155" }>).tokenId),
+      operation.entries.map(({ item }) => item.amount),
+      "0x"
+    ],
+    functionName: "safeBatchTransferFrom"
   });
+  return { request };
+}
+
+function normalizeCollectionExecutionTarget(targetAddress: string, maxFeePerTransactionWei: bigint) {
+  if (!isAddress(targetAddress)) {
+    throw new EvmCollectionCoreError("invalid-input", "目标归集地址格式不正确");
+  }
+  const target = getAddress(targetAddress);
+  if (target === zeroAddress) {
+    throw new EvmCollectionCoreError("invalid-input", "目标归集地址不能是零地址");
+  }
+  if (maxFeePerTransactionWei <= 0n) {
+    throw new EvmCollectionCoreError("invalid-input", "单笔最大网络费必须大于 0");
+  }
+  return target;
+}
+
+function updateOperationPlanItems(
+  plan: EvmCollectionPlanItem[],
+  operation: EvmCollectionExecutionOperation,
+  status: EvmCollectionPlanStatus,
+  message: string
+) {
+  operation.entries.forEach(({ index, item }) => {
+    plan[index] = { ...item, message: redactSecrets(message), status };
+  });
+}
+
+function storeOperationResults(
+  results: Array<EvmCollectionResult | undefined>,
+  operation: EvmCollectionExecutionOperation,
+  status: EvmCollectionResultStatus,
+  message: string,
+  hash: Hash | null = null
+) {
+  operation.entries.forEach(({ index, item }) => {
+    results[index] = resultFromPlanItem(item, status, message, hash);
+  });
+}
+
+/**
+ * Runs read-only simulations and fee checks before showing the final consent
+ * step. Submission still repeats the checks because ownership, gas and fee
+ * state can change between preview and signing.
+ */
+export async function preflightEvmCollectionPlan({
+  maxFeePerTransactionWei,
+  onProgress,
+  plan,
+  publicClient,
+  targetAddress
+}: {
+  maxFeePerTransactionWei: bigint;
+  onProgress?: (progress: EvmCollectionProgress) => void;
+  plan: readonly EvmCollectionPlanItem[];
+  publicClient: EvmCollectionPublicClient;
+  targetAddress: string;
+}): Promise<EvmCollectionPreflightResult> {
+  const target = normalizeCollectionExecutionTarget(targetAddress, maxFeePerTransactionWei);
+  const preflightPlan = plan.map((item) => ({ ...item }));
+  const reservedFeeBySource = new Map<string, bigint>();
+  const balanceRequests = new Map<string, Promise<bigint>>();
+  let gasPriceRequest: Promise<bigint> | null = null;
+  let estimatedNetworkFee = 0n;
+  let executableTransactions = 0;
+  const operations = buildCollectionExecutionOperations(plan);
+
+  const getGasPrice = () => {
+    if (!gasPriceRequest) {
+      gasPriceRequest = publicClient.getGasPrice().then((value) => assertBigIntResult(value, "Gas Price"));
+    }
+    return gasPriceRequest;
+  };
+  const getNativeBalance = (address: Address) => {
+    const key = address.toLowerCase();
+    let request = balanceRequests.get(key);
+    if (!request) {
+      request = publicClient.getBalance({ address }).then((value) => assertBigIntResult(value, "原生币余额"));
+      balanceRequests.set(key, request);
+    }
+    return request;
+  };
+
+  for (const operation of operations) {
+    const primary = getOperationPrimaryItem(operation);
+    if (primary.status !== "ready") {
+      const status = primary.status === "skipped" ? "skipped" : "failed";
+      emitOperationProgress(onProgress, operation, status, plan.length, primary.message);
+      continue;
+    }
+
+    let signer: EvmCollectionPlanItem;
+    try {
+      signer = getOperationSigner(operation);
+    } catch (error) {
+      const detail = normalizeEvmCollectionError(error, "归集计划无效", "invalid-input");
+      const message = `预检失败：${detail.message}`;
+      updateOperationPlanItems(preflightPlan, operation, "failed", message);
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      continue;
+    }
+    if (!signer.address || !signer.account) continue;
+    if (signer.address.toLowerCase() === target.toLowerCase()) {
+      const message = "来源地址与目标地址相同，已跳过";
+      updateOperationPlanItems(preflightPlan, operation, "skipped", message);
+      emitOperationProgress(onProgress, operation, "skipped", plan.length, message);
+      continue;
+    }
+
+    try {
+      emitOperationProgress(
+        onProgress,
+        operation,
+        "simulating",
+        plan.length,
+        `正在模拟${getOperationDescription(operation)}`
+      );
+      await simulateCollectionOperation(publicClient, operation, target);
+    } catch (error) {
+      const detail = normalizeEvmCollectionError(error, "交易模拟失败", "simulation-failed");
+      const message = `预检模拟失败：${detail.message}`;
+      updateOperationPlanItems(preflightPlan, operation, "failed", message);
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      continue;
+    }
+
+    try {
+      emitOperationProgress(
+        onProgress,
+        operation,
+        "estimating",
+        plan.length,
+        `正在估算${getOperationDescription(operation)}的网络费`
+      );
+      const [estimatedGas, gasPrice, nativeBalance] = await Promise.all([
+        publicClient.estimateGas({
+          account: signer.account,
+          data: encodeCollectionOperationData(operation, target),
+          to: signer.asset.contractAddress
+        }).then((value) => assertBigIntResult(value, "Gas 估算")),
+        getGasPrice(),
+        getNativeBalance(signer.address)
+      ]);
+      const gasLimit = (estimatedGas * 120n + 99n) / 100n;
+      const maximumNetworkFee = gasLimit * gasPrice;
+      if (maximumNetworkFee > maxFeePerTransactionWei) {
+        throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+      }
+      const sourceKey = signer.address.toLowerCase();
+      const reservedFee = reservedFeeBySource.get(sourceKey) || 0n;
+      if (nativeBalance < reservedFee + maximumNetworkFee) {
+        throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以覆盖本次归集的预估网络费");
+      }
+      reservedFeeBySource.set(sourceKey, reservedFee + maximumNetworkFee);
+      estimatedNetworkFee += maximumNetworkFee;
+      executableTransactions += 1;
+      const message = operation.kind === "erc1155-batch"
+        ? `已完成批量交易模拟与网络费预检（${operation.entries.length} 个 Token ID）`
+        : "已完成交易模拟与网络费预检";
+      updateOperationPlanItems(preflightPlan, operation, "ready", message);
+      emitOperationProgress(onProgress, operation, "ready", plan.length, message);
+    } catch (error) {
+      const detail = normalizeEvmCollectionError(error, "网络费预检失败", "fee-check-failed");
+      const message = `网络费预检失败：${detail.message}`;
+      updateOperationPlanItems(preflightPlan, operation, "failed", message);
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+    }
+  }
+
+  return { estimatedNetworkFee, executableTransactions, plan: preflightPlan };
 }
 
 export async function executeEvmCollectionPlan({
@@ -879,76 +1222,79 @@ export async function executeEvmCollectionPlan({
   publicClient: EvmCollectionPublicClient;
   targetAddress: string;
 }): Promise<EvmCollectionResult[]> {
-  if (!isAddress(targetAddress)) {
-    throw new EvmCollectionCoreError("invalid-input", "目标归集地址格式不正确");
-  }
-  const target = getAddress(targetAddress);
-  if (target === zeroAddress) {
-    throw new EvmCollectionCoreError("invalid-input", "目标归集地址不能是零地址");
-  }
-  if (maxFeePerTransactionWei <= 0n) {
-    throw new EvmCollectionCoreError("invalid-input", "单笔最大网络费必须大于 0");
-  }
-  const results: EvmCollectionResult[] = [];
+  const target = normalizeCollectionExecutionTarget(targetAddress, maxFeePerTransactionWei);
+  const results: Array<EvmCollectionResult | undefined> = Array.from({ length: plan.length });
   const uncertainSources = new Set<string>();
 
-  for (let index = 0; index < plan.length; index += 1) {
-    const item = plan[index];
-    if (item.status !== "ready") {
-      const status = item.status === "skipped" ? "skipped" : "failed";
-      emitProgress(onProgress, item, status, index, plan.length, item.message);
-      results.push(resultFromPlanItem(item, status, item.message));
+  for (const operation of buildCollectionExecutionOperations(plan)) {
+    const primary = getOperationPrimaryItem(operation);
+    if (primary.status !== "ready") {
+      const status = primary.status === "skipped" ? "skipped" : "failed";
+      emitOperationProgress(onProgress, operation, status, plan.length, primary.message);
+      storeOperationResults(results, operation, status, primary.message);
       continue;
     }
-    if (!item.account || !item.address || item.amount <= 0n) {
-      const message = "归集计划缺少可执行的账户或数量";
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
+
+    let signer: EvmCollectionPlanItem;
+    try {
+      signer = getOperationSigner(operation);
+    } catch (error) {
+      const detail = normalizeEvmCollectionError(error, "归集计划无效", "invalid-input");
+      const message = `归集失败：${detail.message}`;
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      storeOperationResults(results, operation, "failed", message);
       continue;
     }
-    const sourceKey = item.address.toLowerCase();
+    if (!signer.account || !signer.address) continue;
+    const sourceKey = signer.address.toLowerCase();
     if (uncertainSources.has(sourceKey)) {
       const message = "同一来源钱包此前存在未确认交易，已停止其后续归集项";
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      storeOperationResults(results, operation, "failed", message);
       continue;
     }
-    if (getAddress(item.account.address) !== getAddress(item.address)) {
-      const message = "签名账户与来源地址不匹配";
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
-      continue;
-    }
-    if (item.address.toLowerCase() === target.toLowerCase()) {
+    if (signer.address.toLowerCase() === target.toLowerCase()) {
       const message = "来源地址与目标地址相同，已跳过";
-      emitProgress(onProgress, item, "skipped", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "skipped", message));
+      emitOperationProgress(onProgress, operation, "skipped", plan.length, message);
+      storeOperationResults(results, operation, "skipped", message);
       continue;
     }
 
     let simulation: { request: unknown };
     try {
-      emitProgress(onProgress, item, "simulating", index, plan.length, "正在模拟归集交易");
-      simulation = await simulateCollectionTransfer(publicClient, item, target);
+      emitOperationProgress(
+        onProgress,
+        operation,
+        "simulating",
+        plan.length,
+        `正在模拟${getOperationDescription(operation)}`
+      );
+      simulation = await simulateCollectionOperation(publicClient, operation, target);
     } catch (error) {
       const detail = normalizeEvmCollectionError(error, "交易模拟失败", "simulation-failed");
       const message = `模拟失败：${detail.message}`;
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      storeOperationResults(results, operation, "failed", message);
       continue;
     }
 
     let preparedRequest: unknown;
     try {
-      emitProgress(onProgress, item, "estimating", index, plan.length, "正在估算并限制网络费");
+      emitOperationProgress(
+        onProgress,
+        operation,
+        "estimating",
+        plan.length,
+        `正在估算并限制${getOperationDescription(operation)}的网络费`
+      );
       const [estimatedGas, gasPrice, nativeBalance] = await Promise.all([
         publicClient.estimateGas({
-          account: item.account,
-          data: encodeCollectionTransferData(item, target),
-          to: item.asset.contractAddress
-        }),
-        publicClient.getGasPrice(),
-        publicClient.getBalance({ address: item.address })
+          account: signer.account,
+          data: encodeCollectionOperationData(operation, target),
+          to: signer.asset.contractAddress
+        }).then((value) => assertBigIntResult(value, "Gas 估算")),
+        publicClient.getGasPrice().then((value) => assertBigIntResult(value, "Gas Price")),
+        publicClient.getBalance({ address: signer.address }).then((value) => assertBigIntResult(value, "原生币余额"))
       ]);
       const gasLimit = (estimatedGas * 120n + 99n) / 100n;
       const maximumNetworkFee = gasLimit * gasPrice;
@@ -966,44 +1312,54 @@ export async function executeEvmCollectionPlan({
     } catch (error) {
       const detail = normalizeEvmCollectionError(error, "网络费检查失败", "fee-check-failed");
       const message = `网络费检查失败：${detail.message}`;
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      storeOperationResults(results, operation, "failed", message);
       continue;
     }
 
     try {
-      emitProgress(onProgress, item, "submitting", index, plan.length, "模拟通过，正在提交交易");
-      const walletClient = await getWalletClient(item.account, item);
+      emitOperationProgress(
+        onProgress,
+        operation,
+        "submitting",
+        plan.length,
+        `模拟通过，正在提交${getOperationDescription(operation)}`
+      );
+      const walletClient = await getWalletClient(signer.account, signer);
       // viem's request type is ABI-generic. The request is produced immediately
       // above by simulateContract and is deliberately kept opaque across this boundary.
       const hash = await walletClient.writeContract(preparedRequest as never);
-      emitProgress(onProgress, item, "confirming", index, plan.length, "交易已提交，正在等待链上确认", hash);
+      emitOperationProgress(onProgress, operation, "confirming", plan.length, "交易已提交，正在等待链上确认", hash);
       try {
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== "success") {
           const message = "交易已上链，但执行状态为失败";
-          emitProgress(onProgress, item, "failed", index, plan.length, message, hash);
-          results.push(resultFromPlanItem(item, "failed", message, hash));
+          emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
+          storeOperationResults(results, operation, "failed", message, hash);
           continue;
         }
-        const message = "归集交易已确认";
-        emitProgress(onProgress, item, "success", index, plan.length, message, hash);
-        results.push(resultFromPlanItem(item, "success", message, hash));
+        const message = operation.kind === "erc1155-batch"
+          ? `ERC1155 批量归集交易已确认（${operation.entries.length} 个 Token ID）`
+          : "归集交易已确认";
+        emitOperationProgress(onProgress, operation, "success", plan.length, message, hash);
+        storeOperationResults(results, operation, "success", message, hash);
       } catch (error) {
         uncertainSources.add(sourceKey);
         const detail = normalizeEvmCollectionError(error, "等待链上确认失败", "confirmation-failed");
         const message = `交易已提交但确认失败：${detail.message}。请先查询链上状态，勿盲目重发`;
-        emitProgress(onProgress, item, "failed", index, plan.length, message, hash);
-        results.push(resultFromPlanItem(item, "failed", message, hash));
+        emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
+        storeOperationResults(results, operation, "failed", message, hash);
       }
     } catch (error) {
       uncertainSources.add(sourceKey);
       const detail = normalizeEvmCollectionError(error, "交易提交失败", "submission-failed");
       const message = `提交失败或状态不确定：${detail.message}。已停止该来源后续交易；重试前请检查链上记录`;
-      emitProgress(onProgress, item, "failed", index, plan.length, message);
-      results.push(resultFromPlanItem(item, "failed", message));
+      emitOperationProgress(onProgress, operation, "failed", plan.length, message);
+      storeOperationResults(results, operation, "failed", message);
     }
   }
 
-  return results;
+  return plan.map((item, index) => (
+    results[index] || resultFromPlanItem(item, "failed", "归集结果未能生成，请重新扫描后再试")
+  ));
 }

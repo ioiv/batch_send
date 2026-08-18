@@ -138,6 +138,20 @@ describe("parseNftAssetFile", () => {
 });
 
 describe("mergeNftAssetInput", () => {
+  it("never clears a full 1,000-item list when an automatic discovery finds another ID", () => {
+    const existing = Array.from(
+      { length: 1_000 },
+      (_value, index) => nftContract + "," + (index + 1)
+    ).join("\n");
+
+    const result = mergeNftAssetInput(existing, nftContract, "1001");
+
+    expect(result.added).toBe(0);
+    expect(result.serialized).toBe(existing);
+    expect(result.lines).toHaveLength(1_000);
+    expect(result.issues).toMatchObject([{ code: "item-limit" }]);
+  });
+
   it("serializes one contract plus a range into existing contract,tokenId rows", () => {
     const existing = `${anotherContract},9`;
     const result = mergeNftAssetInput(existing, nftContract, "1-3,2");

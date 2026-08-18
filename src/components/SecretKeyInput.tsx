@@ -33,7 +33,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   mode: "evm" | "solana";
   onDirty?: () => void;
   onImportingChange?: (importing: boolean) => void;
-}>(function SecretKeyInput({ disabled = false, mode, onDirty, onImportingChange }, ref) {
+  onLineCountChange?: (lineCount: number) => void;
+}>(function SecretKeyInput({
+  disabled = false,
+  mode,
+  onDirty,
+  onImportingChange,
+  onLineCountChange
+}, ref) {
   const disabledRef = useRef(disabled);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importingRef = useRef(false);
@@ -45,6 +52,11 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   >({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
   const [lineCount, setLineCount] = useState(0);
   disabledRef.current = disabled;
+
+  const updateLineCount = useCallback((nextLineCount: number) => {
+    setLineCount(nextLineCount);
+    onLineCountChange?.(nextLineCount);
+  }, [onLineCountChange]);
 
   const setImportActive = useCallback((active: boolean) => {
     if (importingRef.current === active) return;
@@ -64,7 +76,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       if (fileInputRef.current) fileInputRef.current.value = "";
       if (textareaRef.current) textareaRef.current.value = "";
       setFileStatus({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
-      setLineCount(0);
+      updateLineCount(0);
     };
     const clearRestoredValue = (event: PageTransitionEvent) => {
       if (event.persisted) clearDomValue();
@@ -78,7 +90,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       if (fileInputRef.current) fileInputRef.current.value = "";
       if (textareaRef.current) textareaRef.current.value = "";
     };
-  }, [cancelPendingImport]);
+  }, [cancelPendingImport, updateLineCount]);
 
   useImperativeHandle(ref, () => ({
     clear() {
@@ -86,7 +98,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       if (fileInputRef.current) fileInputRef.current.value = "";
       if (textareaRef.current) textareaRef.current.value = "";
       setFileStatus({ kind: "idle", message: "支持 TXT、CSV、JSON，最大 512 KB" });
-      setLineCount(0);
+      updateLineCount(0);
     },
     focus() {
       textareaRef.current?.focus();
@@ -94,7 +106,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     read() {
       return textareaRef.current?.value || "";
     }
-  }), [cancelPendingImport]);
+  }), [cancelPendingImport, updateLineCount]);
 
   useEffect(() => {
     if (!disabled) return;
@@ -122,7 +134,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       if (requestId !== importRequestRef.current || disabledRef.current || !textareaRef.current) return;
 
       textareaRef.current.value = imported.value;
-      setLineCount(imported.lineCount);
+      updateLineCount(imported.lineCount);
       setFileStatus({
         fileName: imported.fileName,
         kind: "success",
@@ -192,7 +204,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         onInput={(event) => {
           cancelPendingImport();
           const value = event.currentTarget.value;
-          setLineCount(countSecretInputLines(value));
+          updateLineCount(countSecretInputLines(value));
           setFileStatus({ kind: "idle", message: "已手动编辑 · 文件来源状态已清除" });
           onDirty?.();
         }}

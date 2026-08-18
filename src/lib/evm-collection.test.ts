@@ -15,6 +15,7 @@ import {
   parseEvmCollectionAssets,
   parseEvmPrivateKeyInput,
   planEvmCollection,
+  preflightEvmCollectionPlan,
   readErc20Metadata,
   type EvmCollectionAccount,
   type EvmCollectionPlanItem,
@@ -425,6 +426,70 @@ describe("executeEvmCollectionPlan", () => {
     ] satisfies EvmCollectionPlanItem[];
   }
 
+  describe("preflightEvmCollectionPlan", () => {
+    it("marks a simulated transfer as ready without submitting it", async () => {
+      const account = parseAccounts([privateKeyOne])[0];
+      const [item] = await readyPlansForAllStandards(account);
+      const { client: publicClient, estimateGas, getBalance, simulateContract } = makePublicClient();
+
+      const preflight = await preflightEvmCollectionPlan({
+        maxFeePerTransactionWei,
+        plan: [item],
+        publicClient,
+        targetAddress
+      });
+
+      expect(preflight.plan).toMatchObject([{ status: "ready" }]);
+      expect(preflight.plan[0].message).toContain("已完成交易模拟与网络费预检");
+      expect(preflight.executableTransactions).toBe(1);
+      expect(preflight.estimatedNetworkFee).toBe(1_200n);
+      expect(simulateContract).toHaveBeenCalledOnce();
+      expect(estimateGas).toHaveBeenCalledOnce();
+      expect(getBalance).toHaveBeenCalledOnce();
+    });
+
+    it("removes a failed simulation from the final confirmation plan", async () => {
+      const account = parseAccounts([privateKeyOne])[0];
+      const [item] = await readyPlansForAllStandards(account);
+      const { client: publicClient, estimateGas, getBalance } = makePublicClient({
+        simulateContract: async () => {
+          throw new Error("receiver rejected NFT");
+        }
+      });
+
+      const preflight = await preflightEvmCollectionPlan({
+        maxFeePerTransactionWei,
+        plan: [item],
+        publicClient,
+        targetAddress
+      });
+
+      expect(preflight.plan).toMatchObject([{ status: "failed" }]);
+      expect(preflight.plan[0].message).toContain("预检模拟失败");
+      expect(preflight.executableTransactions).toBe(0);
+      expect(estimateGas).not.toHaveBeenCalled();
+      expect(getBalance).not.toHaveBeenCalled();
+    });
+
+    it("reserves estimated fees per source so later items fail early when native gas is insufficient", async () => {
+      const account = parseAccounts([privateKeyOne])[0];
+      const [first, second] = await readyPlansForAllStandards(account);
+      const { client: publicClient, getBalance } = makePublicClient({ getBalance: async () => 2_000n });
+
+      const preflight = await preflightEvmCollectionPlan({
+        maxFeePerTransactionWei,
+        plan: [first, second],
+        publicClient,
+        targetAddress
+      });
+
+      expect(preflight.plan.map((item) => item.status)).toEqual(["ready", "failed"]);
+      expect(preflight.plan[1].message).toContain("原生币余额不足");
+      expect(preflight.executableTransactions).toBe(1);
+      expect(getBalance).toHaveBeenCalledOnce();
+    });
+  });
+
   it("simulates each standard before writing, then waits for a successful receipt", async () => {
     const account = parseAccounts([privateKeyOne])[0];
     const plan = await readyPlansForAllStandards(account);
@@ -482,6 +547,39 @@ describe("executeEvmCollectionPlan", () => {
       "confirming"
     ]);
     expect(writeContract.mock.calls[0][0]).toMatchObject({ gas: 120n, gasPrice: 10n });
+  });
+
+  it("batches ERC1155 Token IDs from the same wallet and contract into one transaction", async () => {
+    const account = parseAccounts([privateKeyOne])[0];
+    const plans = await readyPlansForAllStandards(account);
+    const first = plans[2];
+    const secondAsset = getSingleAsset(`${nftAddress},43`, "erc1155");
+    const second: EvmCollectionPlanItem = {
+      ...first,
+      amount: 5n,
+      asset: secondAsset,
+      id: "erc1155-plan-43"
+    };
+    const { client: publicClient, simulateContract, waitForTransactionReceipt } = makePublicClient();
+    const { client: walletClient, writeContract } = makeWalletClient();
+
+    const results = await executeEvmCollectionPlan({
+      getWalletClient: () => walletClient,
+      maxFeePerTransactionWei,
+      plan: [first, second],
+      publicClient,
+      targetAddress
+    });
+
+    expect(results.map((result) => result.status)).toEqual(["success", "success"]);
+    expect(results.every((result) => result.hash === transactionHash)).toBe(true);
+    expect(simulateContract).toHaveBeenCalledTimes(1);
+    expect(simulateContract.mock.calls[0][0]).toMatchObject({
+      args: [account.address, getAddress(targetAddress), [42n, 43n], [12n, 5n], "0x"],
+      functionName: "safeBatchTransferFrom"
+    });
+    expect(writeContract).toHaveBeenCalledOnce();
+    expect(waitForTransactionReceipt).toHaveBeenCalledOnce();
   });
 
   it("continues signing and confirmation when a UI progress callback throws", async () => {

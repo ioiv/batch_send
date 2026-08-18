@@ -3,7 +3,6 @@ import { SiteFooter } from "../components/SiteFooter";
 import { SiteHeader } from "../components/SiteHeader";
 import {
   featuredTools,
-  getToolsByCategory,
   supportedChains,
   toolCategories,
   tools,
@@ -70,9 +69,9 @@ function ToolIcon({ name }: { name: ToolIconName }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M5 6h14M5 12h14M5 18h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="9" cy="6" r="1.8" fill="white" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="15" cy="12" r="1.8" fill="white" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="11" cy="18" r="1.8" fill="white" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="9" cy="6" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="15" cy="12" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="11" cy="18" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
     </svg>
   );
 }
@@ -83,7 +82,7 @@ function ToolCard({ tool, prominent = false }: { tool: ToolDefinition; prominent
     : tool.chains.includes("solana") ? "EVM + Solana" : "多条 EVM 网络";
 
   return (
-    <a className={`site-tool-card${prominent ? " site-tool-card--prominent" : ""}`} href={tool.href}>
+    <a className={`site-tool-card${prominent ? " site-tool-card--prominent" : ""}`} data-category={tool.category} href={tool.href}>
       <div className="site-tool-card__topline">
         <span className="site-tool-card__icon"><ToolIcon name={tool.icon} /></span>
         {tool.badge ? <span className="site-tool-card__badge">{tool.badge}</span> : null}
@@ -157,7 +156,7 @@ export function HomePage() {
 
         <nav className="site-category-strip site-container" aria-label="按任务浏览工具">
           {toolCategories.map((category, index) => (
-            <a href={category.href} key={category.id}>
+            <a data-category={category.id} href={category.href} key={category.id}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <strong>{category.label}</strong>
               <small>{category.description}</small>
@@ -178,51 +177,23 @@ export function HomePage() {
             <div className="site-tool-grid site-tool-grid--featured">
               {featuredTools.map((tool, index) => <ToolCard key={tool.id} tool={tool} prominent={index === 0} />)}
             </div>
+            <a className="site-mobile-directory-link" href="#tasks">
+              查看全部 {tools.length} 项工具
+              <ArrowIcon />
+            </a>
           </div>
         </section>
 
-        <section className="site-section site-section--tasks" aria-labelledby="tasks-title">
+        <section className="site-section site-section--tasks" id="tasks" aria-labelledby="tasks-title">
           <div className="site-container">
             <div className="site-section__heading">
               <div>
-                <span className="site-kicker">从任务出发</span>
-                <h2 id="tasks-title">需要完成什么？</h2>
+                <span className="site-kicker">统一目录</span>
+                <h2 id="tasks-title">全部工具</h2>
               </div>
-              <p>每类工具共享一套检查逻辑，后续新增功能也会归入这里。</p>
+              <p>先按网络缩小范围，再从任务分组进入对应流程。</p>
             </div>
-            <div className="site-task-list">
-              {toolCategories.map((category, index) => (
-                <article className="site-task-row" id={category.id} key={category.id}>
-                  <div className="site-task-row__heading">
-                    <span>{String(index + 1).padStart(2, "0")}</span>
-                    <div><h3>{category.label}</h3><p>{category.description}</p></div>
-                  </div>
-                  <div className="site-task-row__tools">
-                    {getToolsByCategory(category.id).map((tool) => (
-                      <a href={tool.href} key={tool.id}>
-                        <span className="site-task-row__icon"><ToolIcon name={tool.icon} /></span>
-                        <strong>{tool.shortTitle}</strong>
-                        <small>{tool.chains.length === 1 ? supportedChains.find((chain) => chain.id === tool.chains[0])?.shortLabel : "EVM"}</small>
-                        <b aria-hidden="true">↗</b>
-                      </a>
-                    ))}
-                  </div>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="site-section site-section--chains" aria-labelledby="chains-title">
-          <div className="site-container">
-            <div className="site-section__heading">
-              <div>
-                <span className="site-kicker">网络筛选</span>
-                <h2 id="chains-title">按链查找</h2>
-              </div>
-              <p>选择目标网络，只查看当前可用的工具。</p>
-            </div>
-            <div className="site-chain-tabs" role="group" aria-label="筛选区块链网络">
+            <div className="site-chain-tabs" role="group" aria-label="按区块链网络筛选全部工具">
               <button
                 type="button"
                 className={selectedChain === "all" ? "is-active" : undefined}
@@ -246,14 +217,34 @@ export function HomePage() {
                 </button>
               ))}
             </div>
-            <div className="site-tool-grid site-tool-grid--filtered" aria-live="polite">
-              {filteredTools.length > 0 ? filteredTools.map((tool) => <ToolCard key={tool.id} tool={tool} />) : (
-                <div className="site-empty-state">
-                  <strong>该网络暂时没有可用工具</strong>
-                  <p>选择“全部网络”查看当前已上线的功能。</p>
-                  <button type="button" onClick={() => setSelectedChain("all")}>查看全部工具</button>
-                </div>
-              )}
+            <div className="site-task-list" aria-live="polite">
+              {toolCategories.map((category, index) => {
+                const categoryTools = filteredTools.filter((tool) => tool.category === category.id);
+                return (
+                  <article className="site-task-row" data-category={category.id} id={category.id} key={category.id}>
+                    <div className="site-task-row__heading">
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <div><h3>{category.label}</h3><p>{category.description}</p></div>
+                    </div>
+                    {categoryTools.length ? (
+                      <div className="site-task-row__tools">
+                        {categoryTools.map((tool) => (
+                          <a data-category={tool.category} href={tool.href} key={tool.id}>
+                            <span className="site-task-row__icon"><ToolIcon name={tool.icon} /></span>
+                            <strong>{tool.shortTitle}</strong>
+                            <small>{tool.chains.length === 1
+                              ? supportedChains.find((chain) => chain.id === tool.chains[0])?.shortLabel
+                              : tool.chains.includes("solana") ? "多链" : "EVM"}</small>
+                            <b aria-hidden="true">↗</b>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="site-task-row__empty">当前网络暂无此类工具</p>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           </div>
         </section>

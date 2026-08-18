@@ -4,7 +4,7 @@ import { DistributionReview } from "../components/DistributionReview";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { Metric } from "../components/Metric";
 import { SearchableSelect } from "../components/SearchableSelect";
-import { ToolPageLayout, type ToolPageStep } from "../components/ToolPageLayout";
+import { ToolPageLayout, type ToolPageStep, type ToolPageStepState } from "../components/ToolPageLayout";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
@@ -29,12 +29,14 @@ import {
   isValidEvmAddress,
   isEvmNativeCurrencyEnabled,
   parseEvmDistribution,
+  preflightEvmDistribution,
   rememberPreferredEvmDistributionNetwork,
   removeVerifiedEvmDistributionNetwork,
   sendEvmNativeDistribution,
   sendEvmTokenDistribution,
   type EvmAssetMode,
   type EvmDistributionNetworkId,
+  type EvmDistributionPreflightResult,
   type EvmTokenDetails,
   type EvmTokenDistributionStep
 } from "../lib/evm";
@@ -59,6 +61,12 @@ type BalanceLookupState = {
   valueWei: bigint | null;
 };
 
+type EvmDistributionPreflightState = {
+  message: string;
+  result: EvmDistributionPreflightResult | null;
+  status: "idle" | "loading" | "success" | "error";
+};
+
 const initialTokenLookupState: TokenLookupState = {
   details: null,
   message: "",
@@ -70,6 +78,12 @@ const initialBalanceLookupState: BalanceLookupState = {
   message: "",
   status: "idle",
   valueWei: null
+};
+
+const initialDistributionPreflightState: EvmDistributionPreflightState = {
+  message: "",
+  result: null,
+  status: "idle"
 };
 
 const initialGeneratedList: GeneratedDistributionList = {
@@ -101,13 +115,18 @@ export function EvmBatchDistributorPage() {
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(networkState.selected.id);
   const [rpcEndpoint, setRpcEndpoint] = useState(networkState.selected.rpcEndpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [preflightState, setPreflightState] = useState<EvmDistributionPreflightState>(initialDistributionPreflightState);
   const [tokenAddress, setTokenAddress] = useState("");
   const [tokenLookup, setTokenLookup] = useState<TokenLookupState>(initialTokenLookupState);
+  const [tokenLookupRefreshNonce, setTokenLookupRefreshNonce] = useState(0);
   const [nativeBalanceLookup, setNativeBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [listImporting, setListImporting] = useState(false);
+  const [generatorRevision, setGeneratorRevision] = useState(0);
+  const confirmationRef = useRef<HTMLDivElement>(null);
   const listImportingRef = useRef(false);
+  const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
   const wallet = useEvmWallet();
 
@@ -117,7 +136,9 @@ export function EvmBatchDistributorPage() {
   }, []);
 
   const resetConfirmation = useCallback(() => {
+    preflightEpochRef.current += 1;
     setConfirmVisible(false);
+    setPreflightState(initialDistributionPreflightState);
     setSendState(initialSendState);
   }, []);
 
@@ -161,10 +182,12 @@ export function EvmBatchDistributorPage() {
     status: row.status
   })), [parsed.rows]);
   const sending = sendState.status === "preparing" || sendState.status === "awaiting-wallet" || sendState.status === "confirming";
+  const preflighting = preflightState.status === "loading";
+  const preflightFailed = preflightState.status === "error";
   const sendComplete = sendState.status === "success";
   const sendFailed = sendState.status === "error";
   const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
-  const controlsLocked = sending || unresolvedSubmission;
+  const controlsLocked = preflighting || sending || sendComplete || sendFailed;
   const pageControlsLocked = controlsLocked || listImporting;
   const assetReady = assetMode === "native"
     ? nativeCurrencyEnabled
@@ -176,6 +199,7 @@ export function EvmBatchDistributorPage() {
     && generatedListReady
     && parsed.validRows.length > 0
     && parsed.invalid === 0
+    && !preflighting
     && !sending
     && !sendComplete
     && !sendFailed
@@ -236,7 +260,14 @@ export function EvmBatchDistributorPage() {
     ? tokenLookup.message || "未识别出 ERC20 Token，请确认合约地址和网络是否匹配"
     : tokenBalanceLookup.message;
   const tokenBalanceClassName = `asset-mode-balance${tokenBalanceStatus ? ` ${tokenBalanceStatus}` : ""}`;
-  const showFinalSummary = confirmVisible && sendState.status === "idle";
+  const showFinalSummary = confirmVisible && sendState.status === "idle" && preflightState.status === "success" && Boolean(preflightState.result);
+  const confirmationStatus = sendState.status !== "idle"
+    ? sendState.status
+    : preflightFailed
+      ? "error"
+      : preflighting
+        ? "preparing"
+        : "idle";
   const sendButtonLabel = sending
     ? sendState.status === "preparing"
       ? "准备中"
@@ -257,6 +288,19 @@ export function EvmBatchDistributorPage() {
       ? "正在读取 Token 精度，完成后即可按该资产生成金额。"
       : "请先填写并成功识别 Token 合约地址，再批量设置金额。"
     : "";
+  const readinessMessage = !wallet.connected || !wallet.getProvider()
+    ? "请先连接发送钱包"
+    : listImporting
+      ? "正在导入清单，请稍候"
+      : !assetReady
+        ? assetMode === "token" ? "请先填写并成功识别 Token 合约地址" : "当前链尚未开放原生币分发"
+        : generatedList.invalid > 0 || parsed.invalid > 0
+          ? `请先修正 ${invalidCount} 处清单错误`
+          : generatedList.duplicates > 0 || parsed.duplicates > 0
+            ? `请先处理 ${duplicateCount} 个重复地址`
+            : parsed.validRows.length === 0
+              ? "请先添加至少 1 个有效收款地址"
+              : "下一步会执行只读余额、授权与网络费预检，不会请求钱包签名";
 
   const removeSelectedVerifiedNetwork = () => {
     if (!removeVerifiedEvmDistributionNetwork(selectedNetwork.chainId)) return;
@@ -276,11 +320,17 @@ export function EvmBatchDistributorPage() {
   };
 
   useEffect(() => {
-    if (sending || unresolvedSubmission) return;
+    if (sending || sendComplete || sendFailed) return;
     resetConfirmation();
     // Keep an in-flight transaction locked even if the wallet changes accounts.
     // eslint/react-hooks deliberately omits `sending`: completion must not clear its result.
-  }, [resetConfirmation, unresolvedSubmission, wallet.address, wallet.connected]);
+  }, [resetConfirmation, sendComplete, sendFailed, sending, wallet.address, wallet.connected]);
+
+  useEffect(() => {
+    if (!confirmVisible) return;
+    const frame = window.requestAnimationFrame(() => confirmationRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [confirmVisible]);
 
   useEffect(() => {
     if (assetMode !== "token") {
@@ -336,7 +386,7 @@ export function EvmBatchDistributorPage() {
     return () => {
       active = false;
     };
-  }, [assetMode, effectiveRpcEndpoint, selectedNetwork, tokenAddressInput, tokenRequestKey]);
+  }, [assetMode, effectiveRpcEndpoint, selectedNetwork, tokenAddressInput, tokenLookupRefreshNonce, tokenRequestKey]);
 
   useEffect(() => {
     if (!nativeCurrencyEnabled) {
@@ -493,9 +543,51 @@ export function EvmBatchDistributorPage() {
     });
   };
 
+  const prepareDistribution = async () => {
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address) return;
+    sendOperationRef.current = true;
+    const preflightEpoch = ++preflightEpochRef.current;
+    setConfirmVisible(true);
+    setPreflightState({
+      message: `正在读取 ${assetSymbol} 余额、授权额度并估算网络费`,
+      result: null,
+      status: "loading"
+    });
+
+    try {
+      const result = await preflightEvmDistribution({
+        assetMode,
+        from: wallet.address,
+        network: selectedNetwork,
+        rows: parsed.validRows,
+        rpcEndpoint: effectiveRpcEndpoint,
+        token: tokenDetails
+      });
+      if (preflightEpochRef.current !== preflightEpoch) return;
+      setPreflightState({
+        message: "只读预检已通过；下方按钮才会请求钱包确认",
+        result,
+        status: "success"
+      });
+      setNativeBalanceLookup({ message: "", status: "success", valueWei: result.nativeBalanceWei });
+      if (assetMode === "token") {
+        setTokenBalanceLookup({ message: "", status: "success", valueWei: result.assetBalanceWei });
+      }
+    } catch (error) {
+      if (preflightEpochRef.current !== preflightEpoch) return;
+      setPreflightState({
+        message: getEvmTransactionErrorMessage(error),
+        result: null,
+        status: "error"
+      });
+    } finally {
+      sendOperationRef.current = false;
+    }
+  };
+
   const sendDistribution = async () => {
     const walletProvider = wallet.getProvider();
-    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !confirmVisible || sendState.status !== "idle") return;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !showFinalSummary || sendState.status !== "idle") return;
     sendOperationRef.current = true;
     let observedSignatures: string[] = [];
     let observedProgress = createSendProgress(1);
@@ -612,14 +704,27 @@ export function EvmBatchDistributorPage() {
   const handlePrimaryAction = () => {
     if (sendOperationRef.current || listImportingRef.current || !readyToSend) return;
     if (!confirmVisible) {
-      setConfirmVisible(true);
-      setSendState(initialSendState);
+      void prepareDistribution();
       return;
     }
     void sendDistribution();
   };
 
-  const activeStep = !confirmVisible ? 0 : showFinalSummary ? 1 : 2;
+  const startNewDistribution = () => {
+    setGeneratorRevision((value) => value + 1);
+    setGeneratedInput("");
+    setGeneratedList(initialGeneratedList);
+    resetConfirmation();
+  };
+
+  const activeStep = !confirmVisible ? 0 : sendState.status === "idle" ? 1 : 2;
+  const stepStates: ToolPageStepState[] | undefined = sendComplete
+    ? ["complete", "complete", "complete"]
+    : sendFailed
+      ? ["complete", "complete", "error"]
+      : preflightFailed
+        ? ["complete", "error", "upcoming"]
+        : undefined;
 
   return (
     <ToolPageLayout
@@ -631,6 +736,7 @@ export function EvmBatchDistributorPage() {
       eyebrow="One to many · EVM"
       mainClassName="page-distributor"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">{assetSymbol}</span></>}
+      stepStates={stepStates}
       steps={evmDistributionSteps}
       title="EVM 批量分发"
     >
@@ -764,14 +870,42 @@ export function EvmBatchDistributorPage() {
                   </div>
                 ) : null}
               </div>
+              {assetMode === "token" && tokenLookup.status === "error" ? (
+                <div className="notice compact-notice" role="alert">
+                  <strong>未能识别 Token</strong>
+                  <span>{tokenLookup.message}</span>
+                  <div className="action-group">
+                    <button className="button ghost" type="button" onClick={() => setTokenLookupRefreshNonce((value) => value + 1)}>重新识别</button>
+                  </div>
+                </div>
+              ) : null}
+              {assetMode === "native" && nativeBalanceLookup.status === "error" ? (
+                <div className="notice compact-notice" role="alert">
+                  <strong>未能读取钱包余额</strong>
+                  <span>{nativeBalanceLookup.message}</span>
+                  <div className="action-group">
+                    <button className="button ghost" type="button" onClick={() => setBalanceRefreshNonce((value) => value + 1)}>重试读取</button>
+                  </div>
+                </div>
+              ) : null}
+              {assetMode === "token" && tokenDetails && tokenBalanceLookup.status === "error" ? (
+                <div className="notice compact-notice" role="alert">
+                  <strong>未能读取 Token 余额</strong>
+                  <span>{tokenBalanceLookup.message}</span>
+                  <div className="action-group">
+                    <button className="button ghost" type="button" onClick={() => setBalanceRefreshNonce((value) => value + 1)}>重试读取</button>
+                  </div>
+                </div>
+              ) : null}
 
               <DistributionListGenerator
+                key={`evm-distribution-${generatorRevision}`}
                 addressKind="evm"
                 decimals={assetDecimals}
                 disabled={controlsLocked}
                 generationDisabled={Boolean(generatorUnavailableMessage)}
-                initialAddresses={initialDistribution.addresses}
-                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                initialAddresses={generatorRevision === 0 ? initialDistribution.addresses : ""}
+                initialFixedAmount={generatorRevision === 0 && initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
                 onDirty={resetConfirmation}
                 onImportingChange={handleListImportingChange}
                 onResultChange={handleGeneratedListChange}
@@ -779,20 +913,12 @@ export function EvmBatchDistributorPage() {
                 unavailableMessage={generatorUnavailableMessage}
                 validateAddress={isValidEvmAddress}
               />
-              <div className="actions">
+              {!confirmVisible ? <div className="actions">
+                <p className="hint" role="status">{readinessMessage}</p>
                 <div className="action-group">
                   <button className="button primary" type="button" disabled={!readyToSend} onClick={handlePrimaryAction}>{sendButtonLabel}</button>
-                  {showFinalSummary ? (
-                    <button className="button ghost" type="button" onClick={resetConfirmation}>返回修改</button>
-                  ) : null}
-                  {sendFailed ? (
-                    <button className="button ghost" type="button" onClick={resetConfirmation}>已核对链上记录，重新准备</button>
-                  ) : null}
-                  {sendComplete ? (
-                    <button className="button ghost" type="button" onClick={resetConfirmation}>开始新的分发</button>
-                  ) : null}
                 </div>
-              </div>
+              </div> : null}
             </div>
 
             <div className="stats" aria-label="分发统计">
@@ -815,8 +941,24 @@ export function EvmBatchDistributorPage() {
                 formatAmount={(row) => `${formatWei(row.lamports, assetDecimals)} ${assetSymbol}`}
               />
               {confirmVisible ? (
-                <div className={`confirm transaction-status ${sendState.status}`}>
-                  <strong>{showFinalSummary ? "最终确认摘要" : sendState.status === "success" ? "分发交易已确认" : sendState.status === "error" ? "分发交易未完成" : `准备向 ${parsed.validRows.length} 个地址分发`}</strong>
+                <div
+                  aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}
+                  className={`confirm transaction-status ${confirmationStatus}`}
+                  ref={confirmationRef}
+                  role={sendFailed || preflightFailed ? "alert" : "status"}
+                  tabIndex={-1}
+                >
+                  <strong>{showFinalSummary
+                    ? "最终确认摘要"
+                    : preflighting
+                      ? "正在进行只读预检"
+                      : preflightFailed && sendState.status === "idle"
+                        ? "预检未通过"
+                        : sendState.status === "success"
+                          ? "分发交易已确认"
+                          : sendState.status === "error"
+                            ? "分发交易未完成"
+                            : `准备向 ${parsed.validRows.length} 个地址分发`}</strong>
                   {showFinalSummary ? (
                     <div className="summary-list">
                       <div><span>网络选择</span><strong>{selectedNetwork.label}</strong></div>
@@ -824,10 +966,16 @@ export function EvmBatchDistributorPage() {
                       <div><span>RPC</span><strong>{effectiveRpcEndpoint}</strong></div>
                       <div><span>收款人数</span><strong>{parsed.validRows.length}</strong></div>
                       <div><span>总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
+                      <div><span>钱包资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
+                      <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                      <div><span>授权检查</span><strong>{preflightState.result?.needsApproval ? "需要 1 次 Token 授权" : "无需额外授权"}</strong></div>
+                      <div><span>预计钱包确认</span><strong>{preflightState.result?.totalTransactions ?? 0} 次</strong></div>
                       <div><span>前 3 个地址</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
                     </div>
                   ) : (
-                    <span>{sendState.message || `合计 ${parsed.total} ${assetSymbol}，网络 ${selectedNetwork.label}。`}</span>
+                    <span>{sendState.status === "idle"
+                      ? preflightState.message
+                      : sendState.message || `合计 ${parsed.total} ${assetSymbol}，网络 ${selectedNetwork.label}。`}</span>
                   )}
                   {!showFinalSummary && sendState.progress.total > 0 ? (
                     <div className="send-progress" aria-label="发送进度">
@@ -849,6 +997,34 @@ export function EvmBatchDistributorPage() {
                       })}
                     </div>
                   ) : null}
+                  <div className="actions confirmation-actions">
+                    <div className="action-group">
+                      {showFinalSummary ? (
+                        <>
+                          <button className="button primary" type="button" disabled={!readyToSend} onClick={handlePrimaryAction}>确认并签名</button>
+                          <button className="button ghost" type="button" onClick={resetConfirmation}>返回修改</button>
+                        </>
+                      ) : null}
+                      {preflighting ? (
+                        <button className="button primary" type="button" disabled>正在只读预检</button>
+                      ) : null}
+                      {preflightFailed && sendState.status === "idle" ? (
+                        <>
+                          <button className="button primary" type="button" onClick={() => void prepareDistribution()}>重新预检</button>
+                          <button className="button ghost" type="button" onClick={resetConfirmation}>返回修改</button>
+                        </>
+                      ) : null}
+                      {sendFailed && !unresolvedSubmission ? (
+                        <button className="button ghost" type="button" onClick={resetConfirmation}>返回修改并重新预检</button>
+                      ) : null}
+                      {sendComplete || unresolvedSubmission ? (
+                        <button className="button danger" type="button" onClick={startNewDistribution}>清空清单并开始新任务</button>
+                      ) : null}
+                    </div>
+                    {unresolvedSubmission ? (
+                      <p className="hint">已有交易提交到链上。为避免重复转账，当前清单不可直接重试；请先核对上方交易记录，再创建空白任务。</p>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
             </div>

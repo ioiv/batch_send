@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { SolanaWalletState } from "../hooks/useSolanaWallet";
 
 function WalletIcon() {
@@ -22,6 +22,13 @@ function CloseIcon() {
 export function WalletConnectionControl({ disabled = false, wallet }: { disabled?: boolean; wallet: SolanaWalletState }) {
   const [chooserOpen, setChooserOpen] = useState(false);
   const chooserTitleId = useId();
+  const chooserDialogId = `${chooserTitleId}-dialog`;
+  const chooserRef = useRef<HTMLElement>(null);
+  const connectWalletRef = useRef(wallet.connectWallet);
+  const pendingWalletIdRef = useRef<string | null>(null);
+  const triggerButtonRef = useRef<HTMLButtonElement>(null);
+  const wasChooserOpenRef = useRef(false);
+  connectWalletRef.current = wallet.connectWallet;
   const stateClass = wallet.connected ? "connected" : wallet.status === "connecting" ? "pending" : wallet.status === "error" ? "error" : "";
   const hasWalletChoices = wallet.wallets.length > 1 && !wallet.connected;
   const handleClick = () => {
@@ -30,23 +37,97 @@ export function WalletConnectionControl({ disabled = false, wallet }: { disabled
       return;
     }
     if (hasWalletChoices) {
+      pendingWalletIdRef.current = null;
       setChooserOpen(true);
       return;
     }
     void wallet.connectWallet();
   };
   const connectSelectedWallet = (walletId: string) => {
+    pendingWalletIdRef.current = walletId;
     setChooserOpen(false);
-    void wallet.connectWallet(walletId);
   };
+  const closeChooser = () => {
+    pendingWalletIdRef.current = null;
+    setChooserOpen(false);
+  };
+
+  useLayoutEffect(() => {
+    if (chooserOpen) {
+      wasChooserOpenRef.current = true;
+      const chooser = chooserRef.current;
+      const initialFocus = chooser?.querySelector<HTMLElement>(".wallet-choice.selected")
+        || chooser?.querySelector<HTMLElement>(".wallet-choice")
+        || chooser?.querySelector<HTMLElement>(".wallet-modal-close")
+        || chooser;
+      initialFocus?.focus();
+      return;
+    }
+
+    if (!wasChooserOpenRef.current) return;
+    wasChooserOpenRef.current = false;
+    triggerButtonRef.current?.focus();
+
+    const pendingWalletId = pendingWalletIdRef.current;
+    pendingWalletIdRef.current = null;
+    if (pendingWalletId) void connectWalletRef.current(pendingWalletId);
+  }, [chooserOpen]);
 
   useEffect(() => {
     if (!chooserOpen) return undefined;
+    const bodyOverflow = document.body.style.overflow;
+    const rootOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setChooserOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        pendingWalletIdRef.current = null;
+        setChooserOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+      const chooser = chooserRef.current;
+      if (!chooser) return;
+      const focusableElements = Array.from(chooser.querySelectorAll<HTMLElement>([
+        "a[href]:not([tabindex='-1'])",
+        "button:not([disabled]):not([tabindex='-1'])",
+        "input:not([disabled]):not([tabindex='-1'])",
+        "select:not([disabled]):not([tabindex='-1'])",
+        "textarea:not([disabled]):not([tabindex='-1'])",
+        "[contenteditable='true']:not([tabindex='-1'])",
+        "[tabindex]:not([tabindex='-1'])"
+      ].join(",")));
+
+      if (!focusableElements.length) {
+        event.preventDefault();
+        chooser.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+      if (!chooser.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? lastElement : firstElement).focus();
+      } else if (event.shiftKey && activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = bodyOverflow;
+      document.documentElement.style.overflow = rootOverflow;
+    };
   }, [chooserOpen]);
 
   useEffect(() => {
@@ -59,20 +140,37 @@ export function WalletConnectionControl({ disabled = false, wallet }: { disabled
         <span className="dot" aria-hidden="true" />
         <span>{wallet.statusText}</span>
       </span>
-      <button className="button primary" type="button" disabled={disabled || wallet.status === "connecting"} onClick={handleClick}>
+      <button
+        aria-controls={hasWalletChoices ? chooserDialogId : undefined}
+        aria-expanded={hasWalletChoices ? chooserOpen : undefined}
+        aria-haspopup={hasWalletChoices ? "dialog" : undefined}
+        className="button primary"
+        type="button"
+        disabled={disabled || wallet.status === "connecting"}
+        onClick={handleClick}
+        ref={triggerButtonRef}
+      >
         <WalletIcon />
         <span>{wallet.buttonLabel}</span>
       </button>
       {chooserOpen ? (
         <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setChooserOpen(false);
+          if (event.target === event.currentTarget) closeChooser();
         }}>
-          <section className="wallet-modal" role="dialog" aria-modal="true" aria-labelledby={chooserTitleId}>
+          <section
+            aria-labelledby={chooserTitleId}
+            aria-modal="true"
+            className="wallet-modal"
+            id={chooserDialogId}
+            ref={chooserRef}
+            role="dialog"
+            tabIndex={-1}
+          >
             <div className="wallet-modal-header">
               <div>
                 <h3 id={chooserTitleId}>选择 Solana 钱包</h3>
               </div>
-              <button className="wallet-modal-close" type="button" aria-label="关闭钱包选择" onClick={() => setChooserOpen(false)}>
+              <button className="wallet-modal-close" type="button" aria-label="关闭钱包选择" onClick={closeChooser}>
                 <CloseIcon />
               </button>
             </div>

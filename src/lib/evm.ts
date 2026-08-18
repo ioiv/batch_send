@@ -104,6 +104,16 @@ export type EvmTokenDistributionStep =
   | { hash: Hash; hashes: Hash[]; totalTransactions: number; type: "distribution-submitted" }
   | { hash: Hash; hashes: Hash[]; totalTransactions: number; type: "distribution-confirmed" };
 
+export type EvmDistributionPreflightResult = {
+  assetBalanceWei: bigint;
+  estimatedNetworkFeeWei: bigint;
+  feeEstimateBasis: "rpc" | "conservative";
+  nativeBalanceWei: bigint;
+  needsApproval: boolean;
+  requiredNativeWei: bigint;
+  totalTransactions: number;
+};
+
 export type EvmSendState = {
   hash: Hash | "";
   message: string;
@@ -835,6 +845,134 @@ export async function getEvmTokenBalance({
     args: [ownerAddress],
     functionName: "balanceOf"
   });
+}
+
+const fallbackTokenDistributionBaseGas = 120_000n;
+const fallbackTokenDistributionGasPerRecipient = 65_000n;
+
+function addDistributionFeeBuffer(gas: bigint, gasPrice: bigint) {
+  return gas * gasPrice * 12n / 10n;
+}
+
+export async function preflightEvmDistribution({
+  assetMode,
+  from,
+  network,
+  rows,
+  rpcEndpoint,
+  token
+}: {
+  assetMode: EvmAssetMode;
+  from: string;
+  network: EvmNetworkConfig;
+  rows: EvmDistributionRow[];
+  rpcEndpoint: string;
+  token?: EvmTokenDetails | null;
+}): Promise<EvmDistributionPreflightResult> {
+  if (assetMode === "native" && !isEvmNativeCurrencyEnabled(network)) {
+    throw new Error("原生币元数据尚未确认，已阻止原生币分发");
+  }
+  if (rows.length === 0) throw new Error("请先添加至少 1 个有效收款地址");
+
+  const publicClient = createEvmPublicClient(network, rpcEndpoint);
+  const account = getAddress(from);
+  const recipients = rows.map((row) => getAddress(row.address));
+  const values = rows.map((row) => row.valueWei);
+  const totalWei = values.reduce((total, value) => total + value, 0n);
+
+  await assertEvmRpcNetwork(publicClient, network);
+  await ensureDisperseContract(publicClient, network);
+
+  if (assetMode === "native") {
+    const balance = await publicClient.getBalance({ address: account });
+    if (balance < totalWei) {
+      throw new Error(`钱包余额不足：分发金额需要 ${formatWei(totalWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
+    }
+
+    const [gas, gasPrice] = await Promise.all([
+      publicClient.estimateContractGas({
+        abi: disperseAbi,
+        account,
+        address: network.disperseContractAddress,
+        args: [recipients, values],
+        functionName: "disperseEther",
+        value: totalWei
+      }),
+      publicClient.getGasPrice()
+    ]);
+    const estimatedNetworkFeeWei = addDistributionFeeBuffer(gas, gasPrice);
+    const requiredNativeWei = totalWei + estimatedNetworkFeeWei;
+    if (balance < requiredNativeWei) {
+      throw new Error(`钱包余额不足：分发与预估网络费共需 ${formatWei(requiredNativeWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
+    }
+
+    return {
+      assetBalanceWei: balance,
+      estimatedNetworkFeeWei,
+      feeEstimateBasis: "rpc",
+      nativeBalanceWei: balance,
+      needsApproval: false,
+      requiredNativeWei,
+      totalTransactions: 1
+    };
+  }
+
+  if (!token) throw new Error("请先填写并读取 ERC20 Token 合约地址");
+  const tokenAddress = getAddress(token.address);
+  await ensureTokenContract(publicClient, network, tokenAddress);
+  const [tokenBalance, allowance, nativeBalance, gasPrice] = await Promise.all([
+    publicClient.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      args: [account],
+      functionName: "balanceOf"
+    }),
+    publicClient.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      args: [account, network.disperseContractAddress],
+      functionName: "allowance"
+    }),
+    publicClient.getBalance({ address: account }),
+    publicClient.getGasPrice()
+  ]);
+  if (tokenBalance < totalWei) {
+    throw new Error(`Token 余额不足：本次需要 ${formatWei(totalWei, token.decimals)} ${token.symbol}，当前余额 ${formatWei(tokenBalance, token.decimals)} ${token.symbol}`);
+  }
+
+  const needsApproval = allowance < totalWei;
+  const approvalGas = needsApproval
+    ? await publicClient.estimateContractGas({
+      abi: erc20Abi,
+      account,
+      address: tokenAddress,
+      args: [network.disperseContractAddress, totalWei],
+      functionName: "approve"
+    })
+    : 0n;
+  const distributionGas = needsApproval
+    ? fallbackTokenDistributionBaseGas + BigInt(rows.length) * fallbackTokenDistributionGasPerRecipient
+    : await publicClient.estimateContractGas({
+      abi: disperseAbi,
+      account,
+      address: network.disperseContractAddress,
+      args: [tokenAddress, recipients, values],
+      functionName: "disperseToken"
+    });
+  const estimatedNetworkFeeWei = addDistributionFeeBuffer(approvalGas + distributionGas, gasPrice);
+  if (nativeBalance < estimatedNetworkFeeWei) {
+    throw new Error(`原生币余额不足以支付预估网络费：需要约 ${formatWei(estimatedNetworkFeeWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(nativeBalance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
+  }
+
+  return {
+    assetBalanceWei: tokenBalance,
+    estimatedNetworkFeeWei,
+    feeEstimateBasis: needsApproval ? "conservative" : "rpc",
+    nativeBalanceWei: nativeBalance,
+    needsApproval,
+    requiredNativeWei: estimatedNetworkFeeWei,
+    totalTransactions: needsApproval ? 2 : 1
+  };
 }
 
 export async function sendEvmNativeDistribution({

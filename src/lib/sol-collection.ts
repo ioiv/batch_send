@@ -11,6 +11,7 @@ import {
   type SendOptions,
   type TransactionSignature
 } from "@solana/web3.js";
+import { formatLamports } from "./amount";
 import { maximumCollectionSources } from "./collection-workload";
 
 globalThis.Buffer = globalThis.Buffer || Buffer;
@@ -81,6 +82,20 @@ export type SolCollectionItemResult = {
   signature?: TransactionSignature;
   status: SolCollectionItemStatus;
   transferLamports: bigint;
+};
+
+export type SolCollectionPreflightItem = Omit<SolCollectionItemResult, "signature" | "status"> & {
+  status: "error" | "ready" | "skipped";
+};
+
+export type SolCollectionPreflightResult = {
+  errorSources: number;
+  estimatedNetworkFeeLamports: bigint;
+  executableSources: number;
+  items: SolCollectionPreflightItem[];
+  skippedSources: number;
+  totalBalanceLamports: bigint;
+  totalTransferLamports: bigint;
 };
 
 export type SolCollectionProgressPhase = "error" | "preparing" | "skipped" | "submitted" | "success";
@@ -424,6 +439,125 @@ function getSkipMessage(reason: SolCollectionSkipReason) {
     case "same-as-destination": return "来源地址与归集地址相同，已跳过";
     case "duplicate-source": return "来源地址重复，已跳过";
   }
+}
+
+export async function preflightSolCollectionSources({
+  commitment = "confirmed",
+  connection,
+  destination,
+  fallbackFeeLamports = defaultSolCollectionFeeLamports,
+  minCollectionLamports,
+  reserveLamports,
+  sources
+}: Omit<CollectSolFromSourcesOptions, "onProgress" | "sendOptions">): Promise<SolCollectionPreflightResult> {
+  assertNonNegativeLamports(minCollectionLamports, "minCollectionLamports");
+  assertNonNegativeLamports(reserveLamports, "reserveLamports");
+  if (fallbackFeeLamports !== null) assertNonNegativeLamports(fallbackFeeLamports, "fallbackFeeLamports");
+
+  let destinationPublicKey: PublicKey;
+  try {
+    destinationPublicKey = typeof destination === "string" ? new PublicKey(destination) : destination;
+  } catch {
+    throw new SafeSolCollectionError("归集目标地址无效");
+  }
+
+  const destinationAddress = destinationPublicKey.toBase58();
+  const seenAddresses = new Set<string>();
+  const items: SolCollectionPreflightItem[] = [];
+
+  for (const source of sources) {
+    const address = source.keypair.publicKey.toBase58();
+    let balanceLamports = 0n;
+    let feeLamports = 0n;
+
+    const skip = (reason: SolCollectionSkipReason) => {
+      items.push({
+        address,
+        balanceLamports,
+        feeLamports,
+        label: source.label,
+        line: source.line,
+        message: getSkipMessage(reason),
+        reason,
+        reserveLamports,
+        status: "skipped",
+        transferLamports: 0n
+      });
+    };
+
+    try {
+      if (source.address !== address) throw new SafeSolCollectionError("来源钱包信息不一致，已停止处理该项");
+      if (seenAddresses.has(address)) {
+        skip("duplicate-source");
+        continue;
+      }
+      seenAddresses.add(address);
+      if (address === destinationAddress) {
+        skip("same-as-destination");
+        continue;
+      }
+
+      balanceLamports = toSafeLamports(await connection.getBalance(source.keypair.publicKey, commitment), "balance");
+      if (balanceLamports === 0n) {
+        skip("zero-balance");
+        continue;
+      }
+
+      const latestBlockhash = await connection.getLatestBlockhash(commitment);
+      const feeProbe = createSolCollectionTransaction(source.keypair.publicKey, destinationPublicKey, 1n, latestBlockhash.blockhash);
+      const feeResponse = await connection.getFeeForMessage(feeProbe.compileMessage(), commitment);
+      if (feeResponse.value === null && fallbackFeeLamports === null) {
+        throw new SafeSolCollectionError("RPC 无法估算交易手续费，已停止处理该项");
+      }
+      feeLamports = feeResponse.value === null
+        ? fallbackFeeLamports as bigint
+        : toSafeLamports(feeResponse.value, "fee");
+      const plan = planSolCollection({
+        balanceLamports,
+        feeLamports,
+        minCollectionLamports,
+        reserveLamports
+      });
+      if (plan.status === "skipped") {
+        skip(plan.reason);
+        continue;
+      }
+
+      items.push({
+        address,
+        balanceLamports,
+        feeLamports,
+        label: source.label,
+        line: source.line,
+        message: `余额 ${formatLamports(balanceLamports)} SOL · 预计费 ${formatLamports(feeLamports)} SOL`,
+        reserveLamports,
+        status: "ready",
+        transferLamports: plan.transferLamports
+      });
+    } catch (error) {
+      items.push({
+        address,
+        balanceLamports,
+        feeLamports,
+        label: source.label,
+        line: source.line,
+        message: getSafeSolCollectionErrorMessage(error),
+        reserveLamports,
+        status: "error",
+        transferLamports: 0n
+      });
+    }
+  }
+
+  return {
+    errorSources: items.filter((item) => item.status === "error").length,
+    estimatedNetworkFeeLamports: items.reduce((total, item) => total + (item.status === "ready" ? item.feeLamports : 0n), 0n),
+    executableSources: items.filter((item) => item.status === "ready").length,
+    items,
+    skippedSources: items.filter((item) => item.status === "skipped").length,
+    totalBalanceLamports: items.reduce((total, item) => total + item.balanceLamports, 0n),
+    totalTransferLamports: items.reduce((total, item) => total + item.transferLamports, 0n)
+  };
 }
 
 function emitProgress(callback: CollectSolFromSourcesOptions["onProgress"], progress: SolCollectionProgress) {
