@@ -131,10 +131,10 @@ export function FormatGeneratorPage() {
   const outputGate = getFormatOutputGate(result);
   const hasAddressIssues = result.issues.some((issue) => /^第 \d+ 行地址格式不正确$/.test(issue));
   const resultNote = isMixedList
-    ? "请拆成 Solana 和 EVM 两份清单后分别进入对应分发页。"
+    ? "请拆分 SOL 与 EVM 清单。"
     : result.evmCount > 0
-      ? "复制后可直接粘贴到 EVM 分发页，也可以直接跳转。"
-      : "复制后可直接粘贴到 SOL 分发页，也可以直接跳转。";
+      ? "可直接进入 EVM 分发。"
+      : "可直接进入 SOL 分发。";
   const resultAnnouncement = addresses.trim()
     ? `生成结果：${result.validCount} 条有效，${result.invalid} 条需修正，${result.duplicates} 条重复。`
     : "尚未输入地址。";
@@ -257,7 +257,7 @@ export function FormatGeneratorPage() {
       categoryHref="/#utility"
       categoryLabel="数据工具"
       currentToolId="format-generator"
-      description="粘贴地址、设置统一或随机金额，生成可直接导入 SOL 与 EVM 批量发送工具的清单。"
+      description="生成 SOL 或 EVM 批量发送清单。"
       eyebrow="List builder · SOL & EVM"
       mainClassName="page-format"
       meta={<><span className="pill">本地生成</span><span className="pill">不连接钱包</span></>}
@@ -270,7 +270,6 @@ export function FormatGeneratorPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="input-title">地址与金额</h2>
-                <p className="panel-note">每行一个地址；空行会自动忽略。</p>
               </div>
               <div className="panel-header-actions">
                 <input
@@ -295,7 +294,6 @@ export function FormatGeneratorPage() {
             <div className="form">
               <div className="field">
                 <label htmlFor="addresses">地址列表</label>
-                <p className="hint">支持粘贴多行地址，会做基础格式校验和重复项统计。</p>
                 <textarea
                   id="addresses"
                   ref={addressInputRef}
@@ -349,7 +347,6 @@ export function FormatGeneratorPage() {
                 <div className="confirm transaction-status error" id="format-output-blocker" role="alert">
                   <strong>请先修正清单</strong>
                   <span>{outputGate.message}</span>
-                  <span>具体行号和原因已列在右侧“生成结果”下方。</span>
                   <div className="action-group">
                     {result.invalid > 0 ? (
                       <button className="button ghost compact-button" type="button" onClick={focusFirstInvalidInput}>

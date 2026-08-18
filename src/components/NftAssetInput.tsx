@@ -219,8 +219,8 @@ export function NftAssetInput({
         </div>
         <p className="hint" id={`${modeGroupId}-contract-help`}>
           {mode === "auto" || mode === "manual"
-            ? "用于自动识别与手动添加；切换方式不会清空地址。"
-            : "文件与高级模式按每行读取合约地址；此处地址仅在切回自动或手动时使用。"}
+            ? "用于识别或手动添加。"
+            : "仅在自动或手动添加时使用。"}
         </p>
       </div>
 
@@ -309,7 +309,7 @@ export function NftAssetInput({
           role="tabpanel"
         >
           <p className="hint" id={`${modeGroupId}-file-help`}>
-            每行填写 NFT 合约地址和 Token ID。文件仅在当前页面本地解析，支持 TXT、CSV，最大 512 KB。
+            每行：合约地址,Token ID。文件仅在当前页面本地解析，最大 512 KB。
           </p>
           <div className="nft-discovery-action">
             <button
@@ -349,7 +349,7 @@ export function NftAssetInput({
             value={value}
           />
           <p className="hint" id={`${modeGroupId}-advanced-help`}>
-            适合粘贴或修正规范化清单；每行格式为“合约地址,Token ID”。
+            每行：合约地址,Token ID。
           </p>
         </div>
       ) : null}

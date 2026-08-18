@@ -88,7 +88,6 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
           </a>
 
           <nav className="site-nav" aria-label="站点主导航">
-            <a href="/#popular">热门工具</a>
             {toolCategories.map((category) => (
               <a
                 key={category.id}
@@ -116,7 +115,6 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
                   <section key={category.id} aria-labelledby={`site-menu-${category.id}`}>
                     <div className="site-tool-menu__heading" id={`site-menu-${category.id}`}>
                       <strong>{category.label}</strong>
-                      <span>{category.description}</span>
                     </div>
                     <div className="site-tool-menu__links">
                       {getToolsByCategory(category.id).map((tool) => (
@@ -156,7 +154,7 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
                 <MenuIcon />
               </summary>
               <nav aria-label="移动端站点导航">
-                <a href="/#popular" onClick={closeMobileMenu}>热门工具</a>
+                <a href="/#tasks" onClick={closeMobileMenu}>全部工具</a>
                 {toolCategories.map((category) => (
                   <div className="site-mobile-menu__group" key={category.id}>
                     <a
@@ -165,7 +163,6 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
                       onClick={closeMobileMenu}
                     >
                       <strong>{category.label}</strong>
-                      <span>{category.description}</span>
                     </a>
                     {getToolsByCategory(category.id).map((tool) => (
                       <a

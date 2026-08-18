@@ -23,4 +23,28 @@ describe("EvmCollectionPage NFT workbench", () => {
     expect(markup.indexOf("添加方式")).toBeLessThan(markup.indexOf("待归集资产"));
     expect(markup.indexOf("待归集资产")).toBeLessThan(markup.indexOf("归集到"));
   });
+
+  it("uses the same source-first workbench for ERC20 collection", () => {
+    const markup = renderToStaticMarkup(<EvmCollectionPage fixedStandard="erc20" />);
+    const sourceIndex = markup.indexOf('id="collection-source-title"');
+    const walletListIndex = markup.indexOf('id="collection-results-title"');
+    const networkIndex = markup.indexOf('id="evm-collection-network"');
+    const assetIndex = markup.indexOf('id="collection-assets-title"');
+    const targetIndex = markup.indexOf('id="collection-target-title"');
+    const commandIndex = markup.indexOf('id="collection-command-title"');
+
+    expect(markup).toContain("collection-workbench-panel");
+    expect(markup).toContain("collection-source-section collection-source-board");
+    expect(markup).toContain("collection-results is-embedded");
+    expect(markup).toContain("collection-settings-grid");
+    expect(markup).toContain("collection-command-panel collection-command-panel--inline");
+    expect(markup).not.toContain("collection-command-rail");
+
+    expect(sourceIndex).toBeGreaterThan(-1);
+    expect(sourceIndex).toBeLessThan(walletListIndex);
+    expect(walletListIndex).toBeLessThan(networkIndex);
+    expect(networkIndex).toBeLessThan(assetIndex);
+    expect(assetIndex).toBeLessThan(targetIndex);
+    expect(targetIndex).toBeLessThan(commandIndex);
+  });
 });

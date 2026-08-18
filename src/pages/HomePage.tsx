@@ -2,12 +2,10 @@ import { useMemo, useState } from "react";
 import { SiteFooter } from "../components/SiteFooter";
 import { SiteHeader } from "../components/SiteHeader";
 import {
-  featuredTools,
   supportedChains,
   toolCategories,
   tools,
   type ToolChain,
-  type ToolDefinition,
   type ToolIcon as ToolIconName
 } from "../config/tools";
 
@@ -76,30 +74,6 @@ function ToolIcon({ name }: { name: ToolIconName }) {
   );
 }
 
-function ToolCard({ tool, prominent = false }: { tool: ToolDefinition; prominent?: boolean }) {
-  const chainLabel = tool.chains.length === 1
-    ? supportedChains.find((chain) => chain.id === tool.chains[0])?.label
-    : tool.chains.includes("solana") ? "EVM + Solana" : "多条 EVM 网络";
-
-  return (
-    <a className={`site-tool-card${prominent ? " site-tool-card--prominent" : ""}`} data-category={tool.category} href={tool.href}>
-      <div className="site-tool-card__topline">
-        <span className="site-tool-card__icon"><ToolIcon name={tool.icon} /></span>
-        {tool.badge ? <span className="site-tool-card__badge">{tool.badge}</span> : null}
-      </div>
-      <div className="site-tool-card__copy">
-        <span>{chainLabel}</span>
-        <h3>{tool.title}</h3>
-        <p>{tool.description}</p>
-      </div>
-      <span className="site-tool-card__link">
-        打开工具
-        <ArrowIcon />
-      </span>
-    </a>
-  );
-}
-
 export function HomePage() {
   const [selectedChain, setSelectedChain] = useState<"all" | ToolChain>("all");
   const filteredTools = useMemo(
@@ -114,23 +88,14 @@ export function HomePage() {
         <section className="site-hero" aria-labelledby="site-hero-title">
           <div className="site-container site-hero__inner">
             <div className="site-hero__copy">
-              <span className="site-kicker">多链批量操作工作台</span>
-              <h1 id="site-hero-title">把重复的链上操作，<br />收进一个工作台。</h1>
-              <p>
-                从资产分发到多钱包归集，先扫描、再核对、后签名。每一步都保留清晰的交易明细。
-              </p>
+              <span className="site-kicker">ChainKit</span>
+              <h1 id="site-hero-title">批量发送，<br />资产归集。</h1>
               <div className="site-hero__actions">
-                <a className="site-button site-button--primary" href="/evm/collect/">
-                  开始代币归集
+                <a className="site-button site-button--primary" href="#tasks">
+                  选择工具
                   <ArrowIcon />
                 </a>
-                <a className="site-text-link" href="#popular">浏览热门工具 <span aria-hidden="true">↓</span></a>
               </div>
-              <dl className="site-hero__facts">
-                <div><dt>{tools.length}</dt><dd>项可用工具</dd></div>
-                <div><dt>20+</dt><dd>条已支持网络</dd></div>
-                <div><dt>本地</dt><dd>交易签名</dd></div>
-              </dl>
             </div>
 
             <div className="site-hero__visual" aria-label="资产归集工作流示意">
@@ -159,39 +124,15 @@ export function HomePage() {
             <a data-category={category.id} href={category.href} key={category.id}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <strong>{category.label}</strong>
-              <small>{category.description}</small>
               <b aria-hidden="true">↗</b>
             </a>
           ))}
         </nav>
 
-        <section className="site-section site-section--popular" id="popular" aria-labelledby="popular-title">
-          <div className="site-container">
-            <div className="site-section__heading">
-              <div>
-                <span className="site-kicker">常用入口</span>
-                <h2 id="popular-title">热门工具</h2>
-              </div>
-              <p>直接进入最近最常用的批量发送与归集流程。</p>
-            </div>
-            <div className="site-tool-grid site-tool-grid--featured">
-              {featuredTools.map((tool, index) => <ToolCard key={tool.id} tool={tool} prominent={index === 0} />)}
-            </div>
-            <a className="site-mobile-directory-link" href="#tasks">
-              查看全部 {tools.length} 项工具
-              <ArrowIcon />
-            </a>
-          </div>
-        </section>
-
         <section className="site-section site-section--tasks" id="tasks" aria-labelledby="tasks-title">
           <div className="site-container">
             <div className="site-section__heading">
-              <div>
-                <span className="site-kicker">统一目录</span>
-                <h2 id="tasks-title">全部工具</h2>
-              </div>
-              <p>先按网络缩小范围，再从任务分组进入对应流程。</p>
+              <h2 id="tasks-title">全部工具</h2>
             </div>
             <div className="site-chain-tabs" role="group" aria-label="按区块链网络筛选全部工具">
               <button
@@ -224,7 +165,7 @@ export function HomePage() {
                   <article className="site-task-row" data-category={category.id} id={category.id} key={category.id}>
                     <div className="site-task-row__heading">
                       <span>{String(index + 1).padStart(2, "0")}</span>
-                      <div><h3>{category.label}</h3><p>{category.description}</p></div>
+                      <h3>{category.label}</h3>
                     </div>
                     {categoryTools.length ? (
                       <div className="site-task-row__tools">
@@ -252,14 +193,12 @@ export function HomePage() {
         <section className="site-security" id="security" aria-labelledby="security-title">
           <div className="site-container site-security__inner">
             <div className="site-security__intro">
-              <span className="site-kicker">签名前看得清</span>
-              <h2 id="security-title">关键操作留在你的设备上</h2>
-              <p>工具负责整理数据与构建交易，最终签名仍由你控制。提交前请逐项核对目标地址、网络和金额。</p>
+              <h2 id="security-title">签名前预检</h2>
             </div>
             <ol className="site-security__steps">
-              <li><span>01</span><div><strong>本地处理</strong><p>导入的签名材料不发送到业务服务器。</p></div></li>
-              <li><span>02</span><div><strong>交易预检</strong><p>先检查余额、网络费用与关键参数。</p></div></li>
-              <li><span>03</span><div><strong>结果可追踪</strong><p>保留每笔状态与交易哈希，方便复核。</p></div></li>
+              <li><span>01</span><strong>本地处理</strong></li>
+              <li><span>02</span><strong>余额与费用</strong></li>
+              <li><span>03</span><strong>交易记录</strong></li>
             </ol>
           </div>
         </section>

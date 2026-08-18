@@ -81,4 +81,24 @@ describe("CollectionResults", () => {
     expect(markup).toContain("运营钱包");
     expect(markup).toContain('aria-label="查看来源 3的交易"');
   });
+
+  it("supports an embedded wallet-list presentation", () => {
+    const markup = renderToStaticMarkup(
+      <CollectionResults
+        description="预检后显示余额"
+        embedded
+        emptyTitle="请导入来源钱包"
+        exportFilename="collection.csv"
+        results={[]}
+        title="钱包清单"
+      />
+    );
+
+    expect(markup).toContain('class="collection-results is-embedded"');
+    expect(markup).toContain('<h3 class="panel-title" id="collection-results-title">钱包清单</h3>');
+    expect(markup).toContain("钱包清单");
+    expect(markup).toContain("预检后显示余额");
+    expect(markup).toContain("请导入来源钱包");
+    expect(markup).not.toContain('class="panel collection-results');
+  });
 });

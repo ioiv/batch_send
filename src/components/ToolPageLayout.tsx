@@ -22,13 +22,12 @@ export function ToolPageLayout({
   children,
   currentToolId,
   description,
-  eyebrow,
   mainClassName = "",
   meta,
   stepStates,
   steps,
   title,
-  trustLabel = "本地执行 · 签名前预检"
+  trustLabel = "本地预检"
 }: {
   activeStep: number;
   categoryHref: string;
@@ -45,12 +44,13 @@ export function ToolPageLayout({
   trustLabel?: ReactNode;
 }) {
   const headingId = `${currentToolId}-page-title`;
+  const descriptionId = `${currentToolId}-page-description`;
 
   return (
     <div className="site-page site-tool-page" data-tool={currentToolId}>
       <SiteHeader currentToolId={currentToolId} />
       <main className={`shell tool-shell site-tool-shell ${mainClassName}`.trim()} id="main">
-        <section className="site-tool-heading" aria-labelledby={headingId}>
+        <section className="site-tool-heading" aria-describedby={descriptionId} aria-labelledby={headingId}>
           <div className="site-tool-context">
             <nav className="site-tool-breadcrumb" aria-label="面包屑">
               <a href="/">工具箱</a>
@@ -64,16 +64,14 @@ export function ToolPageLayout({
             <div className="site-tool-heading__copy">
               <div className="site-tool-title-row">
                 <div className="site-tool-title-block">
-                  <span className="site-tool-kicker">{eyebrow}</span>
                   <h1 id={headingId}>{title}</h1>
                 </div>
                 {meta ? <div className="site-tool-heading__meta">{meta}</div> : null}
               </div>
-              <p>{description}</p>
+              <p className="sr-only" id={descriptionId}>{description}</p>
             </div>
 
             <div className="site-tool-flow">
-              <p className="site-tool-flow__label">执行路径</p>
               <ol className="site-tool-steps" aria-label="操作步骤">
                 {steps.map((step, index) => {
                   const state = stepStates?.[index] || getStepState(index, activeStep);

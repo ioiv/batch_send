@@ -91,11 +91,18 @@ export function SolCollectionPage() {
   const [confirmed, setConfirmed] = useState(false);
   const [errorStep, setErrorStep] = useState<0 | 1 | 2>(0);
   const [keyImporting, setKeyImporting] = useState(false);
+  const [sourceKeyLineCount, setSourceKeyLineCount] = useState(0);
   const [keysCleared, setKeysCleared] = useState(false);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
   const selectedNetwork = getNetworkConfig(networkId);
+  const targetIsValid = Boolean(validatePublicKey(targetAddress.trim()));
+  const sourceSigningReady = sourceKeyLineCount > 0 || stage === "ready" || stage === "running" || stage === "complete";
+  const settingsReady = Boolean(rpcEndpoint.trim())
+    && (reserveAmount.trim() === "0" || parseSolToLamports(reserveAmount) !== null)
+    && (minimumAmount.trim() === "0" || parseSolToLamports(minimumAmount) !== null);
+  const readinessCount = [sourceSigningReady, targetIsValid, settingsReady].filter(Boolean).length;
   const taskRunning = stage === "running" || stage === "checking";
   const running = taskRunning || keyImporting;
   const activeStep = stage === "error" ? errorStep : stage === "editing" ? 0 : stage === "checking" || stage === "ready" ? 1 : 2;
@@ -314,7 +321,7 @@ export function SolCollectionPage() {
       categoryHref="/#collection"
       categoryLabel="资产归集"
       currentToolId="sol-collection"
-      description="逐来源读取实时余额和网络费，扣除保留金额后，用本地签名将可归集 SOL 转入目标地址。"
+      description="批量归集 SOL，自动扣除手续费与保留额。"
       eyebrow="Many to one · Solana"
       mainClassName="collection-shell collection-page"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">密钥仅在本地内存</span></>}
@@ -323,179 +330,229 @@ export function SolCollectionPage() {
       title="SOL 归集"
     >
         <div className={`workspace collection-workspace${results.length ? " has-results" : ""}`}>
-          <section className="panel" aria-labelledby="sol-collection-config-title">
+          <section className="panel collection-workbench-panel" aria-labelledby="sol-collection-config-title">
             <div className="panel-header">
               <div>
-                <h2 className="panel-title" id="sol-collection-config-title">归集配置</h2>
-                <p className="panel-note">执行开始后密钥输入框会立即清空；每个来源钱包独立签名、提交和确认。</p>
+                <h2 className="panel-title" id="sol-collection-config-title">批量归集工作台</h2>
               </div>
+              <span className="collection-ready-count" aria-label={`已准备 ${readinessCount} / 3 项`}>
+                {readinessCount}/3
+              </span>
             </div>
             <div className="form collection-form">
-              <div className="collection-config-grid">
-                <div className="field">
-                  <label htmlFor="sol-collection-network">网络</label>
-                  <SearchableSelect
-                    disabled={running}
-                    id="sol-collection-network"
-                    listboxLabel="Solana 归集网络"
-                    onChange={(value) => {
-                      setNetworkId(value);
-                      setRpcEndpoint(getNetworkConfig(value).endpoint);
-                      invalidateConfirmation();
-                    }}
-                    options={networkOptions}
-                    searchable={false}
-                    triggerLabel="选择 Solana 网络"
-                    value={networkId}
-                  />
-                </div>
-                <div className="field">
-                  <label htmlFor="sol-collection-reserve">每个钱包保留 SOL</label>
-                  <input
-                    disabled={running}
-                    id="sol-collection-reserve"
-                    inputMode="decimal"
-                    min="0"
-                    onChange={(event) => {
-                      setReserveAmount(event.target.value);
-                      invalidateConfirmation();
-                    }}
-                    step="0.000001"
-                    type="number"
-                    value={reserveAmount}
-                  />
-                </div>
-                <div className="field full">
-                  <label htmlFor="sol-collection-rpc">RPC 地址</label>
-                  <input
-                    disabled={running}
-                    id="sol-collection-rpc"
-                    onChange={(event) => {
-                      setRpcEndpoint(event.target.value);
-                      invalidateConfirmation();
-                    }}
-                    spellCheck={false}
-                    type="url"
-                    value={rpcEndpoint}
-                  />
-                </div>
-                <div className="field full">
-                  <label htmlFor="sol-collection-target">目标钱包</label>
-                  <input
-                    autoCapitalize="none"
-                    autoComplete="off"
-                    disabled={running}
-                    id="sol-collection-target"
-                    onChange={(event) => {
-                      setTargetAddress(event.target.value);
-                      invalidateConfirmation();
-                    }}
-                    placeholder="Solana 地址"
-                    spellCheck={false}
-                    value={targetAddress}
-                  />
-                </div>
-                <div className="field full">
-                  <label htmlFor="sol-collection-minimum">最小可归集金额</label>
-                  <input
-                    disabled={running}
-                    id="sol-collection-minimum"
-                    inputMode="decimal"
-                    min="0"
-                    onChange={(event) => {
-                      setMinimumAmount(event.target.value);
-                      invalidateConfirmation();
-                    }}
-                    step="0.000001"
-                    type="number"
-                    value={minimumAmount}
-                  />
-                  <p className="hint">余额减去实时手续费和保留金额后，低于此阈值的来源会跳过。</p>
-                </div>
-              </div>
+              <section className="collection-source-section collection-source-board" aria-labelledby="sol-collection-source-title">
+                <header className="collection-section-heading">
+                  <span className="collection-section-index" aria-hidden="true">01</span>
+                  <div className="collection-section-copy">
+                    <h3 id="sol-collection-source-title">来源钱包</h3>
+                  </div>
+                  <span className="pill" data-ready={sourceSigningReady ? "true" : "false"}>
+                    {sourceKeyLineCount ? `${sourceKeyLineCount} 行密钥待校验` : sourceSigningReady ? "预检已载入" : "等待来源密钥"}
+                  </span>
+                </header>
 
-              <SecretKeyInput
-                disabled={taskRunning}
-                mode="solana"
-                onDirty={() => {
-                  setKeysCleared(false);
-                  invalidateConfirmation();
-                }}
-                onImportingChange={handleKeyImportingChange}
-                ref={keyInputRef}
+                <SecretKeyInput
+                  disabled={taskRunning}
+                  mode="solana"
+                  onDirty={() => {
+                    setKeysCleared(false);
+                    invalidateConfirmation();
+                  }}
+                  onImportingChange={handleKeyImportingChange}
+                  onLineCountChange={setSourceKeyLineCount}
+                  ref={keyInputRef}
+                />
+              </section>
+
+              <CollectionResults
+                embedded
+                emptyMessage="预检后显示钱包与金额。"
+                emptyTitle="等待预检"
+                exportFilename="sol-collection-results.csv"
+                results={results}
+                title="钱包清单"
               />
 
-              {issues.length ? (
-                <ul className="collection-issue-list" aria-label="输入问题" role="alert">
-                  {issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}
-                </ul>
-              ) : null}
+              <div className="collection-settings-grid">
+                <section className="collection-flow-section collection-network-section" aria-labelledby="sol-collection-network-title">
+                  <header className="collection-section-heading">
+                    <span className="collection-section-index" aria-hidden="true">02</span>
+                    <div className="collection-section-copy">
+                      <h3 id="sol-collection-network-title">网络与节点</h3>
+                    </div>
+                    <span className="pill">{selectedNetwork.label}</span>
+                  </header>
 
-              {message ? (
-                <div className="collection-inline-status" data-status={stage === "error" ? "error" : stage === "complete" ? "success" : stage} aria-live={stage === "error" ? "assertive" : "polite"} role={stage === "error" ? "alert" : "status"}>
-                  <strong>{stage === "checking" ? "正在只读预检" : stage === "ready" ? "等待最终确认" : stage === "complete" ? "任务已结束" : "任务状态"}</strong>
-                  <p>{message}</p>
-                </div>
-              ) : null}
-
-              {stage === "ready" && preflight ? (
-                <div className="collection-final-confirm">
-                  <strong>最终确认：将从 {preflight.executableSources} 个来源发起归集</strong>
-                  <div className="summary-list">
-                    <div><span>目标地址</span><strong>{targetAddress}</strong></div>
-                    <div><span>来源检查</span><strong>{results.length} 个</strong></div>
-                    <div><span>预计执行</span><strong>{preflight.executableSources} 笔</strong></div>
-                    <div><span>预计跳过</span><strong>{preflight.skippedSources} 个</strong></div>
-                    <div><span>预计归集</span><strong>{formatLamports(preflight.totalTransferLamports)} SOL</strong></div>
-                    <div><span>预计总手续费</span><strong>{formatLamports(preflight.estimatedNetworkFeeLamports)} SOL</strong></div>
-                    <div><span>每钱包保留</span><strong>{reserveAmount || "0"} SOL</strong></div>
+                  <div className="field">
+                    <label htmlFor="sol-collection-network">网络</label>
+                    <SearchableSelect
+                      disabled={running}
+                      id="sol-collection-network"
+                      listboxLabel="Solana 归集网络"
+                      onChange={(value) => {
+                        setNetworkId(value);
+                        setRpcEndpoint(getNetworkConfig(value).endpoint);
+                        invalidateConfirmation();
+                      }}
+                      options={networkOptions}
+                      searchable={false}
+                      triggerLabel="选择 Solana 网络"
+                      value={networkId}
+                    />
                   </div>
-                  <label className="collection-confirm-check">
-                    <input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
-                    <span>我已核对上方只读预检结果、目标地址和跳过项，并理解余额与手续费会在签名前再次读取。</span>
-                  </label>
-                </div>
-              ) : null}
+                  <div className="field">
+                    <label htmlFor="sol-collection-rpc">RPC 地址</label>
+                    <input
+                      disabled={running}
+                      id="sol-collection-rpc"
+                      onChange={(event) => {
+                        setRpcEndpoint(event.target.value);
+                        invalidateConfirmation();
+                      }}
+                      spellCheck={false}
+                      type="url"
+                      value={rpcEndpoint}
+                    />
+                  </div>
+                </section>
 
-              <div className="actions collection-actions">
-                <button className="button danger" disabled={running} onClick={() => {
-                  const hasTaskContent = Boolean(targetAddress.trim() || keyInputRef.current?.read().trim() || results.length);
-                  if (hasTaskContent && !window.confirm("确认清空当前归集任务？来源密钥和预检结果将无法恢复。")) return;
-                  keyInputRef.current?.clear();
-                  setTargetAddress("");
-                  setReserveAmount("0.002");
-                  setMinimumAmount("0.001");
-                  setResults([]);
-                  setPreflight(null);
-                  setKeysCleared(false);
-                  setIssues([]);
-                  setMessage("");
-                  setConfirmed(false);
-                  setStage("editing");
-                  setErrorStep(0);
-                }} type="button">清空任务</button>
-                {stage === "ready" ? (
-                  <button className="button primary" disabled={!confirmed || running} onClick={executeCollection} type="button">确认并开始归集</button>
-                ) : stage === "running" || stage === "checking" ? (
-                  <button className="button primary" disabled type="button">{stage === "checking" ? "只读预检中" : "归集中"}</button>
-                ) : keysCleared ? (
-                  <button className="button primary" onClick={() => keyInputRef.current?.focus()} type="button">重新导入来源密钥</button>
-                ) : (
-                  <button className="button primary" disabled={running} onClick={prepareCollection} type="button">检查余额与费用</button>
-                )}
+                <section className="collection-flow-section collection-target-section" aria-labelledby="sol-collection-target-title">
+                  <header className="collection-section-heading">
+                    <span className="collection-section-index" aria-hidden="true">03</span>
+                    <div className="collection-section-copy">
+                      <h3 id="sol-collection-target-title">目标与金额</h3>
+                    </div>
+                    <span className="pill" data-ready={targetIsValid ? "true" : "false"}>
+                      {targetIsValid ? "目标有效" : "等待目标地址"}
+                    </span>
+                  </header>
+
+                  <div className="field full">
+                    <label htmlFor="sol-collection-target">目标钱包</label>
+                    <input
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      disabled={running}
+                      id="sol-collection-target"
+                      onChange={(event) => {
+                        setTargetAddress(event.target.value);
+                        invalidateConfirmation();
+                      }}
+                      placeholder="Solana 地址"
+                      spellCheck={false}
+                      value={targetAddress}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="sol-collection-reserve">每个钱包保留 SOL</label>
+                    <input
+                      disabled={running}
+                      id="sol-collection-reserve"
+                      inputMode="decimal"
+                      min="0"
+                      onChange={(event) => {
+                        setReserveAmount(event.target.value);
+                        invalidateConfirmation();
+                      }}
+                      step="0.000001"
+                      type="number"
+                      value={reserveAmount}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="sol-collection-minimum">最小可归集金额</label>
+                    <input
+                      disabled={running}
+                      id="sol-collection-minimum"
+                      inputMode="decimal"
+                      min="0"
+                      onChange={(event) => {
+                        setMinimumAmount(event.target.value);
+                        invalidateConfirmation();
+                      }}
+                      step="0.000001"
+                      type="number"
+                      value={minimumAmount}
+                    />
+                    <p className="hint">低于阈值的来源会跳过。</p>
+                  </div>
+                </section>
               </div>
 
-              <CollectionSafetyNote>
-                <p>主网默认每个来源保留 0.002 SOL。把保留金额设为 0 可能使来源钱包无法继续发起交易。</p>
-              </CollectionSafetyNote>
+              <section className="collection-command-panel collection-command-panel--inline" aria-labelledby="sol-collection-command-title">
+                <div className="panel-header">
+                  <div>
+                    <h3 className="panel-title" id="sol-collection-command-title">检查并执行</h3>
+                  </div>
+                </div>
+                <div className="collection-command-body">
+                  {issues.length ? (
+                    <ul className="collection-issue-list" aria-label="输入问题" role="alert">
+                      {issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}
+                    </ul>
+                  ) : null}
+
+                  {message ? (
+                    <div className="collection-inline-status" data-status={stage === "error" ? "error" : stage === "complete" ? "success" : stage} aria-live={stage === "error" ? "assertive" : "polite"} role={stage === "error" ? "alert" : "status"}>
+                      <strong>{stage === "checking" ? "正在只读预检" : stage === "ready" ? "等待最终确认" : stage === "complete" ? "任务已结束" : "任务状态"}</strong>
+                      <p>{message}</p>
+                    </div>
+                  ) : null}
+
+                  {stage === "ready" && preflight ? (
+                    <div className="collection-final-confirm">
+                      <strong>最终确认：将从 {preflight.executableSources} 个来源发起归集</strong>
+                      <div className="summary-list">
+                        <div><span>目标地址</span><strong>{targetAddress}</strong></div>
+                        <div><span>来源检查</span><strong>{results.length} 个</strong></div>
+                        <div><span>预计执行</span><strong>{preflight.executableSources} 笔</strong></div>
+                        <div><span>预计跳过</span><strong>{preflight.skippedSources} 个</strong></div>
+                        <div><span>预计归集</span><strong>{formatLamports(preflight.totalTransferLamports)} SOL</strong></div>
+                        <div><span>预计总手续费</span><strong>{formatLamports(preflight.estimatedNetworkFeeLamports)} SOL</strong></div>
+                        <div><span>每钱包保留</span><strong>{reserveAmount || "0"} SOL</strong></div>
+                      </div>
+                      <label className="collection-confirm-check">
+                        <input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
+                        <span>我已核对上方只读预检结果、目标地址和跳过项，并理解余额与手续费会在签名前再次读取。</span>
+                      </label>
+                    </div>
+                  ) : null}
+
+                  <div className="actions collection-actions">
+                    <button className="button danger" disabled={running} onClick={() => {
+                      const hasTaskContent = Boolean(targetAddress.trim() || keyInputRef.current?.read().trim() || results.length);
+                      if (hasTaskContent && !window.confirm("确认清空当前归集任务？来源密钥和预检结果将无法恢复。")) return;
+                      keyInputRef.current?.clear();
+                      setTargetAddress("");
+                      setReserveAmount("0.002");
+                      setMinimumAmount("0.001");
+                      setResults([]);
+                      setPreflight(null);
+                      setKeysCleared(false);
+                      setIssues([]);
+                      setMessage("");
+                      setConfirmed(false);
+                      setStage("editing");
+                      setErrorStep(0);
+                    }} type="button">清空任务</button>
+                    {stage === "ready" ? (
+                      <button className="button primary" disabled={!confirmed || running} onClick={executeCollection} type="button">确认并开始归集</button>
+                    ) : stage === "running" || stage === "checking" ? (
+                      <button className="button primary" disabled type="button">{stage === "checking" ? "只读预检中" : "归集中"}</button>
+                    ) : keysCleared ? (
+                      <button className="button primary" onClick={() => keyInputRef.current?.focus()} type="button">重新导入来源密钥</button>
+                    ) : (
+                      <button className="button primary" disabled={running} onClick={prepareCollection} type="button">检查余额与费用</button>
+                    )}
+                  </div>
+
+                  <CollectionSafetyNote>
+                    <p>保留额为 0 可能使钱包无法继续交易。</p>
+                  </CollectionSafetyNote>
+                </div>
+              </section>
             </div>
           </section>
-
-          <CollectionResults
-            emptyMessage="填写目标地址和来源钱包后，先执行不会签名的只读预检；余额、手续费、预计归集额和跳过原因会显示在这里。"
-            exportFilename="sol-collection-results.csv"
-            results={results}
-          />
         </div>
     </ToolPageLayout>
   );

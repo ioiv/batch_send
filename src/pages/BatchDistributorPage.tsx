@@ -181,7 +181,7 @@ export function BatchDistributorPage() {
           ? `请先处理 ${duplicateCount} 个重复地址`
           : parsed.validRows.length === 0
             ? "请先添加至少 1 个有效收款地址"
-            : "下一步会执行只读费用与余额预检，不会请求钱包签名";
+            : "下一步：只读预检，不会签名";
 
   useEffect(() => {
     if (sending || sendComplete || sendFailed) return;
@@ -506,7 +506,7 @@ export function BatchDistributorPage() {
       categoryHref="/#distribution"
       categoryLabel="批量发送"
       currentToolId="sol-distribution"
-      description="从一个已连接的钱包向多地址分发 SOL；先生成清单和费用预览，再统一确认签名。"
+      description="向多个地址批量发送 SOL。"
       eyebrow="One to many · Solana"
       mainClassName="page-distributor"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">钱包签名</span></>}

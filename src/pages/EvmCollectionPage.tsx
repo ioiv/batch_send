@@ -65,7 +65,7 @@ type CollectionPreflightSummary = Pick<
 
 const evmCollectionSteps: ToolPageStep[] = [
   { label: "导入来源", description: "选择网络并准备来源钱包" },
-  { label: "核对资产", description: "识别、筛选并预检 NFT" },
+  { label: "核对资产", description: "读取余额并完成只读预检" },
   { label: "执行归集", description: "确认目标后本地签名" }
 ];
 
@@ -246,13 +246,14 @@ export function EvmCollectionPage({
   const discoveryContractIsValid = isAddress(discoveryContract.trim())
     && getAddress(discoveryContract.trim()) !== zeroAddress;
   const sourceKeysReady = sourceKeyLineCount > 0;
+  const sourceSigningReady = sourceKeysReady || stage === "ready" || stage === "running" || stage === "complete";
   const readonlySourcesReady = readonlySourceCount > 0 && readonlySourceIssueCount === 0;
   const discoverySourceReady = sourceInputMode === "readonly" ? readonlySourcesReady : sourceKeysReady;
   const sourceIdentityReady = sourceKeysReady || readonlySourcesReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
   const safetySettingsReady = Boolean(effectiveRpcEndpoint) && maximumFeeAmount !== null;
   const readinessTotal = fixedStandard === "nft" ? 5 : 4;
-  const completedInputCount = Number(sourceKeysReady)
+  const completedInputCount = Number(sourceSigningReady)
     + Number(parsedAssetCount > 0)
     + Number(targetIsValid)
     + Number(safetySettingsReady)
@@ -940,8 +941,8 @@ export function EvmCollectionPage({
       categoryLabel="资产归集"
       currentToolId={currentToolId}
       description={fixedStandard === "erc20"
-        ? "批量读取来源钱包的 ERC20 余额，模拟每笔转账后再使用本地签名逐项归集。"
-        : "校验 ERC721 所有权或 ERC1155 余额，预检通过后本地签名归集；同源同合约的 ERC1155 会自动合并为批量交易。"}
+        ? "批量归集 ERC20。"
+        : "归集 ERC721 或 ERC1155。"}
       eyebrow={fixedStandard === "erc20" ? "Many to one · ERC20" : "Many to one · NFT"}
       mainClassName="collection-shell collection-page"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">密钥仅在本地内存</span></>}
@@ -950,12 +951,14 @@ export function EvmCollectionPage({
       title={fixedStandard === "erc20" ? "ERC20 代币归集" : "EVM NFT 归集"}
     >
         <div className={`workspace collection-workspace${results.length ? " has-results" : ""}`}>
-          <section className="panel" aria-labelledby="collection-config-title">
+          <section className="panel collection-workbench-panel" aria-labelledby="collection-config-title">
             <div className="panel-header">
               <div>
-                <h2 className="panel-title" id="collection-config-title">归集配置</h2>
-                <p className="panel-note">预检成功后清空密钥输入框；不上传密钥、不收平台费、不调用收费归集合约。</p>
+                <h2 className="panel-title" id="collection-config-title">批量归集工作台</h2>
               </div>
+              <span className="collection-ready-count" aria-label={`已准备 ${completedInputCount} / ${readinessTotal} 项`}>
+                {completedInputCount}/{readinessTotal}
+              </span>
             </div>
             <div className="form collection-form">
               <div className="collection-mobile-guide" aria-label="归集准备进度">
@@ -968,52 +971,13 @@ export function EvmCollectionPage({
                 >{guidedActionLabel}</button>
               </div>
 
-              <div className="collection-config-primary collection-context-strip">
-                <div className="field">
-                  <label htmlFor="evm-collection-network">网络</label>
-                  <SearchableSelect
-                    disabled={running}
-                    id="evm-collection-network"
-                    listboxLabel="EVM 归集网络"
-                    metaLabel="Chain ID"
-                    onChange={selectNetwork}
-                    options={networkOptions}
-                    placeholder="搜索网络或 Chain ID"
-                    triggerLabel="选择归集网络"
-                    value={networkId}
-                  />
-                </div>
-                {fixedStandard === "nft" ? (
-                  <div className="field">
-                    <label htmlFor="nft-standard">NFT 标准</label>
-                    <select
-                      disabled={running}
-                      id="nft-standard"
-                      onChange={(event) => {
-                        const nextStandard = event.target.value as "erc721" | "erc1155";
-                        setNftStandard(nextStandard);
-                        if (nextStandard === "erc1155") setSourceInputMode("keys");
-                        setNftInputResetNonce((current) => current + 1);
-                        setPendingDiscovery(null);
-                        setContractInspection(null);
-                        invalidatePlan();
-                      }}
-                      value={nftStandard}
-                    >
-                      <option value="erc721">ERC721</option>
-                      <option value="erc1155">ERC1155</option>
-                    </select>
-                  </div>
-                ) : null}
-              </div>
-
               {fixedStandard === "nft" ? (
-                <section className="collection-source-section" aria-labelledby="collection-source-title">
+                <section className="collection-source-section collection-source-board" aria-labelledby="collection-source-title">
                   <header className="collection-section-heading">
                     <span className="collection-section-index" aria-hidden="true">01</span>
                     <div className="collection-section-copy">
                       <h3 id="collection-source-title">准备来源钱包</h3>
-                      <p className="hint">直接导入私钥可完成识别与归集；只读地址适合先核对持仓。</p>
+                      <p className="hint">可先用只读地址识别；执行前需私钥。</p>
                     </div>
                     <span className="pill" data-ready={discoverySourceReady ? "true" : "false"}>
                       {sourceInputMode === "readonly"
@@ -1098,12 +1062,85 @@ export function EvmCollectionPage({
                 </section>
               ) : null}
 
+              {fixedStandard === "erc20" ? (
+                <section className="collection-source-section collection-source-board" aria-labelledby="collection-source-title">
+                  <header className="collection-section-heading">
+                    <span className="collection-section-index" aria-hidden="true">01</span>
+                    <div className="collection-section-copy">
+                      <h3 id="collection-source-title">来源钱包</h3>
+                    </div>
+                    <span className="pill" data-ready={sourceSigningReady ? "true" : "false"}>
+                      {sourceKeysReady ? `${sourceKeyLineCount} 行待校验` : sourceSigningReady ? "预检已载入" : "等待导入"}
+                    </span>
+                  </header>
+                  <SecretKeyInput
+                    disabled={operationRunning || assetImporting}
+                    mode="evm"
+                    onDirty={() => {
+                      setKeysCleared(false);
+                      invalidatePlan();
+                    }}
+                    onImportingChange={handleKeyImportingChange}
+                    onLineCountChange={setSourceKeyLineCount}
+                    ref={keyInputRef}
+                  />
+                </section>
+              ) : null}
+
+              <CollectionResults
+                embedded
+                emptyMessage="预检后显示结果。"
+                emptyTitle="等待预检"
+                exportFilename={`${currentToolId}-results.csv`}
+                results={results}
+                title={fixedStandard === "nft" ? "来源钱包与资产清单" : "来源钱包与代币余额"}
+              />
+
+              <div className="collection-config-primary collection-context-strip">
+                <div className="field">
+                  <label htmlFor="evm-collection-network">网络</label>
+                  <SearchableSelect
+                    disabled={running}
+                    id="evm-collection-network"
+                    listboxLabel="EVM 归集网络"
+                    metaLabel="Chain ID"
+                    onChange={selectNetwork}
+                    options={networkOptions}
+                    placeholder="搜索网络或 Chain ID"
+                    triggerLabel="选择归集网络"
+                    value={networkId}
+                  />
+                </div>
+                {fixedStandard === "nft" ? (
+                  <div className="field">
+                    <label htmlFor="nft-standard">NFT 标准</label>
+                    <select
+                      disabled={running}
+                      id="nft-standard"
+                      onChange={(event) => {
+                        const nextStandard = event.target.value as "erc721" | "erc1155";
+                        setNftStandard(nextStandard);
+                        if (nextStandard === "erc1155") setSourceInputMode("keys");
+                        setNftInputResetNonce((current) => current + 1);
+                        setPendingDiscovery(null);
+                        setContractInspection(null);
+                        invalidatePlan();
+                      }}
+                      value={nftStandard}
+                    >
+                      <option value="erc721">ERC721</option>
+                      <option value="erc1155">ERC1155</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="collection-settings-grid">
               <section className="collection-flow-section collection-asset-section" aria-labelledby="collection-assets-title">
                 <header className="collection-section-heading">
-                  <span className="collection-section-index" aria-hidden="true">{fixedStandard === "nft" ? "02" : "01"}</span>
+                  <span className="collection-section-index" aria-hidden="true">02</span>
                   <div className="collection-section-copy">
                     <h3 id="collection-assets-title">添加并核对资产</h3>
-                    <p className="hint">选择一种添加方式；所有有效项都会进入归集预检。</p>
                   </div>
                   <span className="pill" data-ready={parsedAssetCount ? "true" : "false"}>
                     {parsedAssetCount ? `${parsedAssetCount} 项资产` : "尚未添加"}
@@ -1240,7 +1277,7 @@ export function EvmCollectionPage({
                                 spellCheck={false}
                                 value={discoveryStartBlock}
                               />
-                              <p className="hint">仅强制事件回溯或自动回退时使用；手填后结果会明确标记为指定区间。</p>
+                              <p className="hint">仅用于事件回溯；结果会标注范围。</p>
                             </div>
                           </div>
                         </details>
@@ -1321,10 +1358,10 @@ export function EvmCollectionPage({
                 ) : null}
                 <p className="hint">
                   {standard === "erc1155"
-                    ? "ERC1155 会读取每个来源钱包的完整余额并全部归集；同一来源钱包和合约的多个 Token ID 会自动批量转账。"
+                    ? "同来源、同合约资产会合并转账。"
                     : standard === "erc721"
-                      ? "ERC721 会自动查找每个 Token ID 的实际 owner；未导入 owner 密钥的条目会跳过。"
-                      : "余额为 0 的来源会跳过；当前版本按 Token 合约逐项归集。"}
+                      ? "没有 owner 私钥的资产会跳过。"
+                      : "余额为 0 的来源会跳过。"}
                 </p>
               </div>
 
@@ -1339,28 +1376,15 @@ export function EvmCollectionPage({
                   }}
                   standard={standard as "erc721" | "erc1155"}
                 />
-              ) : (
-                <SecretKeyInput
-                  disabled={operationRunning || assetImporting}
-                  mode="evm"
-                  onDirty={() => {
-                    setKeysCleared(false);
-                    invalidatePlan();
-                  }}
-                  onImportingChange={handleKeyImportingChange}
-                  onLineCountChange={setSourceKeyLineCount}
-                  ref={keyInputRef}
-                />
-              )}
+              ) : null}
 
               </section>
 
               <section className="collection-flow-section collection-target-section" aria-labelledby="collection-target-title">
                 <header className="collection-section-heading">
-                  <span className="collection-section-index" aria-hidden="true">{fixedStandard === "nft" ? "03" : "02"}</span>
+                  <span className="collection-section-index" aria-hidden="true">03</span>
                   <div className="collection-section-copy">
                     <h3 id="collection-target-title">确认目标与费用</h3>
-                    <p className="hint">目标地址会在签名前完整展示；高级设置保持安全默认值即可。</p>
                   </div>
                   <span className="pill" data-ready={targetIsValid ? "true" : "false"}>
                     {targetIsValid ? "目标有效" : "等待目标地址"}
@@ -1387,7 +1411,7 @@ export function EvmCollectionPage({
                 <p className="hint" id="evm-collection-target-help">
                   {targetAddress.trim() && !targetIsValid
                     ? "请输入有效的非零 EVM 地址。"
-                    : "最终确认前会再次完整显示目标地址；交易直接发送到该地址。"}
+                    : "签名前会再次显示完整地址。"}
                 </p>
               </div>
 
@@ -1410,7 +1434,7 @@ export function EvmCollectionPage({
                       type="url"
                       value={rpcEndpoint}
                     />
-                    <p className="hint" id="evm-collection-rpc-help">默认使用当前网络配置的公开 RPC；所有读取、广播均直接发往这里。</p>
+                    <p className="hint" id="evm-collection-rpc-help">读写均使用此 RPC。</p>
                   </div>
                   <div className="field full">
                     <label htmlFor="evm-collection-max-fee">
@@ -1434,49 +1458,50 @@ export function EvmCollectionPage({
                     <p className="hint" id="evm-collection-max-fee-help">
                       {maximumFeeAmount === null
                         ? "请输入大于 0 的有效预算。"
-                        : "当 gasLimit × gasPrice 超过此值时阻止提交；部分 L2 另有 L1 数据费，最终仍以链上实际扣费为准。"}
+                        : "超出上限将阻止提交；L2 数据费另计。"}
                     </p>
                   </div>
                 </div>
               </details>
 
               </section>
+              </div>
 
-            </div>
-          </section>
-
-          <aside className="collection-command-rail" aria-label="归集任务操作">
-            <section className="panel collection-command-panel" aria-labelledby="collection-command-title">
+            <section
+              className="collection-command-panel collection-command-panel--inline"
+              aria-label="归集任务操作"
+              aria-labelledby="collection-command-title"
+            >
               <div className="panel-header">
                 <div>
-                  <h2 className="panel-title" id="collection-command-title">检查并预检</h2>
-                  <p className="panel-note">仅链上 Gas · 平台费 0。完成缺项后生成只读预览。</p>
+                  <h3 className="panel-title" id="collection-command-title">检查并预检</h3>
                 </div>
-                <span className="collection-ready-count">{completedInputCount}/{readinessTotal}</span>
+                <span className="pill">仅链上 Gas · 平台费 0</span>
+                <span className="sr-only">不上传密钥、不收平台费、不调用收费归集合约</span>
               </div>
               <div className="collection-command-body">
               <ul className="collection-readiness" aria-label="预检准备项">
                 {fixedStandard === "nft" ? (
                   <li data-ready={sourceIdentityReady ? "true" : "false"}>
                     <span aria-hidden="true">{sourceIdentityReady ? "✓" : "1"}</span>
-                    <div><strong>识别来源</strong><small>{sourceIdentityReady ? "已准备只读地址或本地密钥" : "先准备要查询的钱包地址"}</small></div>
+                    <strong>识别来源</strong>
                   </li>
                 ) : null}
                 <li data-ready={parsedAssetCount ? "true" : "false"}>
                   <span aria-hidden="true">{parsedAssetCount ? "✓" : fixedStandard === "nft" ? "2" : "1"}</span>
-                  <div><strong>{fixedStandard === "nft" ? "NFT 资产" : "ERC20 资产"}</strong><small>{parsedAssetCount ? `${parsedAssetCount} 项将进入预检` : "识别、手动添加或导入"}</small></div>
+                  <strong>{fixedStandard === "nft" ? "NFT 资产" : "ERC20 资产"}</strong>
                 </li>
                 <li data-ready={targetIsValid ? "true" : "false"}>
                   <span aria-hidden="true">{targetIsValid ? "✓" : fixedStandard === "nft" ? "3" : "2"}</span>
-                  <div><strong>目标地址</strong><small>{targetIsValid ? "格式有效，签名前再次确认" : "填写有效的非零地址"}</small></div>
+                  <strong>目标地址</strong>
                 </li>
-                <li data-ready={sourceKeysReady ? "true" : "false"}>
-                  <span aria-hidden="true">{sourceKeysReady ? "✓" : fixedStandard === "nft" ? "4" : "3"}</span>
-                  <div><strong>签名密钥</strong><small>{sourceKeysReady ? "已在本地输入，预检时校验" : "执行前导入匹配资产 owner 的私钥"}</small></div>
+                <li data-ready={sourceSigningReady ? "true" : "false"}>
+                  <span aria-hidden="true">{sourceSigningReady ? "✓" : fixedStandard === "nft" ? "4" : "3"}</span>
+                  <strong>签名密钥</strong>
                 </li>
                 <li data-ready={safetySettingsReady ? "true" : "false"}>
                   <span aria-hidden="true">{safetySettingsReady ? "✓" : fixedStandard === "nft" ? "5" : "4"}</span>
-                  <div><strong>RPC 与 Gas</strong><small>{safetySettingsReady ? `已设置单笔上限 ${maxFeeAmount} ${selectedNetwork.nativeCurrency.symbol}` : "检查 RPC 地址与单笔 Gas 上限"}</small></div>
+                  <strong>RPC 与 Gas</strong>
                 </li>
               </ul>
 
@@ -1563,32 +1588,25 @@ export function EvmCollectionPage({
                 <p className="hint" id="collection-preview-readiness">
                   {needsDiscoverySource
                     ? sourceInputMode === "readonly"
-                      ? "下一步：填写只读来源地址，再识别该合约的持仓。"
-                      : "下一步：导入来源密钥；识别阶段不会广播交易。"
+                      ? "下一步：填写只读来源地址。"
+                      : "下一步：导入来源密钥。"
                     : !parsedAssetCount
-                    ? "下一步：加入至少一项有效资产。"
+                    ? "下一步：加入有效资产。"
                     : !targetIsValid
-                      ? "下一步：填写有效目标地址。"
+                      ? "下一步：填写目标地址。"
                       : !sourceKeysReady
-                        ? "下一步：导入匹配资产 owner 的来源密钥。"
+                        ? "下一步：导入 owner 私钥。"
                         : !safetySettingsReady
-                          ? "下一步：修正 RPC 地址或单笔 Gas 预算上限。"
-                      : "准备就绪；点击后会读取来源资产、模拟交易并估算 Gas，不会立即广播。"}
+                          ? "下一步：检查 RPC 与 Gas。"
+                      : "准备就绪，可开始预检。"}
                 </p>
               ) : null}
 
               <CollectionSafetyNote />
             </div>
             </section>
-
-            {results.length ? (
-              <CollectionResults
-                emptyMessage="填写目标地址、资产清单和来源钱包后，先扫描生成不含密钥的预览。"
-                exportFilename={`${currentToolId}-results.csv`}
-                results={results}
-              />
-            ) : null}
-          </aside>
+            </div>
+          </section>
         </div>
     </ToolPageLayout>
   );

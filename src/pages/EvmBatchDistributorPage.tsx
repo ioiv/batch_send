@@ -17,7 +17,6 @@ import {
   getEvmBalanceLookupErrorMessage,
   getEvmDistributionNetworks,
   getEvmExplorerUrl,
-  getEvmNativeCurrencyMetadata,
   getEvmNativeBalance,
   getEvmNetworkConfig,
   getPreferredEvmDistributionNetwork,
@@ -160,7 +159,6 @@ export function EvmBatchDistributorPage() {
   })), [networkState.networks]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
-  const nativeCurrencyMetadata = getEvmNativeCurrencyMetadata(selectedNetwork);
   const tokenAddressInput = tokenAddress.trim();
   const tokenRequestKey = assetMode === "token" && tokenAddressInput
     ? `${selectedNetwork.chainId}|${effectiveRpcEndpoint}|${tokenAddressInput.toLowerCase()}`
@@ -286,7 +284,7 @@ export function EvmBatchDistributorPage() {
   const generatorUnavailableMessage = assetMode === "token" && !tokenDetails
     ? tokenLookup.status === "loading"
       ? "正在读取 Token 精度，完成后即可按该资产生成金额。"
-      : "请先填写并成功识别 Token 合约地址，再批量设置金额。"
+      : "请先识别 Token 合约。"
     : "";
   const readinessMessage = !wallet.connected || !wallet.getProvider()
     ? "请先连接发送钱包"
@@ -300,7 +298,7 @@ export function EvmBatchDistributorPage() {
             ? `请先处理 ${duplicateCount} 个重复地址`
             : parsed.validRows.length === 0
               ? "请先添加至少 1 个有效收款地址"
-              : "下一步会执行只读余额、授权与网络费预检，不会请求钱包签名";
+              : "下一步：只读预检，不会签名";
 
   const removeSelectedVerifiedNetwork = () => {
     if (!removeVerifiedEvmDistributionNetwork(selectedNetwork.chainId)) return;
@@ -732,7 +730,7 @@ export function EvmBatchDistributorPage() {
       categoryHref="/#distribution"
       categoryLabel="批量发送"
       currentToolId="evm-distribution"
-      description="在 EVM 网络批量发送原生币或 ERC20；工具会先读取资产信息并展示最终确认摘要。"
+      description="批量发送原生币或 ERC20。"
       eyebrow="One to many · EVM"
       mainClassName="page-distributor"
       meta={<><span className="pill network-pill">{selectedNetwork.label}</span><span className="pill">{assetSymbol}</span></>}
@@ -841,7 +839,7 @@ export function EvmBatchDistributorPage() {
                 {!nativeCurrencyEnabled ? (
                   <div className="notice">
                     <strong>当前链仅开放 Token 分发</strong>
-                    <span>原生币元数据尚未确认（来源：{nativeCurrencyMetadata.source === "viem" ? `viem ${nativeCurrencyMetadata.sourceVersion}` : "未配置"}）。你仍可读取 ERC20 信息并进行 Token 分发。</span>
+                    <span>原生币元数据未确认，仅可分发 Token。</span>
                     <a href="/evm/deploy/">前往部署页确认原生币元数据</a>
                   </div>
                 ) : null}

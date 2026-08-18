@@ -152,7 +152,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
         <div className="empty collection-filter-empty">
           <div role="status">
             <strong>当前筛选没有匹配结果</strong>
-            <p>全部 {results.length} 条执行结果仍然保留，清除筛选即可查看。</p>
+            <p>清除筛选可查看全部 {results.length} 条结果。</p>
           </div>
           <button className="button ghost compact-button" onClick={clearFilters} type="button">
             清除筛选
@@ -164,13 +164,21 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
 }
 
 export function CollectionResults({
-  emptyMessage = "解析来源钱包后，这里会显示每个地址的归集状态。",
+  description = "",
+  embedded = false,
+  emptyMessage = "预检结果会显示在这里。",
+  emptyTitle = "等待预检",
   exportFilename,
-  results
+  results,
+  title = "执行结果"
 }: {
+  description?: string;
+  embedded?: boolean;
   emptyMessage?: string;
+  emptyTitle?: string;
   exportFilename: string;
   results: CollectionDisplayResult[];
+  title?: string;
 }) {
   const resultSetIdentity = useMemo(() => getCollectionResultSetIdentity(results), [results]);
   const reviewResults = useMemo(
@@ -178,13 +186,17 @@ export function CollectionResults({
     [results]
   );
   const reviewExportFilename = exportFilename.replace(/\.csv$/i, "-needs-review.csv");
+  const Heading = embedded ? "h3" : "h2";
 
   return (
-    <section className="panel collection-results" aria-labelledby="collection-results-title">
+    <section
+      className={`${embedded ? "" : "panel "}collection-results${embedded ? " is-embedded" : ""}`}
+      aria-labelledby="collection-results-title"
+    >
       <div className="panel-header collection-results-header">
         <div>
-          <h2 className="panel-title" id="collection-results-title">执行结果</h2>
-          <p className="panel-note">成功、跳过和失败会逐地址保留，便于中断后核对。</p>
+          <Heading className="panel-title" id="collection-results-title">{title}</Heading>
+          {description ? <p className="panel-note">{description}</p> : null}
         </div>
         <div className="action-group">
           <button
@@ -212,7 +224,7 @@ export function CollectionResults({
         <div className="empty collection-empty">
           <div>
             <span className="collection-empty-mark" aria-hidden="true">↙</span>
-            <strong>等待归集清单</strong>
+            <strong>{emptyTitle}</strong>
             <p>{emptyMessage}</p>
           </div>
         </div>

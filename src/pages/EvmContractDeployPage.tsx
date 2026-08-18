@@ -478,7 +478,7 @@ export function EvmContractDeployPage() {
       categoryHref="/#contract"
       categoryLabel="合约工具"
       currentToolId="evm-contract-deploy"
-      description="通过 canonical CreateX 校验并部署固定 Disperse 合约；先完成地址与费用检查，再请求钱包签名。"
+      description="通过 CreateX 部署固定 Disperse 合约。"
       eyebrow="Deterministic deploy · EVM"
       mainClassName="page-deploy"
       meta={<><span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span><span className="pill">页面不接触私钥</span></>}
@@ -490,7 +490,6 @@ export function EvmContractDeployPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="deploy-title">部署配置</h2>
-                <p className="panel-note">Chain ID 会从 RPC 自动识别，目标地址、salt 和 initCode 固定不可编辑。</p>
               </div>
               <span className="pill network-pill">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "RPC 自动识别"}</span>
             </div>
@@ -498,9 +497,8 @@ export function EvmContractDeployPage() {
             <div className="form">
               <div className="batch-command">
                 <div className="command-copy">
-                  <span className="eyebrow">wallet gate</span>
                   <strong>{wallet.connected ? "部署钱包已连接" : wallet.status === "connecting" ? "等待钱包确认" : "连接 EVM 钱包"}</strong>
-                  <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后会按 RPC 的 Chain ID 切换网络、校验并签署部署交易。"}</span>
+                  <span>{wallet.connected ? wallet.statusText : wallet.message || "连接后切换网络并签署部署交易。"}</span>
                 </div>
                 <EvmWalletConnectionControl wallet={wallet} />
               </div>
@@ -548,7 +546,7 @@ export function EvmContractDeployPage() {
                 </div>
                 <p className={`hint deployment-rpc-hint${blockExplorerUrlIsValid ? "" : " error"}`}>
                   {blockExplorerUrlIsValid
-                    ? "部署校验和交易确认都使用主 RPC；区块浏览器留空时使用内置地址。"
+                    ? "校验与确认使用主 RPC；浏览器地址可留空。"
                     : "区块浏览器地址必须是有效的 HTTPS URL。"}
                 </p>
                 {automaticRegistryMetadata && automaticRegistryCurrency ? (
@@ -562,7 +560,7 @@ export function EvmContractDeployPage() {
                       <div><span>元数据来源</span><strong>viem {automaticRegistryMetadata.sourceVersion}</strong></div>
                       <div><span>原生币能力</span><strong>已按注册表自动开放</strong></div>
                     </div>
-                    <p className="hint">当前 Chain ID 的候选币种没有冲突，将直接用于原生币金额换算；如实际链配置不同可手动修改。</p>
+                    <p className="hint">将用此配置换算原生币，可手动修改。</p>
                     <div className="action-group network-config-actions">
                       <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>手动修改</button>
                     </div>
@@ -572,7 +570,7 @@ export function EvmContractDeployPage() {
                   <div className="deployment-contract-card custom-network-metadata" aria-label="链元数据存在冲突">
                     <div>
                       <strong>同一 Chain ID 存在多套原生币配置</strong>
-                      <p className="hint">程序不会自动选择。钱包已处于或已添加该链时，部署和 Token 分发仍可继续；只有明确选择后才开放原生币。</p>
+                      <p className="hint">不会自动选择；确认后才开放原生币。</p>
                     </div>
                     <div className="metadata-candidate-list">
                       {metadataConflict.metadataCandidates.map((candidate) => (
@@ -601,7 +599,7 @@ export function EvmContractDeployPage() {
                       <div><span>自动匹配</span><strong>未找到注册表记录</strong></div>
                       <div><span>当前能力</span><strong>合约部署 + Token 分发</strong></div>
                     </div>
-                    <p className="hint">钱包已处于或已添加该链时，不填写也不会阻止零 value 部署。钱包还没有该链或需要分发原生币时，再从官方文档确认。</p>
+                    <p className="hint">仍可部署和分发 Token；使用原生币前请查官方文档。</p>
                     <div className="action-group network-config-actions">
                       <button className="button ghost" type="button" disabled={busy} onClick={enableManualMetadataOverride}>配置原生币（可选）</button>
                     </div>
@@ -683,7 +681,7 @@ export function EvmContractDeployPage() {
                       </div>
                     </div>
                     <p className={`hint deployment-rpc-hint${customMetadataReady || !nativeMetadataConfirmed ? "" : " error"}`}>
-                      Chain ID {networkDiscovery.chainId}。这些字段仅用于解锁原生币；不确认时仍可部署并使用 Token 分发。
+                      Chain ID {networkDiscovery.chainId}。不确认时仍可部署并分发 Token。
                     </p>
                     <div className="action-group network-config-actions">
                       {!nativeMetadataConfirmed ? (
@@ -727,7 +725,7 @@ export function EvmContractDeployPage() {
                       <div><span>交易请求 Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
                       <div><span>EVM 执行费上限</span><strong>{estimatedFee}</strong></div>
                     </div>
-                    <span className="hint">签名请求会绑定上述 Gas 与费用参数；部分 L2 可能另收 L1 数据费，以钱包最终展示为准。</span>
+                    <span className="hint">签名将绑定上述参数；L2 数据费另计。</span>
                   </>
                 ) : null}
                 {hash && explorerUrl ? (
@@ -766,7 +764,7 @@ export function EvmContractDeployPage() {
                             : "未配置"}</strong>
                     </div>
                   </div>
-                  <p className="hint">添加后会保存主 RPC、浏览器地址和元数据确认记录。未确认原生币时，分发页会自动切换到 Token 模式。</p>
+                  <p className="hint">保存 RPC 与元数据；未确认原生币时仅启用 Token。</p>
                   {distributionRegistration.message ? (
                     <p className={`hint distribution-registration-message ${distributionRegistration.status}`} role="status">{distributionRegistration.message}</p>
                   ) : null}
@@ -802,7 +800,6 @@ export function EvmContractDeployPage() {
             <div className="panel-header">
               <div>
                 <h2 className="panel-title" id="deployment-checks-title">部署校验</h2>
-                <p className="panel-note">任何一项失败都会阻止签名；签名前会重新检查，确认后再验 runtime。</p>
               </div>
             </div>
             <div className="form">

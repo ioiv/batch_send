@@ -29,10 +29,8 @@ export function CollectionIntro({
 export function CollectionSafetyNote({ children }: { children?: React.ReactNode }) {
   return (
     <aside className="notice collection-safety-note" aria-label="归集安全提示">
-      <strong>开始前检查</strong>
-      <p>
-        先用测试网和小额钱包验证；确认目标地址、网络与资产合约。页面不会替你恢复误转资产。
-      </p>
+      <strong>安全检查</strong>
+      <p>请先小额测试，并核对网络、目标与合约。</p>
       {children}
     </aside>
   );

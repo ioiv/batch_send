@@ -117,7 +117,7 @@ export function NftInventoryReview({
         <div>
           <h3 id={titleId}>待归集资产</h3>
           <p id={descriptionId}>
-            清单内的有效资产都会归集；复选框仅用于批量移除，无效原始行仍会保留。
+            有效项均会归集；勾选仅用于移除；无效原始行仍会保留。
           </p>
         </div>
         <span className="pill" aria-live="polite">
@@ -129,7 +129,7 @@ export function NftInventoryReview({
         <div className="nft-inventory-review__empty empty">
           <span aria-hidden="true">＋</span>
           <strong>资产清单还是空的</strong>
-          <p>在上方自动识别、手动添加或导入文件后，NFT 会汇总到这里。</p>
+          <p>识别、添加或导入 NFT。</p>
         </div>
       ) : (
         <>

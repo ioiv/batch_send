@@ -4611,7 +4611,7 @@ body > .searchable-select-menu,
 }
 
 .site-security {
-  padding: 93px 0 108px;
+  padding: 64px 0 72px;
   background: #faf7f2;
   scroll-margin-top: 72px;
 }
@@ -4643,7 +4643,7 @@ body > .searchable-select-menu,
   grid-template-columns: 42px minmax(0, 1fr);
   gap: 17px;
   border-bottom: 1px solid #e4ddd4;
-  padding: 24px 0;
+  padding: 16px 0;
 }
 
 .site-security__steps li:first-child {
@@ -4673,13 +4673,13 @@ body > .searchable-select-menu,
 }
 
 .site-footer__inner {
-  min-height: 166px;
+  min-height: 112px;
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto;
   align-content: center;
   align-items: center;
   gap: 26px 48px;
-  padding-block: 36px;
+  padding-block: 24px;
 }
 
 .site-footer__brand {

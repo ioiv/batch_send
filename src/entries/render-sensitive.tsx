@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import "../app.css";
 import "../../warm-ivory.css";
 import "../tool-workbench.css";
+import "../collection-workbench.css";
 
 declare global {
   interface Window {

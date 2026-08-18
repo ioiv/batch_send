@@ -171,7 +171,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       </div>
       <div className="secret-file-import">
         <label className={`button ghost compact-button secret-file-button${disabled ? " is-disabled" : ""}`}>
-          选择本地文件
+          导入钱包文件
           <input
             accept=".txt,.csv,.json,text/plain,text/csv,application/json"
             aria-describedby={`${mode}-secret-file-status ${mode}-secret-help`}
@@ -214,7 +214,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         spellCheck={false}
       />
       <p className="hint secret-help" id={`${mode}-secret-help`}>
-        密钥和导入文件仅在当前页面内存中解析、签名，不会写入浏览器存储或发送到本站服务器；文件控件读取后会立即清空。任务结束后请立即清除。
+        密钥仅在本页内存处理，不存储、不上传；文件控件读取后会立即清空；任务后请清除。
       </p>
     </div>
   );
