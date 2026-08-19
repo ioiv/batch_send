@@ -17,6 +17,14 @@ import {
 import { rpcConfig } from "../config/rpc";
 import type { EvmWalletProvider } from "../hooks/useEvmWallet";
 import { getDuplicateAddressKey } from "./address";
+import {
+  autoEvmGasSettings,
+  getEvmFeeCapPerGas,
+  getEvmFeeRequest,
+  resolveEvmFeeQuote,
+  type EvmFeeQuote,
+  type EvmGasSettings
+} from "./evm-gas";
 
 export type EvmNetworkId =
   | "ethereum"
@@ -108,6 +116,7 @@ export type EvmDistributionPreflightResult = {
   assetBalanceWei: bigint;
   estimatedNetworkFeeWei: bigint;
   feeEstimateBasis: "rpc" | "conservative";
+  feeQuote: EvmFeeQuote;
   nativeBalanceWei: bigint;
   needsApproval: boolean;
   requiredNativeWei: bigint;
@@ -894,6 +903,7 @@ function addDistributionFeeBuffer(gas: bigint, gasPrice: bigint) {
 export async function preflightEvmDistribution({
   assetMode,
   from,
+  gasSettings = autoEvmGasSettings,
   network,
   rows,
   rpcEndpoint,
@@ -901,6 +911,7 @@ export async function preflightEvmDistribution({
 }: {
   assetMode: EvmAssetMode;
   from: string;
+  gasSettings?: EvmGasSettings;
   network: EvmNetworkConfig;
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
@@ -926,7 +937,7 @@ export async function preflightEvmDistribution({
       throw new Error(`钱包余额不足：分发金额需要 ${formatWei(totalWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
     }
 
-    const [gas, gasPrice] = await Promise.all([
+    const [gas, feeQuote] = await Promise.all([
       publicClient.estimateContractGas({
         abi: disperseAbi,
         account,
@@ -935,9 +946,9 @@ export async function preflightEvmDistribution({
         functionName: "disperseEther",
         value: totalWei
       }),
-      publicClient.getGasPrice()
+      resolveEvmFeeQuote(publicClient, gasSettings)
     ]);
-    const estimatedNetworkFeeWei = addDistributionFeeBuffer(gas, gasPrice);
+    const estimatedNetworkFeeWei = addDistributionFeeBuffer(gas, getEvmFeeCapPerGas(feeQuote));
     const requiredNativeWei = totalWei + estimatedNetworkFeeWei;
     if (balance < requiredNativeWei) {
       throw new Error(`钱包余额不足：分发与预估网络费共需 ${formatWei(requiredNativeWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
@@ -947,6 +958,7 @@ export async function preflightEvmDistribution({
       assetBalanceWei: balance,
       estimatedNetworkFeeWei,
       feeEstimateBasis: "rpc",
+      feeQuote,
       nativeBalanceWei: balance,
       needsApproval: false,
       requiredNativeWei,
@@ -957,7 +969,7 @@ export async function preflightEvmDistribution({
   if (!token) throw new Error("请先填写并读取 ERC20 Token 合约地址");
   const tokenAddress = getAddress(token.address);
   await ensureTokenContract(publicClient, network, tokenAddress);
-  const [tokenBalance, allowance, nativeBalance, gasPrice] = await Promise.all([
+  const [tokenBalance, allowance, nativeBalance, feeQuote] = await Promise.all([
     publicClient.readContract({
       abi: erc20Abi,
       address: tokenAddress,
@@ -971,7 +983,7 @@ export async function preflightEvmDistribution({
       functionName: "allowance"
     }),
     publicClient.getBalance({ address: account }),
-    publicClient.getGasPrice()
+    resolveEvmFeeQuote(publicClient, gasSettings)
   ]);
   if (tokenBalance < totalWei) {
     throw new Error(`Token 余额不足：本次需要 ${formatWei(totalWei, token.decimals)} ${token.symbol}，当前余额 ${formatWei(tokenBalance, token.decimals)} ${token.symbol}`);
@@ -996,7 +1008,10 @@ export async function preflightEvmDistribution({
       args: [tokenAddress, recipients, values],
       functionName: "disperseToken"
     });
-  const estimatedNetworkFeeWei = addDistributionFeeBuffer(approvalGas + distributionGas, gasPrice);
+  const estimatedNetworkFeeWei = addDistributionFeeBuffer(
+    approvalGas + distributionGas,
+    getEvmFeeCapPerGas(feeQuote)
+  );
   if (nativeBalance < estimatedNetworkFeeWei) {
     throw new Error(`原生币余额不足以支付预估网络费：需要约 ${formatWei(estimatedNetworkFeeWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(nativeBalance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
   }
@@ -1005,6 +1020,7 @@ export async function preflightEvmDistribution({
     assetBalanceWei: tokenBalance,
     estimatedNetworkFeeWei,
     feeEstimateBasis: needsApproval ? "conservative" : "rpc",
+    feeQuote,
     nativeBalanceWei: nativeBalance,
     needsApproval,
     requiredNativeWei: estimatedNetworkFeeWei,
@@ -1014,7 +1030,9 @@ export async function preflightEvmDistribution({
 
 export async function sendEvmNativeDistribution({
   assertWalletContext = assertEvmWalletContext,
+  feeQuote,
   from,
+  gasSettings = autoEvmGasSettings,
   onSubmitted,
   provider,
   rows,
@@ -1022,7 +1040,9 @@ export async function sendEvmNativeDistribution({
   network
 }: {
   assertWalletContext?: typeof assertEvmWalletContext;
+  feeQuote?: EvmFeeQuote;
   from: string;
+  gasSettings?: EvmGasSettings;
   network: EvmNetworkConfig;
   onSubmitted?: (hash: Hash) => void;
   provider: EvmWalletProvider;
@@ -1053,12 +1073,14 @@ export async function sendEvmNativeDistribution({
   }
 
   await assertWalletContext({ account, network, provider });
+  const resolvedFeeQuote = feeQuote || await resolveEvmFeeQuote(publicClient, gasSettings);
   const hash = await walletClient.writeContract({
     abi: disperseAbi,
     account,
     address: network.disperseContractAddress,
     args: [recipients, values],
     functionName: "disperseEther",
+    ...getEvmFeeRequest(resolvedFeeQuote),
     value: totalWei
   });
   onSubmitted?.(hash);
@@ -1066,12 +1088,14 @@ export async function sendEvmNativeDistribution({
   if (receipt.status !== "success") {
     throw new Error("EVM 分发交易已上链但执行失败");
   }
-  return { hash, receipt };
+  return { feeQuote: resolvedFeeQuote, hash, receipt };
 }
 
 export async function sendEvmTokenDistribution({
   assertWalletContext = assertEvmWalletContext,
+  feeQuote,
   from,
+  gasSettings = autoEvmGasSettings,
   network,
   onStep,
   postApprovalPreflight = preflightEvmDistribution,
@@ -1081,7 +1105,9 @@ export async function sendEvmTokenDistribution({
   token
 }: {
   assertWalletContext?: typeof assertEvmWalletContext;
+  feeQuote?: EvmFeeQuote;
   from: string;
+  gasSettings?: EvmGasSettings;
   network: EvmNetworkConfig;
   onStep?: (step: EvmTokenDistributionStep) => void;
   postApprovalPreflight?: typeof preflightEvmDistribution;
@@ -1128,6 +1154,7 @@ export async function sendEvmTokenDistribution({
   const needsApproval = allowance < totalWei;
   const totalTransactions = needsApproval ? 2 : 1;
   const hashes: Hash[] = [];
+  let resolvedFeeQuote = feeQuote || await resolveEvmFeeQuote(publicClient, gasSettings);
 
   onStep?.({
     needsApproval,
@@ -1142,7 +1169,8 @@ export async function sendEvmTokenDistribution({
       account,
       address: tokenAddress,
       args: [network.disperseContractAddress, totalWei],
-      functionName: "approve"
+      functionName: "approve",
+      ...getEvmFeeRequest(resolvedFeeQuote)
     });
     hashes.push(approvalHash);
     onStep?.({
@@ -1166,6 +1194,7 @@ export async function sendEvmTokenDistribution({
     const freshPreflight = await postApprovalPreflight({
       assetMode: "token",
       from: account,
+      gasSettings,
       network,
       rows,
       rpcEndpoint,
@@ -1174,6 +1203,7 @@ export async function sendEvmTokenDistribution({
     if (freshPreflight.needsApproval) {
       throw new Error("Token 授权后复检未通过：授权额度仍不足，请核对授权交易后重新预检");
     }
+    resolvedFeeQuote = freshPreflight.feeQuote;
   }
 
   await assertWalletContext({ account, network, provider });
@@ -1182,7 +1212,8 @@ export async function sendEvmTokenDistribution({
     account,
     address: network.disperseContractAddress,
     args: [tokenAddress, recipients, values],
-    functionName: "disperseToken"
+    functionName: "disperseToken",
+    ...getEvmFeeRequest(resolvedFeeQuote)
   });
   hashes.push(hash);
   onStep?.({
@@ -1204,5 +1235,5 @@ export async function sendEvmTokenDistribution({
     type: "distribution-confirmed"
   });
 
-  return { hash, hashes, receipt };
+  return { feeQuote: resolvedFeeQuote, hash, hashes, receipt };
 }

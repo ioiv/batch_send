@@ -76,6 +76,7 @@ function makeHarness({
     getBalance: vi.fn().mockResolvedValue(1_000_000n),
     getChainId: vi.fn().mockResolvedValue(network.chainId),
     getCode: vi.fn().mockResolvedValue("0x1234"),
+    getGasPrice: vi.fn().mockResolvedValue(2n),
     readContract: vi.fn(({ functionName }: { functionName: string }) => {
       if (functionName === "balanceOf") return Promise.resolve(tokenBalance);
       if (functionName === "allowance") return Promise.resolve(allowance);
@@ -100,6 +101,12 @@ function successfulFreshPreflight(): EvmDistributionPreflightResult {
     assetBalanceWei: 1_000n,
     estimatedNetworkFeeWei: 100n,
     feeEstimateBasis: "rpc",
+    feeQuote: {
+      gasPrice: 2n,
+      sampledAt: 1,
+      source: "rpc",
+      type: "legacy"
+    },
     nativeBalanceWei: 1_000n,
     needsApproval: false,
     requiredNativeWei: 100n,
@@ -161,6 +168,30 @@ describe("EVM distribution signing gates", () => {
     })).rejects.toThrow("签名前钱包的账户或网络已改变，请重新预检");
 
     expect(walletClient.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("binds the preflight legacy quote to a native write", async () => {
+    const { walletClient } = makeHarness();
+
+    await sendEvmNativeDistribution({
+      feeQuote: {
+        gasPrice: 7n,
+        sampledAt: 1,
+        source: "custom",
+        type: "legacy"
+      },
+      from: account,
+      network,
+      provider: makeProvider(),
+      rows,
+      rpcEndpoint: network.rpcEndpoint
+    });
+
+    expect(walletClient.writeContract).toHaveBeenCalledWith(expect.objectContaining({
+      gasPrice: 7n,
+      functionName: "disperseEther"
+    }));
+    expect(walletClient.writeContract.mock.calls[0][0]).not.toHaveProperty("maxFeePerGas");
   });
 });
 
@@ -230,6 +261,7 @@ describe("sendEvmTokenDistribution post-approval preflight", () => {
     expect(postApprovalPreflight).toHaveBeenCalledWith({
       assetMode: "token",
       from: checksummedAccount,
+      gasSettings: { mode: "auto" },
       network,
       rows,
       rpcEndpoint: network.rpcEndpoint,
@@ -284,6 +316,13 @@ describe("sendEvmTokenDistribution post-approval preflight", () => {
 
     const result = await sendEvmTokenDistribution({
       assertWalletContext,
+      feeQuote: {
+        maxFeePerGas: 30n,
+        maxPriorityFeePerGas: 2n,
+        sampledAt: 1,
+        source: "custom",
+        type: "eip1559"
+      },
       from: account,
       network,
       onStep: (step) => steps.push(step),
@@ -298,11 +337,16 @@ describe("sendEvmTokenDistribution post-approval preflight", () => {
     expect(postApprovalPreflight).toHaveBeenCalledOnce();
     expect(walletClient.writeContract).toHaveBeenCalledTimes(2);
     expect(walletClient.writeContract).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      functionName: "approve"
+      functionName: "approve",
+      maxFeePerGas: 30n,
+      maxPriorityFeePerGas: 2n
     }));
     expect(walletClient.writeContract).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      functionName: "disperseToken"
+      functionName: "disperseToken",
+      gasPrice: 2n
     }));
+    expect(walletClient.writeContract.mock.calls[0][0]).not.toHaveProperty("gasPrice");
+    expect(walletClient.writeContract.mock.calls[1][0]).not.toHaveProperty("maxFeePerGas");
     expect(steps.map((step) => step.type)).toEqual([
       "allowance-checked",
       "approval-submitted",

@@ -7,10 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const deployMocks = vi.hoisted(() => ({
   deploy: vi.fn(),
+  getLiveGas: vi.fn(),
   providerRequest: vi.fn(),
   resolveNetwork: vi.fn(),
   validate: vi.fn()
 }));
+
+vi.mock("../lib/evm-gas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/evm-gas")>();
+  return { ...actual, getLiveEvmFeeQuote: deployMocks.getLiveGas };
+});
 
 vi.mock("../hooks/useEvmWallet", () => ({
   useEvmWallet: () => ({
@@ -60,6 +66,12 @@ afterEach(cleanup);
 beforeEach(() => {
   window.localStorage.clear();
   deployMocks.deploy.mockReset();
+  deployMocks.getLiveGas.mockReset().mockResolvedValue({
+    gasPrice: 2_000_000_000n,
+    sampledAt: 1_700_000_000_000,
+    source: "rpc",
+    type: "legacy"
+  });
   deployMocks.providerRequest.mockReset();
   deployMocks.resolveNetwork.mockReset().mockImplementation(async (rpcEndpoint: string) => ({
     blockExplorerUrl: "https://etherscan.io",
@@ -86,6 +98,38 @@ async function prepareReadyDeploymentPage() {
 }
 
 describe("EvmContractDeployPage safety", () => {
+  it("shows live Gas and passes a custom Gas Price into deployment validation", async () => {
+    const user = userEvent.setup();
+    render(createElement(EvmContractDeployPage));
+
+    expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+    await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "6");
+    await user.click(screen.getByRole("button", { name: "校验部署条件" }));
+
+    await screen.findByRole("button", { name: "确认部署" });
+    expect(deployMocks.validate).toHaveBeenCalledWith(expect.objectContaining({
+      gasSettings: {
+        fee: { gasPrice: 6_000_000_000n, type: "legacy" },
+        mode: "custom"
+      }
+    }));
+  });
+
+  it("blocks deployment validation while the custom Gas Price is invalid", async () => {
+    const user = userEvent.setup();
+    render(createElement(EvmContractDeployPage));
+    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+
+    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
+    expect(deployMocks.validate).not.toHaveBeenCalled();
+  });
+
   it("does not expose retry after a deployment hash enters an uncertain state", () => {
     const state = getDeploymentSafetyState(
       "error",
@@ -136,7 +180,7 @@ describe("EvmContractDeployPage safety", () => {
     const user = await prepareReadyDeploymentPage();
     expect(screen.getByRole("button", { name: "确认部署" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "RPC、浏览器与链元数据" }));
+    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
     const explorerInput = screen.getByRole("textbox", { name: "区块浏览器地址" });
     await user.clear(explorerInput);
     await user.type(explorerInput, "https://explorer.example");
@@ -147,6 +191,15 @@ describe("EvmContractDeployPage safety", () => {
     });
     expect(deployMocks.validate).toHaveBeenCalledTimes(1);
     expect(deployMocks.deploy).not.toHaveBeenCalled();
+  });
+
+  it("invalidates deployment confirmation when the Gas setting changes", async () => {
+    const user = await prepareReadyDeploymentPage();
+    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
+
+    expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
   });
 
   it("completes deployment, keeps registration explicit, and starts a clean task on confirmation", async () => {
@@ -174,6 +227,9 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.getByRole("textbox", { name: "EVM 分发链名称" })).toHaveValue("Ethereum");
     expect(screen.getByRole("button", { name: "加入 EVM 分发" })).toBeEnabled();
     expect(screen.queryByText("链配置已加入")).not.toBeInTheDocument();
+    expect(deployMocks.deploy).toHaveBeenCalledWith(expect.objectContaining({
+      gasSettings: { mode: "auto" }
+    }));
 
     await user.click(screen.getByRole("button", { name: "新建部署任务" }));
     const newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建部署任务？" });
@@ -206,7 +262,7 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.queryByRole("button", { name: "重新校验" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "校验部署条件" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "RPC、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "true");
 
     const newTaskTrigger = screen.getByRole("button", { name: "新建部署任务" });
     await user.click(newTaskTrigger);

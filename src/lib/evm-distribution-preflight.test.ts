@@ -57,12 +57,48 @@ describe("preflightEvmDistribution", () => {
       assetBalanceWei: 1_000n,
       estimatedNetworkFeeWei: 240n,
       feeEstimateBasis: "rpc",
+      feeQuote: {
+        gasPrice: 2n,
+        sampledAt: expect.any(Number),
+        source: "rpc",
+        type: "legacy"
+      },
       nativeBalanceWei: 1_000n,
       needsApproval: false,
       requiredNativeWei: 340n,
       totalTransactions: 1
     });
     expect(mocks.estimateContractGas).toHaveBeenCalledWith(expect.objectContaining({ functionName: "disperseEther" }));
+  });
+
+  it("uses a custom EIP-1559 fee cap for the balance budget", async () => {
+    mocks.getBalance.mockResolvedValue(1_000n);
+    mocks.estimateContractGas.mockResolvedValue(100n);
+
+    const result = await preflightEvmDistribution({
+      assetMode: "native",
+      from,
+      gasSettings: {
+        fee: {
+          maxFeePerGas: 3n,
+          maxPriorityFeePerGas: 1n,
+          type: "eip1559"
+        },
+        mode: "custom"
+      },
+      network,
+      rows,
+      rpcEndpoint: network.rpcEndpoint
+    });
+
+    expect(result.estimatedNetworkFeeWei).toBe(360n);
+    expect(result.feeQuote).toMatchObject({
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+      source: "custom",
+      type: "eip1559"
+    });
+    expect(mocks.getGasPrice).not.toHaveBeenCalled();
   });
 
   it("reports the additional approval and uses a conservative token fee estimate", async () => {

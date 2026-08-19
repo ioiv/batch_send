@@ -328,6 +328,29 @@ describe("runDisperseDeploymentValidation", () => {
       status: "ready"
     });
   });
+
+  it("uses custom fee parameters without requesting an RPC fee quote", async () => {
+    const harness = makeHarness({ balance: 3_000_000_000_000_000n });
+
+    const result = await runDisperseDeploymentValidation({
+      account,
+      gasSettings: {
+        fee: { gasPrice: 4_000_000_000n, type: "legacy" },
+        mode: "custom"
+      },
+      network: harness.network,
+      provider: harness.provider,
+      rpcEndpoint
+    });
+
+    expect(result).toMatchObject({
+      estimatedFee: 2_400_000_000_000_000n,
+      feeCapPerGas: 4_000_000_000n,
+      feeParameters: { gasPrice: 4_000_000_000n, type: "legacy" }
+    });
+    expect(harness.httpClient.estimateFeesPerGas).not.toHaveBeenCalled();
+    expect(harness.httpClient.getGasPrice).not.toHaveBeenCalled();
+  });
 });
 
 describe("deployDisperseContract", () => {
@@ -393,6 +416,33 @@ describe("deployDisperseContract", () => {
       gasPrice: 3_000_000_000n
     }));
     expect(harness.walletClient.writeContract.mock.calls[0][0]).not.toHaveProperty("maxFeePerGas");
+  });
+
+  it("binds custom EIP-1559 parameters to the deployment request", async () => {
+    const harness = makeHarness({ balance: 2_000_000_000_000_000n });
+
+    await deployDisperseContract({
+      account,
+      gasSettings: {
+        fee: {
+          maxFeePerGas: 2_000_000_000n,
+          maxPriorityFeePerGas: 250_000_000n,
+          type: "eip1559"
+        },
+        mode: "custom"
+      },
+      network: harness.network,
+      provider: harness.provider,
+      rpcEndpoint
+    });
+
+    expect(harness.walletClient.writeContract).toHaveBeenCalledWith(expect.objectContaining({
+      gas: 600_000n,
+      maxFeePerGas: 2_000_000_000n,
+      maxPriorityFeePerGas: 250_000_000n
+    }));
+    expect(harness.walletClient.writeContract.mock.calls[0][0]).not.toHaveProperty("gasPrice");
+    expect(harness.httpClient.estimateFeesPerGas).not.toHaveBeenCalled();
   });
 
   it("does not request a signature after the page invalidates the deployment context", async () => {

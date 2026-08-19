@@ -18,6 +18,14 @@ import {
   maximumCollectionSources,
   maximumEvmCollectionAssets
 } from "./collection-workload";
+import {
+  autoEvmGasSettings,
+  getEvmFeeCapPerGas,
+  getEvmFeeRequest,
+  resolveEvmFeeQuote,
+  type EvmFeeQuote,
+  type EvmGasSettings
+} from "./evm-gas";
 
 export type EvmCollectionStandard = "erc20" | "erc721" | "erc1155";
 
@@ -162,6 +170,7 @@ export type EvmCollectionErrorInfo = {
 export type EvmCollectionPublicClient = Pick<
   PublicClient,
   | "estimateGas"
+  | "estimateFeesPerGas"
   | "getBalance"
   | "getGasPrice"
   | "readContract"
@@ -1078,12 +1087,14 @@ function storeOperationResults(
  * state can change between preview and signing.
  */
 export async function preflightEvmCollectionPlan({
+  gasSettings = autoEvmGasSettings,
   maxFeePerTransactionWei,
   onProgress,
   plan,
   publicClient,
   targetAddress
 }: {
+  gasSettings?: EvmGasSettings;
   maxFeePerTransactionWei: bigint;
   onProgress?: (progress: EvmCollectionProgress) => void;
   plan: readonly EvmCollectionPlanItem[];
@@ -1094,16 +1105,16 @@ export async function preflightEvmCollectionPlan({
   const preflightPlan = plan.map((item) => ({ ...item }));
   const reservedFeeBySource = new Map<string, bigint>();
   const balanceRequests = new Map<string, Promise<bigint>>();
-  let gasPriceRequest: Promise<bigint> | null = null;
+  let feeQuoteRequest: Promise<EvmFeeQuote> | null = null;
   let estimatedNetworkFee = 0n;
   let executableTransactions = 0;
   const operations = buildCollectionExecutionOperations(plan);
 
-  const getGasPrice = () => {
-    if (!gasPriceRequest) {
-      gasPriceRequest = publicClient.getGasPrice().then((value) => assertBigIntResult(value, "Gas Price"));
+  const getFeeQuote = () => {
+    if (!feeQuoteRequest) {
+      feeQuoteRequest = resolveEvmFeeQuote(publicClient, gasSettings);
     }
-    return gasPriceRequest;
+    return feeQuoteRequest;
   };
   const getNativeBalance = (address: Address) => {
     const key = address.toLowerCase();
@@ -1166,17 +1177,17 @@ export async function preflightEvmCollectionPlan({
         plan.length,
         `正在估算${getOperationDescription(operation)}的网络费`
       );
-      const [estimatedGas, gasPrice, nativeBalance] = await Promise.all([
+      const [estimatedGas, feeQuote, nativeBalance] = await Promise.all([
         publicClient.estimateGas({
           account: signer.account,
           data: encodeCollectionOperationData(operation, target),
           to: signer.asset.contractAddress
         }).then((value) => assertBigIntResult(value, "Gas 估算")),
-        getGasPrice(),
+        getFeeQuote(),
         getNativeBalance(signer.address)
       ]);
       const gasLimit = (estimatedGas * 120n + 99n) / 100n;
-      const maximumNetworkFee = gasLimit * gasPrice;
+      const maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
       if (maximumNetworkFee > maxFeePerTransactionWei) {
         throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
       }
@@ -1205,6 +1216,7 @@ export async function preflightEvmCollectionPlan({
 }
 
 export async function executeEvmCollectionPlan({
+  gasSettings = autoEvmGasSettings,
   getWalletClient,
   maxFeePerTransactionWei,
   onProgress,
@@ -1212,6 +1224,7 @@ export async function executeEvmCollectionPlan({
   publicClient,
   targetAddress
 }: {
+  gasSettings?: EvmGasSettings;
   getWalletClient: (
     account: PrivateKeyAccount,
     item: EvmCollectionPlanItem
@@ -1287,17 +1300,17 @@ export async function executeEvmCollectionPlan({
         plan.length,
         `正在估算并限制${getOperationDescription(operation)}的网络费`
       );
-      const [estimatedGas, gasPrice, nativeBalance] = await Promise.all([
+      const [estimatedGas, feeQuote, nativeBalance] = await Promise.all([
         publicClient.estimateGas({
           account: signer.account,
           data: encodeCollectionOperationData(operation, target),
           to: signer.asset.contractAddress
         }).then((value) => assertBigIntResult(value, "Gas 估算")),
-        publicClient.getGasPrice().then((value) => assertBigIntResult(value, "Gas Price")),
+        resolveEvmFeeQuote(publicClient, gasSettings),
         publicClient.getBalance({ address: signer.address }).then((value) => assertBigIntResult(value, "原生币余额"))
       ]);
       const gasLimit = (estimatedGas * 120n + 99n) / 100n;
-      const maximumNetworkFee = gasLimit * gasPrice;
+      const maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
       if (maximumNetworkFee > maxFeePerTransactionWei) {
         throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
       }
@@ -1307,7 +1320,7 @@ export async function executeEvmCollectionPlan({
       preparedRequest = {
         ...(simulation.request as Record<string, unknown>),
         gas: gasLimit,
-        gasPrice
+        ...getEvmFeeRequest(feeQuote)
       };
     } catch (error) {
       const detail = normalizeEvmCollectionError(error, "网络费检查失败", "fee-check-failed");

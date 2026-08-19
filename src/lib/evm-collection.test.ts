@@ -448,6 +448,27 @@ describe("executeEvmCollectionPlan", () => {
       expect(getBalance).toHaveBeenCalledOnce();
     });
 
+    it("uses the custom fee cap during read-only preflight", async () => {
+      const account = parseAccounts([privateKeyOne])[0];
+      const [item] = await readyPlansForAllStandards(account);
+      const { client: publicClient, getGasPrice } = makePublicClient();
+
+      const preflight = await preflightEvmCollectionPlan({
+        gasSettings: {
+          fee: { gasPrice: 20n, type: "legacy" },
+          mode: "custom"
+        },
+        maxFeePerTransactionWei,
+        plan: [item],
+        publicClient,
+        targetAddress
+      });
+
+      expect(preflight.estimatedNetworkFee).toBe(2_400n);
+      expect(preflight.plan[0].status).toBe("ready");
+      expect(getGasPrice).not.toHaveBeenCalled();
+    });
+
     it("removes a failed simulation from the final confirmation plan", async () => {
       const account = parseAccounts([privateKeyOne])[0];
       const [item] = await readyPlansForAllStandards(account);
@@ -547,6 +568,38 @@ describe("executeEvmCollectionPlan", () => {
       "confirming"
     ]);
     expect(writeContract.mock.calls[0][0]).toMatchObject({ gas: 120n, gasPrice: 10n });
+  });
+
+  it("uses one custom EIP-1559 quote for both the fee cap and prepared write", async () => {
+    const account = parseAccounts([privateKeyOne])[0];
+    const [item] = await readyPlansForAllStandards(account);
+    const { client: publicClient, getGasPrice } = makePublicClient();
+    const { client: walletClient, writeContract } = makeWalletClient();
+
+    const [result] = await executeEvmCollectionPlan({
+      gasSettings: {
+        fee: {
+          maxFeePerGas: 20n,
+          maxPriorityFeePerGas: 2n,
+          type: "eip1559"
+        },
+        mode: "custom"
+      },
+      getWalletClient: () => walletClient,
+      maxFeePerTransactionWei,
+      plan: [item],
+      publicClient,
+      targetAddress
+    });
+
+    expect(result.status).toBe("success");
+    expect(writeContract).toHaveBeenCalledWith(expect.objectContaining({
+      gas: 120n,
+      maxFeePerGas: 20n,
+      maxPriorityFeePerGas: 2n
+    }));
+    expect(writeContract.mock.calls[0][0]).not.toHaveProperty("gasPrice");
+    expect(getGasPrice).not.toHaveBeenCalled();
   });
 
   it("batches ERC1155 Token IDs from the same wallet and contract into one transaction", async () => {

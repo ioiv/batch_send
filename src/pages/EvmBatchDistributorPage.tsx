@@ -6,6 +6,7 @@ import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DistributionListGenerator } from "../components/DistributionListGenerator";
+import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
@@ -17,6 +18,7 @@ import {
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
 import { useEvmWallet } from "../hooks/useEvmWallet";
+import { useEvmGas } from "../hooks/useEvmGas";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
 import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
@@ -212,6 +214,10 @@ export function EvmBatchDistributorPage() {
     value: network.id
   })), [networkState.networks]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
+  const gas = useEvmGas({
+    network: selectedNetwork,
+    rpcEndpoint: effectiveRpcEndpoint
+  });
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const tokenAddressInput = tokenAddress.trim();
   const tokenRequestKey = assetMode === "token" && tokenAddressInput
@@ -256,6 +262,7 @@ export function EvmBatchDistributorPage() {
     && generatedListReady
     && parsed.validRows.length > 0
     && parsed.invalid === 0
+    && Boolean(gas.gasSettings)
     && !preflighting
     && !sending
     && !sendComplete
@@ -327,15 +334,17 @@ export function EvmBatchDistributorPage() {
     ? "请先连接发送钱包"
     : listImporting
       ? "正在导入清单，请稍候"
-      : !assetReady
-        ? assetMode === "token" ? "请先填写并成功识别 Token 合约地址" : "当前链尚未开放原生币分发"
-        : generatedList.invalid > 0 || parsed.invalid > 0
-          ? `请先修正 ${invalidCount} 处清单错误`
-          : generatedList.duplicates > 0 || parsed.duplicates > 0
-            ? `请先处理 ${duplicateCount} 个重复地址`
-            : parsed.validRows.length === 0
-              ? "请先添加至少 1 个有效收款地址"
-              : "清单可预检";
+      : !gas.gasSettings
+        ? "请填写有效的自定义 Gas Price"
+        : !assetReady
+          ? assetMode === "token" ? "请先填写并成功识别 Token 合约地址" : "当前链尚未开放原生币分发"
+          : generatedList.invalid > 0 || parsed.invalid > 0
+            ? `请先修正 ${invalidCount} 处清单错误`
+            : generatedList.duplicates > 0 || parsed.duplicates > 0
+              ? `请先处理 ${duplicateCount} 个重复地址`
+              : parsed.validRows.length === 0
+                ? "请先添加至少 1 个有效收款地址"
+                : "清单可预检";
   const pageStatus = safetyState.workbenchStatus;
   const pageStatusLabel = unresolvedSubmission
     ? "已提交，待核对"
@@ -585,7 +594,8 @@ export function EvmBatchDistributorPage() {
   };
 
   const prepareDistribution = async () => {
-    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address) return;
+    const gasSettings = gas.gasSettings;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address || !gasSettings) return;
     sendOperationRef.current = true;
     const preflightEpoch = ++preflightEpochRef.current;
     setConfirmVisible(true);
@@ -599,6 +609,7 @@ export function EvmBatchDistributorPage() {
       const result = await preflightEvmDistribution({
         assetMode,
         from: wallet.address,
+        gasSettings,
         network: selectedNetwork,
         rows: parsed.validRows,
         rpcEndpoint: effectiveRpcEndpoint,
@@ -628,7 +639,8 @@ export function EvmBatchDistributorPage() {
 
   const sendDistribution = async () => {
     const walletProvider = wallet.getProvider();
-    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !showFinalSummary || sendState.status !== "idle") return;
+    const gasSettings = gas.gasSettings;
+    if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !showFinalSummary || sendState.status !== "idle" || !gasSettings) return;
     sendOperationRef.current = true;
     let observedSignatures: string[] = [];
     let observedProgress = createSendProgress(1);
@@ -671,6 +683,7 @@ export function EvmBatchDistributorPage() {
         preflight: () => preflightEvmDistribution({
           assetMode,
           from: wallet.address,
+          gasSettings,
           network: selectedNetwork,
           rows: parsed.validRows,
           rpcEndpoint: effectiveRpcEndpoint,
@@ -704,7 +717,9 @@ export function EvmBatchDistributorPage() {
             if (!tokenDetails) throw new Error("请先填写并读取 ERC20 Token 合约地址");
 
             const { hashes } = await sendEvmTokenDistribution({
+              feeQuote: freshPreflight.feeQuote,
               from: wallet.address,
+              gasSettings,
               network: selectedNetwork,
               onStep: observeTokenStep,
               provider: walletProvider,
@@ -728,7 +743,9 @@ export function EvmBatchDistributorPage() {
           }
 
           const { hash } = await sendEvmNativeDistribution({
+            feeQuote: freshPreflight.feeQuote,
             from: wallet.address,
+            gasSettings,
             network: selectedNetwork,
             onSubmitted: (submittedHash) => {
               observedSignatures = [submittedHash];
@@ -787,7 +804,12 @@ export function EvmBatchDistributorPage() {
 
   return (
     <ToolPageLayout
-      actions={<EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
+      actions={(
+        <>
+          <EvmGasBadge gas={gas} />
+          <EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />
+        </>
+      )}
       className="page-distributor"
       currentToolId="evm-distribution"
       status={pageStatus}
@@ -966,6 +988,11 @@ export function EvmBatchDistributorPage() {
           </Tabs>
 
           <AdvancedSettings disabled={pageControlsLocked} label="RPC、Gas 与链设置">
+            <EvmGasSettings
+              disabled={pageControlsLocked}
+              gas={gas}
+              onSettingsChange={resetConfirmation}
+            />
             <Field>
               <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
               <Input

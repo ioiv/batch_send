@@ -32,6 +32,14 @@ import {
   type EvmNativeCurrencyMetadata,
   type EvmChainConfig
 } from "./evm";
+import {
+  autoEvmGasSettings,
+  getEvmFeeCapPerGas,
+  getEvmFeeRequest,
+  resolveEvmFeeQuote,
+  type EvmFeeParameters,
+  type EvmGasSettings
+} from "./evm-gas";
 
 const deploymentNetworkMetadata: EvmChainConfig[] = [
   {
@@ -115,16 +123,7 @@ export type DisperseDeploymentPreflight = {
   targetState: ContractCodeState;
 };
 
-export type DisperseDeploymentFeeParameters =
-  | {
-      maxFeePerGas: bigint;
-      maxPriorityFeePerGas: bigint;
-      type: "eip1559";
-    }
-  | {
-      gasPrice: bigint;
-      type: "legacy";
-    };
+export type DisperseDeploymentFeeParameters = EvmFeeParameters;
 
 export type DisperseDeploymentNetworkDiscovery = {
   blockExplorerUrl: string;
@@ -167,6 +166,7 @@ export type DisperseDeploymentStage =
 
 type RunDisperseDeploymentValidationArgs = {
   account: string;
+  gasSettings?: EvmGasSettings;
   network: EvmChainConfig;
   onChecks?: (checks: DisperseDeploymentCheck[]) => void;
   provider: EvmWalletProvider;
@@ -248,34 +248,17 @@ export function getBufferedDeploymentGasLimit(estimatedGas: bigint) {
 }
 
 async function getDeploymentFeeParameters(
-  publicClient: ReturnType<typeof createEvmPublicClient>
+  publicClient: ReturnType<typeof createEvmPublicClient>,
+  gasSettings: EvmGasSettings
 ): Promise<DisperseDeploymentFeeParameters> {
-  try {
-    const fees = await publicClient.estimateFeesPerGas();
-    if (
-      "maxFeePerGas" in fees
-      && typeof fees.maxFeePerGas === "bigint"
-      && "maxPriorityFeePerGas" in fees
-      && typeof fees.maxPriorityFeePerGas === "bigint"
-      && fees.maxFeePerGas >= fees.maxPriorityFeePerGas
-    ) {
-      return {
-        maxFeePerGas: fees.maxFeePerGas,
-        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+  const quote = await resolveEvmFeeQuote(publicClient, gasSettings);
+  return quote.type === "eip1559"
+    ? {
+        maxFeePerGas: quote.maxFeePerGas,
+        maxPriorityFeePerGas: quote.maxPriorityFeePerGas,
         type: "eip1559"
-      };
-    }
-    if ("gasPrice" in fees && typeof fees.gasPrice === "bigint") {
-      return { gasPrice: fees.gasPrice, type: "legacy" };
-    }
-  } catch {
-    // Fall back for legacy or partially implemented RPCs.
-  }
-  return { gasPrice: await publicClient.getGasPrice(), type: "legacy" };
-}
-
-function getDeploymentFeeCapPerGas(feeParameters: DisperseDeploymentFeeParameters) {
-  return feeParameters.type === "eip1559" ? feeParameters.maxFeePerGas : feeParameters.gasPrice;
+      }
+    : { gasPrice: quote.gasPrice, type: "legacy" };
 }
 
 function hasExpectedContractCreationEvent(receipt: TransactionReceipt) {
@@ -537,6 +520,7 @@ export function getDisperseDeploymentErrorMessage(error: unknown) {
 
 export async function runDisperseDeploymentValidation({
   account,
+  gasSettings = autoEvmGasSettings,
   network,
   onChecks,
   provider,
@@ -721,7 +705,7 @@ export async function runDisperseDeploymentValidation({
         functionName: "deployCreate2",
         value: 0n
       }),
-      getDeploymentFeeParameters(publicClient),
+      getDeploymentFeeParameters(publicClient, gasSettings),
       publicClient.getBalance({ address: accountAddress })
     ]);
     assertCurrentValidationContext();
@@ -755,7 +739,7 @@ export async function runDisperseDeploymentValidation({
   });
 
   const gasLimit = getBufferedDeploymentGasLimit(estimatedGas);
-  const feeCapPerGas = getDeploymentFeeCapPerGas(feeParameters);
+  const feeCapPerGas = getEvmFeeCapPerGas(feeParameters);
   const estimatedFee = gasLimit * feeCapPerGas;
   if (balance < estimatedFee) {
     reporter.fail(
@@ -785,6 +769,7 @@ export async function runDisperseDeploymentValidation({
 
 export async function deployDisperseContract({
   account,
+  gasSettings = autoEvmGasSettings,
   network,
   onChecks,
   onStage,
@@ -794,6 +779,7 @@ export async function deployDisperseContract({
 }: DeployDisperseContractArgs) {
   const preflight = await runDisperseDeploymentValidation({
     account,
+    gasSettings,
     network,
     onChecks,
     provider,
@@ -836,12 +822,7 @@ export async function deployDisperseContract({
   if (!preflight.feeParameters) {
     throw new DisperseDeploymentValidationError("部署费用参数缺失，请重新校验", preflight.checks);
   }
-  const feeRequest = preflight.feeParameters.type === "eip1559"
-    ? {
-        maxFeePerGas: preflight.feeParameters.maxFeePerGas,
-        maxPriorityFeePerGas: preflight.feeParameters.maxPriorityFeePerGas
-      }
-    : { gasPrice: preflight.feeParameters.gasPrice };
+  const feeRequest = getEvmFeeRequest(preflight.feeParameters);
   const hash = await walletClient.writeContract({
     abi: createXAbi,
     account: accountAddress,

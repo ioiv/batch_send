@@ -18,7 +18,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: resolve(projectRoot, "index.html"),
-        formatGenerator: resolve(projectRoot, "format/index.html"),
         batchDistributor: resolve(projectRoot, "sol/index.html"),
         solCollection: resolve(projectRoot, "sol/collect/index.html"),
         evmBatchDistributor: resolve(projectRoot, "evm/index.html"),

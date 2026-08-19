@@ -1,8 +1,8 @@
-export type ToolCategory = "distribution" | "collection" | "contract" | "utility";
+export type ToolCategory = "distribution" | "collection" | "contract";
 
 export type ToolEcosystem = "evm" | "solana";
 
-export type ToolIcon = "send" | "collect" | "nft" | "sol" | "contract" | "format";
+export type ToolIcon = "send" | "collect" | "nft" | "sol" | "contract";
 
 export interface ToolDefinition {
   id: string;
@@ -48,12 +48,6 @@ export const toolCategories: ToolCategoryDefinition[] = [
     label: "合约工具",
     description: "部署、校验并管理 EVM 合约",
     href: "/#contract"
-  },
-  {
-    id: "utility",
-    label: "数据工具",
-    description: "整理批量交易所需的地址与金额清单",
-    href: "/#utility"
   }
 ];
 
@@ -138,17 +132,6 @@ export const tools: ToolDefinition[] = [
     ecosystems: ["evm"],
     icon: "contract",
     keywords: ["CreateX", "CREATE2", "合约", "部署"]
-  },
-  {
-    id: "format-generator",
-    title: "分发格式生成",
-    shortTitle: "格式生成",
-    description: "把地址与金额整理为批量发送工具可直接校验的清单。",
-    href: "/format/",
-    category: "utility",
-    ecosystems: ["evm", "solana"],
-    icon: "format",
-    keywords: ["格式", "清单", "地址", "金额"]
   }
 ];
 

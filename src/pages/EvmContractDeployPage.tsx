@@ -5,6 +5,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
@@ -15,6 +16,7 @@ import {
   ResultTable,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
+import { useEvmGas } from "../hooks/useEvmGas";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
 import {
@@ -39,6 +41,7 @@ import {
   getEvmNativeCurrencyMetadata,
   isEvmNativeCurrencyEnabled,
   registerVerifiedEvmDistributionNetwork,
+  unconfirmedEvmNativeCurrency,
   type EvmChainConfig,
   type EvmDistributionNetworkId
 } from "../lib/evm";
@@ -177,13 +180,29 @@ export function EvmContractDeployPage() {
   const effectiveRpcEndpoint = rpcEndpoint.trim();
   const effectiveBlockExplorerUrl = blockExplorerUrl.trim().replace(/\/+$/, "");
   const blockExplorerUrlIsValid = isOptionalHttpsUrl(effectiveBlockExplorerUrl);
+  const gasNetwork = useMemo<EvmChainConfig>(() => {
+    if (networkSource === "known" || !networkDiscovery) return selectedKnownNetwork;
+    return {
+      blockExplorerUrl: networkDiscovery.blockExplorerUrl,
+      chainId: networkDiscovery.chainId,
+      label: networkDiscovery.label,
+      nativeCurrency: networkDiscovery.nativeCurrency || unconfirmedEvmNativeCurrency,
+      rpcEndpoint: networkDiscovery.rpcEndpoint
+    };
+  }, [networkDiscovery, networkSource, selectedKnownNetwork]);
+  const gas = useEvmGas({
+    enabled: networkSource === "known" || Boolean(networkDiscovery),
+    network: gasNetwork,
+    rpcEndpoint: effectiveRpcEndpoint
+  });
+  const gasContextKey = gas.settingsKey;
   const metadataContextKey = [
     customNetworkMetadata.chainName.trim(),
     customNetworkMetadata.nativeCurrencyName.trim(),
     customNetworkMetadata.nativeCurrencySymbol.trim(),
     customNetworkMetadata.nativeCurrencyDecimals.trim()
   ].join("|");
-  const contextKey = `${wallet.address.toLowerCase()}|${effectiveRpcEndpoint}|${effectiveBlockExplorerUrl}|${manualMetadataOverride}|${nativeMetadataConfirmed}|${selectedMetadataCandidateKey}|${metadataContextKey}`;
+  const contextKey = `${wallet.address.toLowerCase()}|${effectiveRpcEndpoint}|${effectiveBlockExplorerUrl}|${manualMetadataOverride}|${nativeMetadataConfirmed}|${selectedMetadataCandidateKey}|${metadataContextKey}|${gasContextKey}`;
   const latestContextKeyRef = useRef(contextKey);
   const operationIdRef = useRef(0);
   useLayoutEffect(() => {
@@ -216,6 +235,7 @@ export function EvmContractDeployPage() {
     && Boolean(provider)
     && Boolean(effectiveRpcEndpoint)
     && blockExplorerUrlIsValid
+    && Boolean(gas.gasSettings)
     && !busy;
   const canDeploy = canValidate && status === "ready";
   const deploymentComplete = safetyState.deploymentComplete;
@@ -345,7 +365,8 @@ export function EvmContractDeployPage() {
 
   const runValidation = async () => {
     const walletProvider = wallet.getProvider();
-    if (!wallet.connected || !wallet.address || !walletProvider) return;
+    const gasSettings = gas.gasSettings;
+    if (!wallet.connected || !wallet.address || !walletProvider || !gasSettings) return;
 
     const expectedContextKey = contextKey;
     const operationId = operationIdRef.current + 1;
@@ -389,6 +410,7 @@ export function EvmContractDeployPage() {
 
       const nextPreflight = await runDisperseDeploymentValidation({
         account: wallet.address,
+        gasSettings,
         network: resolvedNetwork,
         onChecks: (nextChecks) => updateChecks(nextChecks, expectedContextKey, operationId),
         provider: walletProvider,
@@ -421,7 +443,8 @@ export function EvmContractDeployPage() {
 
   const deployContract = async () => {
     const walletProvider = wallet.getProvider();
-    if (!canDeploy || !wallet.address || !walletProvider || !network) return;
+    const gasSettings = gas.gasSettings;
+    if (!canDeploy || !wallet.address || !walletProvider || !network || !gasSettings) return;
 
     const expectedContextKey = contextKey;
     const operationId = operationIdRef.current + 1;
@@ -437,6 +460,7 @@ export function EvmContractDeployPage() {
     try {
       const result = await deployDisperseContract({
         account: wallet.address,
+        gasSettings,
         network,
         onChecks: (nextChecks) => updateChecks(nextChecks, expectedContextKey, operationId),
         shouldContinue: () => isOperationCurrent(operationId, expectedContextKey),
@@ -537,6 +561,7 @@ export function EvmContractDeployPage() {
     <ToolPageLayout
       actions={(
         <>
+          <EvmGasBadge gas={gas} />
           <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
           {status !== "idle" ? (
             <ConfirmActionDialog
@@ -652,7 +677,12 @@ export function EvmContractDeployPage() {
             </TabsContent>
           </Tabs>
 
-          <AdvancedSettings disabled={configurationLocked} label="RPC、浏览器与链元数据">
+          <AdvancedSettings disabled={configurationLocked} label="RPC、Gas、浏览器与链元数据">
+            <EvmGasSettings
+              disabled={configurationLocked}
+              gas={gas}
+              onSettingsChange={resetDeploymentState}
+            />
             {networkSource === "known" ? (
               <Field>
                 <FieldLabel htmlFor="deployKnownRpcEndpoint">HTTPS RPC</FieldLabel>

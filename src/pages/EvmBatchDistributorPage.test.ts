@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const pageMocks = vi.hoisted(() => ({
   ensureNetwork: vi.fn(),
+  getLiveGas: vi.fn(),
   getNativeBalance: vi.fn(),
   getTokenBalance: vi.fn(),
   getTokenDetails: vi.fn(),
@@ -34,6 +35,11 @@ vi.mock("../hooks/useEvmWallet", () => ({
     wallets: []
   })
 }));
+
+vi.mock("../lib/evm-gas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/evm-gas")>();
+  return { ...actual, getLiveEvmFeeQuote: pageMocks.getLiveGas };
+});
 
 vi.mock("../lib/evm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/evm")>();
@@ -67,6 +73,12 @@ const preflightResult = {
   assetBalanceWei: 10_000_000_000_000_000_000n,
   estimatedNetworkFeeWei: 100_000_000_000_000n,
   feeEstimateBasis: "rpc" as const,
+  feeQuote: {
+    gasPrice: 2_000_000_000n,
+    sampledAt: 1_700_000_000_000,
+    source: "rpc" as const,
+    type: "legacy" as const
+  },
   nativeBalanceWei: 10_000_000_000_000_000_000n,
   needsApproval: false,
   requiredNativeWei: 200_000_000_000_000_000n,
@@ -80,6 +92,7 @@ beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   pageMocks.ensureNetwork.mockReset().mockResolvedValue(undefined);
+  pageMocks.getLiveGas.mockReset().mockResolvedValue(preflightResult.feeQuote);
   pageMocks.getNativeBalance.mockReset().mockResolvedValue(preflightResult.nativeBalanceWei);
   pageMocks.getTokenBalance.mockReset().mockResolvedValue(1_000_000_000n);
   pageMocks.getTokenDetails.mockReset().mockResolvedValue({
@@ -125,6 +138,52 @@ async function prepareReadyTokenDistributionPage() {
 }
 
 describe("EvmBatchDistributorPage safety", () => {
+  it("shows live Gas and passes a custom Gas Price into preflight", async () => {
+    const user = userEvent.setup();
+    render(createElement(EvmBatchDistributorPage));
+
+    expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+    await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "3.25");
+    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.click(screen.getByRole("button", { name: "运行预检" }));
+
+    await screen.findByRole("button", { name: "确认分发" });
+    expect(pageMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+      gasSettings: {
+        fee: { gasPrice: 3_250_000_000n, type: "legacy" },
+        mode: "custom"
+      }
+    }));
+  });
+
+  it("blocks preflight while the custom Gas Price is invalid", async () => {
+    const user = userEvent.setup();
+    render(createElement(EvmBatchDistributorPage));
+    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+
+    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
+    expect(pageMocks.preflight).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a ready distribution confirmation when the Gas setting changes", async () => {
+    const { user } = await prepareReadyDistributionPage();
+    expect(screen.getByRole("button", { name: "确认分发" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
+    await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
+
+    expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
+    expect(pageMocks.preflight).toHaveBeenCalledTimes(1);
+  });
+
   it("locks an in-place retry after any transaction hash was observed", () => {
     const state = getEvmDistributionSafetyState({
       preflightStatus: "success",
@@ -291,6 +350,10 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);
     expect(pageMocks.sendNative).toHaveBeenCalledTimes(1);
+    expect(pageMocks.sendNative).toHaveBeenCalledWith(expect.objectContaining({
+      feeQuote: preflightResult.feeQuote,
+      gasSettings: { mode: "auto" }
+    }));
   });
 
   it("renders confirmed and uncertain rows when a token distribution partially fails", async () => {

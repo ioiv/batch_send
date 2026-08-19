@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { CollectionResults } from "../components/CollectionResults";
+import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { NftAssetInput } from "../components/NftAssetInput";
 import { NftInventoryReview } from "../components/NftInventoryReview";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -19,6 +20,7 @@ import {
   ExecutionProgress,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
+import { useEvmGas } from "../hooks/useEvmGas";
 import {
   executeEvmCollectionPlan,
   parseEvmCollectionAssets,
@@ -294,6 +296,10 @@ export function EvmCollectionPage({
   const planRef = useRef<EvmCollectionPlanItem[]>([]);
   const selectedNetwork = getEvmNetworkConfig(networkId, networks);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
+  const gas = useEvmGas({
+    network: selectedNetwork,
+    rpcEndpoint: effectiveRpcEndpoint
+  });
   const standard: EvmCollectionStandard = fixedStandard === "erc20" ? "erc20" : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
   const assetInput = fixedStandard === "erc20" ? erc20AssetInput : nftAssetInputs[nftStandard];
@@ -408,6 +414,7 @@ export function EvmCollectionPage({
 
   const scanAssets = async (assetInputOverride?: string) => {
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running) return;
+    const gasSettings = gas.gasSettings;
     operationRef.current = true;
     setIssues([]);
     setMessage("");
@@ -420,6 +427,7 @@ export function EvmCollectionPage({
     if (!isAddress(targetAddress.trim())) nextIssues.push("目标地址不是有效的 EVM 地址");
     else if (getAddress(targetAddress.trim()) === zeroAddress) nextIssues.push("目标地址不能是零地址，以免资产被销毁");
     if (!effectiveRpcEndpoint) nextIssues.push("请输入可用的 RPC 地址");
+    if (!gasSettings) nextIssues.push("请输入有效的自定义 Gas Price");
     if (parseMaximumFee() === null) nextIssues.push("单笔最大网络费需要是大于 0 的有效金额");
 
     const parsedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "");
@@ -444,6 +452,10 @@ export function EvmCollectionPage({
       setMessage("请修正输入后重新扫描");
       return;
     }
+    if (!gasSettings) {
+      operationRef.current = false;
+      return;
+    }
 
     setStage("scanning");
     setMessage(`正在通过 ${selectedNetwork.label} RPC 读取资产、模拟交易并预检网络费`);
@@ -463,6 +475,7 @@ export function EvmCollectionPage({
         throw new Error("单笔最大网络费格式已变化");
       }
       const preflight = await preflightEvmCollectionPlan({
+        gasSettings,
         maxFeePerTransactionWei,
         onProgress: (progress) => {
           if (progress.stage === "simulating" || progress.stage === "estimating") {
@@ -848,6 +861,13 @@ export function EvmCollectionPage({
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current
       || stage !== "ready" || !plan.length || !isAddress(targetAddress.trim())) return;
 
+    const gasSettings = gas.gasSettings;
+    if (!gasSettings) {
+      invalidatePlan(false);
+      setStage("error");
+      setMessage("Gas 设置已变化，请填写有效值后重新扫描");
+      return;
+    }
     const target = getAddress(targetAddress.trim());
     const maxFeePerTransactionWei = parseMaximumFee();
     if (maxFeePerTransactionWei === null) {
@@ -888,6 +908,7 @@ export function EvmCollectionPage({
         publicClient
       });
       const freshPreflight = await preflightEvmCollectionPlan({
+        gasSettings,
         maxFeePerTransactionWei,
         plan: freshOwnershipPlan,
         publicClient,
@@ -909,6 +930,7 @@ export function EvmCollectionPage({
       const chain = toEvmChain(selectedNetwork, effectiveRpcEndpoint);
       signingStarted = true;
       const executionResults = await executeEvmCollectionPlan({
+        gasSettings,
         getWalletClient: (account) => createWalletClient({
           account,
           chain,
@@ -974,6 +996,7 @@ export function EvmCollectionPage({
     <ToolPageLayout
       actions={(
         <>
+          <EvmGasBadge gas={gas} />
           <Badge variant="outline">{selectedNetwork.label}</Badge>
           <ConfirmActionDialog
             confirmLabel="清空任务"
@@ -1020,7 +1043,7 @@ export function EvmCollectionPage({
                         </div>
                       ) : null}
                       <div>
-                        <span>单笔 Gas 上限</span>
+                        <span>单笔网络费预算上限</span>
                         <strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong>
                       </div>
                     </div>
@@ -1037,7 +1060,7 @@ export function EvmCollectionPage({
               ) : keysCleared ? (
                 <Button onClick={focusKeyInput} type="button">重新导入来源密钥</Button>
               ) : (
-                <Button disabled={running} onClick={() => void scanAssets()} type="button">预检资产与费用</Button>
+                <Button disabled={running || !gas.gasSettings} onClick={() => void scanAssets()} type="button">预检资产与费用</Button>
               )}
             </div>
           )}
@@ -1366,6 +1389,11 @@ export function EvmCollectionPage({
             )}
 
             <AdvancedSettings disabled={controlsLocked} label="RPC 与 Gas 设置">
+              <EvmGasSettings
+                disabled={controlsLocked}
+                gas={gas}
+                onSettingsChange={() => invalidatePlan()}
+              />
               <Field>
                 <FieldLabel htmlFor="evm-collection-rpc">RPC 地址</FieldLabel>
                 <Input
@@ -1385,7 +1413,7 @@ export function EvmCollectionPage({
               </Field>
               <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
                 <FieldLabel htmlFor="evm-collection-max-fee">
-                  单笔 Gas 上限（{selectedNetwork.nativeCurrency.symbol}）
+                  单笔网络费预算上限（{selectedNetwork.nativeCurrency.symbol}）
                 </FieldLabel>
                 <Input
                   aria-invalid={maximumFeeAmount === null ? true : undefined}

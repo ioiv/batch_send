@@ -11,6 +11,7 @@ const evmMocks = vi.hoisted(() => ({
   createWalletClient: vi.fn(),
   discoverEnumerable: vi.fn(),
   execute: vi.fn(),
+  getLiveGas: vi.fn(),
   inspectContract: vi.fn(),
   plan: vi.fn(),
   preflight: vi.fn()
@@ -24,6 +25,11 @@ vi.mock("viem", async (importOriginal) => {
 vi.mock("../lib/evm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/evm")>();
   return { ...actual, assertEvmRpcNetwork: evmMocks.assertNetwork };
+});
+
+vi.mock("../lib/evm-gas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/evm-gas")>();
+  return { ...actual, getLiveEvmFeeQuote: evmMocks.getLiveGas };
 });
 
 vi.mock("../lib/evm-collection", async (importOriginal) => {
@@ -103,6 +109,12 @@ afterEach(() => {
 beforeEach(() => {
   evmMocks.assertNetwork.mockResolvedValue(undefined);
   evmMocks.createWalletClient.mockReturnValue({});
+  evmMocks.getLiveGas.mockResolvedValue({
+    gasPrice: 2_000_000_000n,
+    sampledAt: 1_700_000_000_000,
+    source: "rpc",
+    type: "legacy"
+  });
   evmMocks.plan.mockResolvedValue([planItem]);
   evmMocks.preflight.mockResolvedValue({
     estimatedNetworkFee: 1_000_000_000_000n,
@@ -166,6 +178,56 @@ async function discoverNft() {
 }
 
 describe("EvmCollectionPage workbench", () => {
+  it("shows live Gas and passes a custom Gas Price into collection preflight", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+    await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "4.5");
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
+
+    await screen.findByRole("button", { name: "确认并开始归集" });
+    expect(evmMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+      gasSettings: {
+        fee: { gasPrice: 4_500_000_000n, type: "legacy" },
+        mode: "custom"
+      }
+    }));
+    expect(screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ })).toBeInTheDocument();
+  });
+
+  it("blocks collection preflight while the custom Gas Price is invalid", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
+    const gasSettings = screen.getByLabelText("Gas 设置");
+    await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+
+    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "预检资产与费用" })).toBeDisabled();
+    expect(evmMocks.preflight).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a ready collection plan when the Gas setting changes", async () => {
+    const user = await prepareReadyErc20Page();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
+    await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
+
+    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新导入来源密钥" })).toBeEnabled();
+  });
+
   it("renders source-mode and standard controls without legacy steps or promotion copy", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
 
@@ -368,6 +430,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.preflight).toHaveBeenCalledTimes(2);
     expect(evmMocks.createWalletClient).toHaveBeenCalledTimes(1);
     expect(evmMocks.execute.mock.calls[0][0].plan).toEqual([planItem]);
+    expect(evmMocks.execute.mock.calls[0][0].gasSettings).toEqual({ mode: "auto" });
     expect(await screen.findByText(/执行结束：1 笔确认成功/)).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
     expect(screen.getByRole("textbox", { name: "来源钱包密钥" })).toHaveValue("");
