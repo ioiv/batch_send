@@ -27,7 +27,7 @@ import {
   type EvmGasSettings
 } from "./evm-gas";
 
-export type EvmCollectionStandard = "erc20" | "erc721" | "erc1155";
+export type EvmCollectionStandard = "native" | "erc20" | "erc721" | "erc1155";
 
 export type EvmCollectionAccount = {
   account: PrivateKeyAccount;
@@ -61,6 +61,10 @@ export type ParseEvmPrivateKeyInputResult = {
 export type EvmAccountDeriver = (privateKey: Hex) => PrivateKeyAccount;
 
 export type EvmCollectionAsset =
+  | {
+      key: "native";
+      standard: "native";
+    }
   | {
       contractAddress: Address;
       key: string;
@@ -177,7 +181,12 @@ export type EvmCollectionPublicClient = Pick<
   | "simulateContract"
   | "waitForTransactionReceipt"
 >;
-export type EvmCollectionWalletClient = Pick<WalletClient, "writeContract">;
+export type EvmCollectionWalletClient = Pick<WalletClient, "sendTransaction" | "writeContract">;
+
+export const evmNativeCollectionAsset = {
+  key: "native",
+  standard: "native"
+} as const satisfies EvmCollectionAsset;
 
 export const erc20CollectionAbi = parseAbi([
   "function name() view returns (string)",
@@ -445,7 +454,10 @@ function parseContractAddress(value: string) {
   }
 }
 
-function parseAssetLine(line: string, standard: EvmCollectionStandard) {
+function parseAssetLine(
+  line: string,
+  standard: Exclude<EvmCollectionStandard, "native">
+) {
   const problems: string[] = [];
   const firstComma = line.indexOf(",");
   const secondComma = firstComma < 0 ? -1 : line.indexOf(",", firstComma + 1);
@@ -498,6 +510,30 @@ export function parseEvmCollectionAssets(
   input: string,
   standard: EvmCollectionStandard
 ): ParseEvmCollectionAssetsResult {
+  if (standard === "native") {
+    if (input.trim()) {
+      return {
+        assets: [],
+        duplicates: 0,
+        invalid: 1,
+        rows: [{
+          asset: null,
+          line: 1,
+          problems: ["原生币归集模式不接受 Token 合约地址"],
+          status: "invalid"
+        }],
+        validAssets: []
+      };
+    }
+    return {
+      assets: [evmNativeCollectionAsset],
+      duplicates: 0,
+      invalid: 0,
+      rows: [{ asset: evmNativeCollectionAsset, line: 1, problems: [], status: "valid" }],
+      validAssets: [evmNativeCollectionAsset]
+    };
+  }
+
   const assets: EvmCollectionAsset[] = [];
   const rows: EvmCollectionAssetRow[] = [];
   const seen = new Set<string>();
@@ -604,6 +640,41 @@ function createPlanItem(args: Omit<EvmCollectionPlanItem, "id" | "label"> & {
     id: `${item.asset.key}:${addressKey}`,
     label: safeLabel(item.label, "来源钱包")
   } satisfies EvmCollectionPlanItem;
+}
+
+async function planNativeAsset(
+  asset: Extract<EvmCollectionAsset, { standard: "native" }>,
+  accounts: readonly EvmCollectionAccount[],
+  publicClient: EvmCollectionPublicClient
+) {
+  return Promise.all(accounts.map(async (source) => {
+    try {
+      const balance = assertBigIntResult(
+        await publicClient.getBalance({ address: source.address }),
+        "原生币余额"
+      );
+      return createPlanItem({
+        account: source.account,
+        address: source.address,
+        amount: balance,
+        asset,
+        label: source.label,
+        message: balance === 0n ? "原生币余额为 0，已跳过" : "已检测到可归集原生币余额",
+        status: balance === 0n ? "skipped" : "ready"
+      });
+    } catch (error) {
+      const detail = normalizeEvmCollectionError(error, "无法读取原生币余额", "read-failed");
+      return createPlanItem({
+        account: source.account,
+        address: source.address,
+        amount: 0n,
+        asset,
+        label: source.label,
+        message: `读取原生币余额失败：${detail.message}`,
+        status: "failed"
+      });
+    }
+  }));
 }
 
 async function planErc20Asset(
@@ -763,7 +834,9 @@ export async function planEvmCollection({
 }): Promise<EvmCollectionPlanItem[]> {
   const plan: EvmCollectionPlanItem[] = [];
   for (const asset of assets) {
-    if (asset.standard === "erc20") {
+    if (asset.standard === "native") {
+      plan.push(...await planNativeAsset(asset, accounts, publicClient));
+    } else if (asset.standard === "erc20") {
       plan.push(...await planErc20Asset(asset, accounts, publicClient));
     } else if (asset.standard === "erc721") {
       plan.push(...await planErc721Asset(asset, accounts, publicClient));
@@ -913,6 +986,8 @@ function getOperationSigner(operation: EvmCollectionExecutionOperation) {
 }
 
 function getOperationDescription(operation: EvmCollectionExecutionOperation) {
+  const primary = getOperationPrimaryItem(operation);
+  if (primary.asset.standard === "native") return "原生币归集交易";
   return operation.kind === "erc1155-batch"
     ? `ERC1155 批量归集（${operation.entries.length} 个 Token ID）`
     : "归集交易";
@@ -933,6 +1008,9 @@ function emitOperationProgress(
 
 function encodeCollectionTransferData(item: EvmCollectionPlanItem, targetAddress: Address) {
   if (!item.address) throw new EvmCollectionCoreError("invalid-input", "归集计划缺少来源地址");
+  if (item.asset.standard === "native") {
+    throw new EvmCollectionCoreError("invalid-input", "原生币归集不应编码合约调用数据");
+  }
   if (item.asset.standard === "erc20") {
     return encodeFunctionData({
       abi: erc20CollectionAbi,
@@ -985,6 +1063,15 @@ async function simulateCollectionTransfer(
     throw new EvmCollectionCoreError("invalid-input", "归集计划缺少签名账户");
   }
 
+  if (item.asset.standard === "native") {
+    return {
+      request: {
+        account: item.account,
+        to: targetAddress,
+        value: item.amount
+      }
+    };
+  }
   if (item.asset.standard === "erc20") {
     const { request, result } = await publicClient.simulateContract({
       abi: erc20CollectionAbi,
@@ -1016,6 +1103,61 @@ async function simulateCollectionTransfer(
     functionName: "safeTransferFrom"
   });
   return { request };
+}
+
+async function estimateNativeCollectionTransfer({
+  account,
+  balance,
+  feeQuote,
+  maxFeePerTransactionWei,
+  publicClient,
+  targetAddress
+}: {
+  account: PrivateKeyAccount;
+  balance: bigint;
+  feeQuote: EvmFeeQuote;
+  maxFeePerTransactionWei: bigint;
+  publicClient: EvmCollectionPublicClient;
+  targetAddress: Address;
+}) {
+  if (balance <= 0n) {
+    throw new EvmCollectionCoreError("fee-check-failed", "来源钱包没有可归集的原生币余额");
+  }
+
+  const feeRequest = getEvmFeeRequest(feeQuote);
+  const feeCapPerGas = getEvmFeeCapPerGas(feeQuote);
+  let gasLimit = 0n;
+  let maximumNetworkFee = 0n;
+  let value = 1n;
+
+  // Re-estimate with the amount that remains after the buffered fee. A small
+  // bounded loop covers payable contracts whose receive path depends on value
+  // without risking an unbounded RPC sequence.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const estimatedGas = assertBigIntResult(await publicClient.estimateGas({
+      account,
+      ...feeRequest,
+      to: targetAddress,
+      value
+    }), "Gas 估算");
+    const nextGasLimit = (estimatedGas * 120n + 99n) / 100n;
+    const nextMaximumNetworkFee = nextGasLimit * feeCapPerGas;
+    if (nextMaximumNetworkFee > maxFeePerTransactionWei) {
+      throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+    }
+    if (balance <= nextMaximumNetworkFee) {
+      throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以支付最大网络费");
+    }
+    const nextValue = balance - nextMaximumNetworkFee;
+    if (nextGasLimit === gasLimit && nextValue === value) {
+      return { gasLimit: nextGasLimit, maximumNetworkFee: nextMaximumNetworkFee, value: nextValue };
+    }
+    gasLimit = nextGasLimit;
+    maximumNetworkFee = nextMaximumNetworkFee;
+    value = nextValue;
+  }
+
+  return { gasLimit, maximumNetworkFee, value };
 }
 
 async function simulateCollectionOperation(
@@ -1062,10 +1204,16 @@ function updateOperationPlanItems(
   plan: EvmCollectionPlanItem[],
   operation: EvmCollectionExecutionOperation,
   status: EvmCollectionPlanStatus,
-  message: string
+  message: string,
+  amount?: bigint
 ) {
   operation.entries.forEach(({ index, item }) => {
-    plan[index] = { ...item, message: redactSecrets(message), status };
+    plan[index] = {
+      ...item,
+      ...(amount === undefined ? {} : { amount }),
+      message: redactSecrets(message),
+      status
+    };
   });
 }
 
@@ -1074,10 +1222,16 @@ function storeOperationResults(
   operation: EvmCollectionExecutionOperation,
   status: EvmCollectionResultStatus,
   message: string,
-  hash: Hash | null = null
+  hash: Hash | null = null,
+  amount?: bigint
 ) {
   operation.entries.forEach(({ index, item }) => {
-    results[index] = resultFromPlanItem(item, status, message, hash);
+    results[index] = resultFromPlanItem(
+      amount === undefined ? item : { ...item, amount },
+      status,
+      message,
+      hash
+    );
   });
 }
 
@@ -1177,32 +1331,54 @@ export async function preflightEvmCollectionPlan({
         plan.length,
         `正在估算${getOperationDescription(operation)}的网络费`
       );
-      const [estimatedGas, feeQuote, nativeBalance] = await Promise.all([
-        publicClient.estimateGas({
-          account: signer.account,
-          data: encodeCollectionOperationData(operation, target),
-          to: signer.asset.contractAddress
-        }).then((value) => assertBigIntResult(value, "Gas 估算")),
+      const sourceKey = signer.address.toLowerCase();
+      const reservedFee = reservedFeeBySource.get(sourceKey) || 0n;
+      const [feeQuote, nativeBalance] = await Promise.all([
         getFeeQuote(),
         getNativeBalance(signer.address)
       ]);
-      const gasLimit = (estimatedGas * 120n + 99n) / 100n;
-      const maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
-      if (maximumNetworkFee > maxFeePerTransactionWei) {
-        throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+      let maximumNetworkFee: bigint;
+      let nativeTransferAmount: bigint | undefined;
+
+      if (signer.asset.standard === "native") {
+        if (nativeBalance <= reservedFee) {
+          throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以覆盖已预留网络费");
+        }
+        const nativeEstimate = await estimateNativeCollectionTransfer({
+          account: signer.account,
+          balance: nativeBalance - reservedFee,
+          feeQuote,
+          maxFeePerTransactionWei,
+          publicClient,
+          targetAddress: target
+        });
+        maximumNetworkFee = nativeEstimate.maximumNetworkFee;
+        nativeTransferAmount = nativeEstimate.value;
+        reservedFeeBySource.set(sourceKey, nativeBalance);
+      } else {
+        const estimatedGas = assertBigIntResult(await publicClient.estimateGas({
+          account: signer.account,
+          data: encodeCollectionOperationData(operation, target),
+          to: signer.asset.contractAddress
+        }), "Gas 估算");
+        const gasLimit = (estimatedGas * 120n + 99n) / 100n;
+        maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
+        if (maximumNetworkFee > maxFeePerTransactionWei) {
+          throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+        }
+        if (nativeBalance < reservedFee + maximumNetworkFee) {
+          throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以覆盖本次归集的预估网络费");
+        }
+        reservedFeeBySource.set(sourceKey, reservedFee + maximumNetworkFee);
       }
-      const sourceKey = signer.address.toLowerCase();
-      const reservedFee = reservedFeeBySource.get(sourceKey) || 0n;
-      if (nativeBalance < reservedFee + maximumNetworkFee) {
-        throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以覆盖本次归集的预估网络费");
-      }
-      reservedFeeBySource.set(sourceKey, reservedFee + maximumNetworkFee);
       estimatedNetworkFee += maximumNetworkFee;
       executableTransactions += 1;
-      const message = operation.kind === "erc1155-batch"
+      const message = signer.asset.standard === "native"
+        ? "已预留最大网络费并完成原生币归集预检"
+        : operation.kind === "erc1155-batch"
         ? `已完成批量交易模拟与网络费预检（${operation.entries.length} 个 Token ID）`
         : "已完成交易模拟与网络费预检";
-      updateOperationPlanItems(preflightPlan, operation, "ready", message);
+      updateOperationPlanItems(preflightPlan, operation, "ready", message, nativeTransferAmount);
       emitOperationProgress(onProgress, operation, "ready", plan.length, message);
     } catch (error) {
       const detail = normalizeEvmCollectionError(error, "网络费预检失败", "fee-check-failed");
@@ -1292,6 +1468,7 @@ export async function executeEvmCollectionPlan({
     }
 
     let preparedRequest: unknown;
+    let submittedAmount: bigint | undefined;
     try {
       emitOperationProgress(
         onProgress,
@@ -1300,28 +1477,47 @@ export async function executeEvmCollectionPlan({
         plan.length,
         `正在估算并限制${getOperationDescription(operation)}的网络费`
       );
-      const [estimatedGas, feeQuote, nativeBalance] = await Promise.all([
-        publicClient.estimateGas({
-          account: signer.account,
-          data: encodeCollectionOperationData(operation, target),
-          to: signer.asset.contractAddress
-        }).then((value) => assertBigIntResult(value, "Gas 估算")),
+      const [feeQuote, nativeBalance] = await Promise.all([
         resolveEvmFeeQuote(publicClient, gasSettings),
         publicClient.getBalance({ address: signer.address }).then((value) => assertBigIntResult(value, "原生币余额"))
       ]);
-      const gasLimit = (estimatedGas * 120n + 99n) / 100n;
-      const maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
-      if (maximumNetworkFee > maxFeePerTransactionWei) {
-        throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+      if (signer.asset.standard === "native") {
+        const nativeEstimate = await estimateNativeCollectionTransfer({
+          account: signer.account,
+          balance: nativeBalance,
+          feeQuote,
+          maxFeePerTransactionWei,
+          publicClient,
+          targetAddress: target
+        });
+        submittedAmount = nativeEstimate.value;
+        preparedRequest = {
+          account: signer.account,
+          gas: nativeEstimate.gasLimit,
+          ...getEvmFeeRequest(feeQuote),
+          to: target,
+          value: nativeEstimate.value
+        };
+      } else {
+        const estimatedGas = assertBigIntResult(await publicClient.estimateGas({
+          account: signer.account,
+          data: encodeCollectionOperationData(operation, target),
+          to: signer.asset.contractAddress
+        }), "Gas 估算");
+        const gasLimit = (estimatedGas * 120n + 99n) / 100n;
+        const maximumNetworkFee = gasLimit * getEvmFeeCapPerGas(feeQuote);
+        if (maximumNetworkFee > maxFeePerTransactionWei) {
+          throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
+        }
+        if (nativeBalance < maximumNetworkFee) {
+          throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以支付最大网络费");
+        }
+        preparedRequest = {
+          ...(simulation.request as Record<string, unknown>),
+          gas: gasLimit,
+          ...getEvmFeeRequest(feeQuote)
+        };
       }
-      if (nativeBalance < maximumNetworkFee) {
-        throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以支付最大网络费");
-      }
-      preparedRequest = {
-        ...(simulation.request as Record<string, unknown>),
-        gas: gasLimit,
-        ...getEvmFeeRequest(feeQuote)
-      };
     } catch (error) {
       const detail = normalizeEvmCollectionError(error, "网络费检查失败", "fee-check-failed");
       const message = `网络费检查失败：${detail.message}`;
@@ -1339,36 +1535,38 @@ export async function executeEvmCollectionPlan({
         `模拟通过，正在提交${getOperationDescription(operation)}`
       );
       const walletClient = await getWalletClient(signer.account, signer);
-      // viem's request type is ABI-generic. The request is produced immediately
-      // above by simulateContract and is deliberately kept opaque across this boundary.
-      const hash = await walletClient.writeContract(preparedRequest as never);
+      const hash = signer.asset.standard === "native"
+        ? await walletClient.sendTransaction(preparedRequest as never)
+        : await walletClient.writeContract(preparedRequest as never);
       emitOperationProgress(onProgress, operation, "confirming", plan.length, "交易已提交，正在等待链上确认", hash);
       try {
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== "success") {
           const message = "交易已上链，但执行状态为失败";
           emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
-          storeOperationResults(results, operation, "failed", message, hash);
+          storeOperationResults(results, operation, "failed", message, hash, submittedAmount);
           continue;
         }
-        const message = operation.kind === "erc1155-batch"
+        const message = signer.asset.standard === "native"
+          ? "原生币归集交易已确认"
+          : operation.kind === "erc1155-batch"
           ? `ERC1155 批量归集交易已确认（${operation.entries.length} 个 Token ID）`
           : "归集交易已确认";
         emitOperationProgress(onProgress, operation, "success", plan.length, message, hash);
-        storeOperationResults(results, operation, "success", message, hash);
+        storeOperationResults(results, operation, "success", message, hash, submittedAmount);
       } catch (error) {
         uncertainSources.add(sourceKey);
         const detail = normalizeEvmCollectionError(error, "等待链上确认失败", "confirmation-failed");
         const message = `交易已提交但确认失败：${detail.message}。请先查询链上状态，勿盲目重发`;
         emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
-        storeOperationResults(results, operation, "failed", message, hash);
+        storeOperationResults(results, operation, "failed", message, hash, submittedAmount);
       }
     } catch (error) {
       uncertainSources.add(sourceKey);
       const detail = normalizeEvmCollectionError(error, "交易提交失败", "submission-failed");
       const message = `提交失败或状态不确定：${detail.message}。已停止该来源后续交易；重试前请检查链上记录`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message);
+      storeOperationResults(results, operation, "failed", message, null, submittedAmount);
     }
   }
 

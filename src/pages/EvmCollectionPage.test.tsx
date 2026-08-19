@@ -178,6 +178,24 @@ async function discoverNft() {
 }
 
 describe("EvmCollectionPage workbench", () => {
+  it("keeps the optional Token list compact and defaults a blank list to the native asset", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    const tokenList = screen.getByRole("textbox", { name: "Token 清单" });
+    expect(tokenList).toHaveAttribute("rows", "3");
+    expect(screen.getByText("可选；留空则归集 ETH，填写后归集列出的 ERC20 Token。")).toBeVisible();
+
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
+
+    await screen.findByRole("button", { name: "确认并开始归集" });
+    expect(evmMocks.plan).toHaveBeenCalledWith(expect.objectContaining({
+      assets: [{ key: "native", standard: "native" }]
+    }));
+  });
+
   it("orders private keys before assets and keeps network, RPC, fee, and Gas visible below them", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 

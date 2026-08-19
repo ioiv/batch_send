@@ -183,7 +183,12 @@ export function NftInventoryReview({
               <TableBody>
                 {parsed.rows.map((row) => {
                   const rawLine = sourceLines[row.line - 1] || "";
-                  if (!row.asset || row.status === "invalid") {
+                  if (
+                    !row.asset
+                    || row.status === "invalid"
+                    || row.asset.standard === "native"
+                    || row.asset.standard === "erc20"
+                  ) {
                     return (
                       <TableRow className="nft-inventory-review__row is-invalid" key={`invalid-${row.line}`}>
                         <TableCell><span aria-label="无效行不可选择">—</span></TableCell>

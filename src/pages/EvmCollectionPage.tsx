@@ -41,9 +41,11 @@ import {
   getEvmExplorerUrl,
   getEvmNetworkConfig,
   getPreferredEvmDistributionNetwork,
+  isEvmNativeCurrencyEnabled,
   rememberPreferredEvmDistributionNetwork,
   toEvmChain,
-  type EvmDistributionNetworkId
+  type EvmDistributionNetworkId,
+  type EvmNativeCurrency
 } from "../lib/evm";
 import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
 import { validateEvmCollectionWorkload } from "../lib/collection-workload";
@@ -136,7 +138,8 @@ function parsePositiveFeeAmount(value: string, decimals: number) {
   }
 }
 
-function getAssetName(item: EvmCollectionPlanItem) {
+function getAssetName(item: EvmCollectionPlanItem, nativeCurrency: EvmNativeCurrency) {
+  if (item.asset.standard === "native") return nativeCurrency.symbol;
   if (item.asset.standard === "erc20") {
     return item.metadata?.symbol || `ERC20 ${shorten(item.asset.contractAddress, 4)}`;
   }
@@ -152,18 +155,27 @@ function getBlockscoutBaseUrl(blockExplorerUrl: string) {
   }
 }
 
-function getFormattedAmount(item: Pick<EvmCollectionPlanItem, "amount" | "asset" | "metadata">) {
+function getFormattedAmount(
+  item: Pick<EvmCollectionPlanItem, "amount" | "asset" | "metadata">,
+  nativeCurrency: EvmNativeCurrency
+) {
+  if (item.asset.standard === "native") {
+    return formatUnits(item.amount, nativeCurrency.decimals);
+  }
   if (item.asset.standard === "erc20") {
     return formatUnits(item.amount, item.metadata?.decimals ?? 0);
   }
   return item.amount.toString();
 }
 
-function planItemToDisplay(item: EvmCollectionPlanItem): CollectionDisplayResult {
+function planItemToDisplay(
+  item: EvmCollectionPlanItem,
+  nativeCurrency: EvmNativeCurrency
+): CollectionDisplayResult {
   return {
     address: item.address || "—",
-    amount: getFormattedAmount(item),
-    asset: getAssetName(item),
+    amount: getFormattedAmount(item, nativeCurrency),
+    asset: getAssetName(item, nativeCurrency),
     label: item.label,
     message: item.message,
     status: item.status === "ready" ? "pending" : item.status === "skipped" ? "skipped" : "error"
@@ -173,12 +185,16 @@ function planItemToDisplay(item: EvmCollectionPlanItem): CollectionDisplayResult
 function resultToDisplay(
   item: EvmCollectionPlanItem,
   result: EvmCollectionResult,
+  nativeCurrency: EvmNativeCurrency,
   explorerUrl: (hash: string) => string
 ): CollectionDisplayResult {
   return {
     address: result.address || "—",
-    amount: getFormattedAmount({ amount: result.amount, asset: result.asset, metadata: item.metadata }),
-    asset: getAssetName(item),
+    amount: getFormattedAmount(
+      { amount: result.amount, asset: result.asset, metadata: item.metadata },
+      nativeCurrency
+    ),
+    asset: getAssetName(item, nativeCurrency),
     ...(result.hash ? { explorerUrl: explorerUrl(result.hash), hash: result.hash } : {}),
     label: result.label,
     message: result.message,
@@ -220,13 +236,10 @@ function getCollectionPlanInputs(plan: readonly EvmCollectionPlanItem[]) {
 }
 
 function getCollectionPlanSafetyFingerprint(item: EvmCollectionPlanItem) {
-  const tokenId = item.asset.standard === "erc20" ? "" : item.asset.tokenId.toString();
   return [
     item.id,
     item.address?.toLowerCase() || "",
-    item.asset.standard,
-    item.asset.contractAddress.toLowerCase(),
-    tokenId,
+    item.asset.key,
     item.amount.toString(),
     item.status
   ].join("|");
@@ -285,7 +298,9 @@ export function EvmCollectionPage({
     network: selectedNetwork,
     rpcEndpoint: effectiveRpcEndpoint
   });
-  const standard: EvmCollectionStandard = fixedStandard === "erc20" ? "erc20" : nftStandard;
+  const standard: EvmCollectionStandard = fixedStandard === "erc20"
+    ? (erc20AssetInput.trim() ? "erc20" : "native")
+    : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
   const assetInput = fixedStandard === "erc20" ? erc20AssetInput : nftAssetInputs[nftStandard];
   const setCurrentAssetInput = (value: string) => {
@@ -318,6 +333,7 @@ export function EvmCollectionPage({
   const readonlySourcesReady = readonlySourceCount > 0 && readonlySourceIssueCount === 0;
   const discoverySourceReady = sourceInputMode === "readonly" ? readonlySourcesReady : sourceKeysReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
+  const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const readyTransactionCount = preflightSummary?.executableTransactions ?? readyCount;
   const transactionRunning = stage === "scanning" || stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
@@ -414,6 +430,9 @@ export function EvmCollectionPage({
     if (!effectiveRpcEndpoint) nextIssues.push("请输入可用的 RPC 地址");
     if (!gasSettings) nextIssues.push("请输入有效的自定义 Gas Price");
     if (parseMaximumFee() === null) nextIssues.push("单笔最大网络费需要是大于 0 的有效金额");
+    if (standard === "native" && !nativeCurrencyEnabled) {
+      nextIssues.push("当前网络的原生币元数据尚未确认，请填写 Token 合约地址或先确认网络信息");
+    }
 
     const parsedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "");
     if (!parsedAccounts.accounts.length) nextIssues.push("至少需要一个有效的来源钱包私钥");
@@ -453,7 +472,7 @@ export function EvmCollectionPage({
         assets: parsedAssets.validAssets,
         publicClient
       });
-      setResults(ownershipPlan.map(planItemToDisplay));
+      setResults(ownershipPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
       const target = getAddress(targetAddress.trim());
       const maxFeePerTransactionWei = parseMaximumFee();
       if (maxFeePerTransactionWei === null) {
@@ -480,7 +499,7 @@ export function EvmCollectionPage({
         estimatedNetworkFee: preflight.estimatedNetworkFee,
         executableTransactions: preflight.executableTransactions
       });
-      setResults(plan.map(planItemToDisplay));
+      setResults(plan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
 
       const executable = plan.filter((item) => item.status === "ready").length;
       const failed = plan.filter((item) => item.status === "failed").length;
@@ -913,7 +932,7 @@ export function EvmCollectionPage({
         estimatedNetworkFee: freshPreflight.estimatedNetworkFee,
         executableTransactions: freshPreflight.executableTransactions
       });
-      setResults(executionPlan.map(planItemToDisplay));
+      setResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
 
       if (hasEvmCollectionPlanDrift(plan, executionPlan)) {
         setStage("error");
@@ -937,7 +956,12 @@ export function EvmCollectionPage({
         targetAddress: target
       });
       setResults(executionResults.map((result, index) => (
-        resultToDisplay(executionPlan[index], result, (hash) => getEvmExplorerUrl(hash, selectedNetwork))
+        resultToDisplay(
+          executionPlan[index],
+          result,
+          selectedNetwork.nativeCurrency,
+          (hash) => getEvmExplorerUrl(hash, selectedNetwork)
+        )
       )));
       const success = executionResults.filter((result) => result.status === "success").length;
       const failed = executionResults.filter((result) => result.status === "failed").length;
@@ -1008,7 +1032,7 @@ export function EvmCollectionPage({
       stickyActions
       status={workbenchStatus}
       statusLabel={evmStatusLabels[workbenchStatus]}
-      title={fixedStandard === "erc20" ? "ERC20 代币归集" : "EVM NFT 归集"}
+      title={fixedStandard === "erc20" ? "EVM 代币归集" : "EVM NFT 归集"}
     >
       <div className={"workspace collection-workspace" + (results.length ? " has-results" : "")}>
         <WorkbenchPanel
@@ -1185,10 +1209,16 @@ export function EvmCollectionPage({
                       setCurrentAssetInput(event.target.value);
                       invalidatePlan();
                     }}
-                    placeholder="0x…"
+                    placeholder="每行一个 ERC20 合约地址"
+                    rows={3}
                     spellCheck={false}
                     value={assetInput}
                   />
+                  <FieldDescription>
+                    {nativeCurrencyEnabled
+                      ? `可选；留空则归集 ${selectedNetwork.nativeCurrency.symbol}，填写后归集列出的 ERC20 Token。`
+                      : "当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。"}
+                  </FieldDescription>
                 </Field>
               </>
             ) : (
@@ -1418,7 +1448,11 @@ export function EvmCollectionPage({
             emptyTitle="等待预检"
             exportFilename={currentToolId + "-results.csv"}
             results={results}
-            title={fixedStandard === "nft" ? "NFT 归集结果" : "ERC20 归集结果"}
+            title={fixedStandard === "nft"
+              ? "NFT 归集结果"
+              : standard === "native"
+                ? `${selectedNetwork.nativeCurrency.symbol} 归集结果`
+                : "ERC20 归集结果"}
           />
         </WorkbenchPanel>
       </div>

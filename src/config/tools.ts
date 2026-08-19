@@ -59,16 +59,16 @@ export const supportedEcosystems: EcosystemDefinition[] = [
 export const tools: ToolDefinition[] = [
   {
     id: "evm-token-collection",
-    title: "ERC20 代币归集",
+    title: "EVM 代币归集",
     shortTitle: "代币归集",
-    description: "扫描多个 EVM 钱包的代币余额，模拟交易后统一转入目标地址。",
+    description: "归集多个 EVM 钱包的原生币或 ERC20 余额，交易前完成余额与费用预检。",
     href: "/evm/collect/",
     category: "collection",
     ecosystems: ["evm"],
     icon: "collect",
     featured: true,
     badge: "新增",
-    keywords: ["ERC20", "Token", "归集", "EVM"]
+    keywords: ["原生币", "ERC20", "Token", "归集", "EVM"]
   },
   {
     id: "evm-nft-collection",

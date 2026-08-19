@@ -78,16 +78,17 @@ function makePublicClient(options: {
 }
 
 function makeWalletClient(write?: (request: unknown) => Promise<Hash>) {
+  const sendTransaction = vi.fn(write || (async () => transactionHash));
   const writeContract = vi.fn(write || (async () => transactionHash));
-  const client = { writeContract } as unknown as EvmCollectionWalletClient;
-  return { client, writeContract };
+  const client = { sendTransaction, writeContract } as unknown as EvmCollectionWalletClient;
+  return { client, sendTransaction, writeContract };
 }
 
 function parseAccounts(keys = [privateKeyOne, privateKeyTwo, privateKeyThree]) {
   return parseEvmPrivateKeyInput(keys.map((key, index) => `来源 ${index + 1},${key}`).join("\n")).accounts;
 }
 
-function getSingleAsset(input: string, standard: "erc20" | "erc721" | "erc1155") {
+function getSingleAsset(input: string, standard: "native" | "erc20" | "erc721" | "erc1155") {
   const parsed = parseEvmCollectionAssets(input, standard);
   expect(parsed.invalid).toBe(0);
   expect(parsed.assets).toHaveLength(1);
@@ -213,6 +214,19 @@ describe("normalizeEvmCollectionError", () => {
 });
 
 describe("parseEvmCollectionAssets", () => {
+  it("uses the native asset when the Token list is blank", () => {
+    const parsed = parseEvmCollectionAssets("", "native");
+
+    expect(parsed).toMatchObject({ duplicates: 0, invalid: 0 });
+    expect(parsed.assets).toEqual([{ key: "native", standard: "native" }]);
+    expect(parsed.rows).toEqual([{
+      asset: { key: "native", standard: "native" },
+      line: 1,
+      problems: [],
+      status: "valid"
+    }]);
+  });
+
   it("parses and deduplicates ERC20 contract rows case-insensitively", () => {
     const parsed = parseEvmCollectionAssets(`${tokenAddress}\n${tokenAddress.toUpperCase().replace("0X", "0x")}`, "erc20");
 
@@ -314,6 +328,22 @@ describe("readErc20Metadata", () => {
 });
 
 describe("planEvmCollection", () => {
+  it("plans native balances and skips empty source wallets", async () => {
+    const accounts = parseAccounts([privateKeyOne, privateKeyTwo]);
+    const asset = getSingleAsset("", "native");
+    let balanceRead = 0;
+    const { client, getBalance } = makePublicClient({
+      getBalance: async () => balanceRead++ === 0 ? 50_000n : 0n
+    });
+
+    const plan = await planEvmCollection({ accounts, assets: [asset], publicClient: client });
+
+    expect(plan.map((item) => item.status)).toEqual(["ready", "skipped"]);
+    expect(plan.map((item) => item.amount)).toEqual([50_000n, 0n]);
+    expect(plan.map((item) => item.asset.standard)).toEqual(["native", "native"]);
+    expect(getBalance).toHaveBeenCalledTimes(2);
+  });
+
   it("plans ERC20 ready, zero-balance skipped, and read-failure rows", async () => {
     const accounts = parseAccounts();
     const asset = getSingleAsset(tokenAddress, "erc20");
@@ -427,6 +457,38 @@ describe("executeEvmCollectionPlan", () => {
   }
 
   describe("preflightEvmCollectionPlan", () => {
+    it("reserves a buffered network fee from the native balance", async () => {
+      const account = parseAccounts([privateKeyOne])[0];
+      const asset = getSingleAsset("", "native");
+      const item = {
+        account: account.account,
+        address: account.address,
+        amount: 1_000_000n,
+        asset,
+        id: "native-plan",
+        label: account.label,
+        message: "ready",
+        status: "ready"
+      } satisfies EvmCollectionPlanItem;
+      const { client: publicClient, estimateGas, simulateContract } = makePublicClient();
+
+      const preflight = await preflightEvmCollectionPlan({
+        maxFeePerTransactionWei,
+        plan: [item],
+        publicClient,
+        targetAddress
+      });
+
+      expect(preflight).toMatchObject({
+        estimatedNetworkFee: 1_200n,
+        executableTransactions: 1,
+        plan: [{ amount: 998_800n, status: "ready" }]
+      });
+      expect(preflight.plan[0].message).toContain("原生币归集预检");
+      expect(estimateGas).toHaveBeenCalledTimes(2);
+      expect(simulateContract).not.toHaveBeenCalled();
+    });
+
     it("marks a simulated transfer as ready without submitting it", async () => {
       const account = parseAccounts([privateKeyOne])[0];
       const [item] = await readyPlansForAllStandards(account);
@@ -509,6 +571,46 @@ describe("executeEvmCollectionPlan", () => {
       expect(preflight.executableTransactions).toBe(1);
       expect(getBalance).toHaveBeenCalledOnce();
     });
+  });
+
+  it("sends the native balance minus the buffered fee without a contract write", async () => {
+    const account = parseAccounts([privateKeyOne])[0];
+    const asset = getSingleAsset("", "native");
+    const item = {
+      account: account.account,
+      address: account.address,
+      amount: 998_800n,
+      asset,
+      id: "native-plan",
+      label: account.label,
+      message: "ready",
+      status: "ready"
+    } satisfies EvmCollectionPlanItem;
+    const { client: publicClient, estimateGas, simulateContract } = makePublicClient();
+    const { client: walletClient, sendTransaction, writeContract } = makeWalletClient();
+
+    const [result] = await executeEvmCollectionPlan({
+      getWalletClient: () => walletClient,
+      maxFeePerTransactionWei,
+      plan: [item],
+      publicClient,
+      targetAddress
+    });
+
+    expect(result).toMatchObject({
+      amount: 998_800n,
+      hash: transactionHash,
+      status: "success"
+    });
+    expect(sendTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      gas: 120n,
+      gasPrice: 10n,
+      to: getAddress(targetAddress),
+      value: 998_800n
+    }));
+    expect(estimateGas).toHaveBeenCalledTimes(2);
+    expect(simulateContract).not.toHaveBeenCalled();
+    expect(writeContract).not.toHaveBeenCalled();
   });
 
   it("simulates each standard before writing, then waits for a successful receipt", async () => {

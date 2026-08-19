@@ -953,12 +953,21 @@
 }
 
 .address-only-input,
-.collection-asset-textarea,
 .secret-textarea {
   min-height: 11rem;
   font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.collection-asset-textarea {
+  min-height: 4.5rem;
+  max-height: 9rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  overflow-y: auto;
   overflow-wrap: anywhere;
 }
 
