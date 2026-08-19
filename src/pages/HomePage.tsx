@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -42,15 +41,6 @@ export function HomePage() {
     <div className="site-page page-home">
       <SiteHeader />
       <main className="home-main" id="main">
-        <header className="home-hero">
-          <h1>链上批量工具</h1>
-          <nav aria-label="工具分类" className="home-category-nav">
-            {toolCategories.map((category) => (
-              <a className={buttonVariants({ variant: "ghost" })} href={category.href} key={category.id}>{category.label}</a>
-            ))}
-          </nav>
-        </header>
-
         <Tabs
           className="home-tool-tabs"
           onValueChange={(value) => setSelectedEcosystem(value as "all" | ToolEcosystem)}

@@ -16,6 +16,7 @@ describe("SiteHeader sidebar navigation", () => {
 
     expect(screen.queryByText("全部工具")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /工具首页/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "站点主导航" })).not.toBeInTheDocument();
     expect(header.getByRole("link", { name: "ChainKit 首页" })).toBeVisible();
     expect(screen.getByRole("navigation", { name: "工具导航" })).toBeVisible();
     expect(screen.getByRole("link", { name: /SOL 分发/ })).toHaveAttribute("aria-current", "page");

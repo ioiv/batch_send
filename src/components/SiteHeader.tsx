@@ -1,12 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { getToolById, getToolsByCategory, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
+import { getToolsByCategory, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
 import { Button } from "@/components/ui/button";
-import {
-  NavigationMenu,
-  NavigationMenuItem,
-  NavigationMenuLink,
-  NavigationMenuList
-} from "@/components/ui/navigation-menu";
 import {
   Sheet,
   SheetContent,
@@ -112,7 +106,6 @@ export interface SiteHeaderProps {
 }
 
 export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
-  const currentTool = getToolById(currentToolId);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true"
   );
@@ -148,21 +141,6 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
       <header className="site-header">
         <div className="site-header__inner">
           <Brand />
-
-          <NavigationMenu className="site-nav" aria-label="站点主导航">
-            <NavigationMenuList>
-              {toolCategories.map((category) => (
-                <NavigationMenuItem key={category.id}>
-                  <NavigationMenuLink
-                    active={currentTool?.category === category.id}
-                    render={<a href={category.href} />}
-                  >
-                    {category.label}
-                  </NavigationMenuLink>
-                </NavigationMenuItem>
-              ))}
-            </NavigationMenuList>
-          </NavigationMenu>
 
           <div className="site-header__actions">
             {action}

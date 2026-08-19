@@ -13,7 +13,9 @@ describe("HomePage ecosystem filter", () => {
     render(<HomePage />);
     const main = within(screen.getByRole("main"));
 
-    expect(screen.getByRole("heading", { name: "链上批量工具" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "链上批量工具" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "工具分类" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "页脚导航" })).not.toBeInTheDocument();
     expect(main.getByRole("link", { name: /代币归集/ })).toBeVisible();
     expect(screen.queryByRole("tab", { name: "Ethereum" })).not.toBeInTheDocument();
 
