@@ -8,6 +8,7 @@ describe("ToolPageLayout", () => {
       <ToolPageLayout
         actions={<span>清空任务</span>}
         currentToolId="sol-distribution"
+        stickyActions
         status="uncertain"
         statusLabel="已提交，等待链上确认"
         title="测试工具"
@@ -22,6 +23,7 @@ describe("ToolPageLayout", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('aria-atomic="true"');
+    expect(markup).toContain('data-sticky-actions="true"');
     expect(markup).not.toContain("操作步骤");
     expect(markup).not.toContain("site-tool-step");
   });

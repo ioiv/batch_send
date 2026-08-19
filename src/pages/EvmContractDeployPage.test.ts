@@ -125,7 +125,7 @@ describe("EvmContractDeployPage safety", () => {
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
 
-    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
     expect(deployMocks.validate).not.toHaveBeenCalled();
   });

@@ -9,7 +9,6 @@ import { SearchableSelect, type SearchableSelectOption } from "../components/Sea
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import {
-  AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
   ResultTable,
@@ -668,34 +667,26 @@ export function BatchDistributorPage() {
               </Alert>
             ) : null}
 
-            <Field>
-              <FieldLabel htmlFor="networkId">网络</FieldLabel>
-              <SearchableSelect
-                disabled={pageControlsLocked}
-                emptyMessage="未找到匹配的 Solana 网络"
-                id="networkId"
-                listboxLabel="Solana 网络"
-                metaLabel="网络标识"
-                metaPrefix="Cluster "
-                onChange={(nextNetworkId) => {
-                  setNetworkId(nextNetworkId);
-                  setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
-                  resetConfirmation();
-                }}
-                options={solanaNetworkOptions}
-                searchable={false}
-                value={networkId}
-              />
-            </Field>
-
-            <div className="flex flex-wrap gap-2" aria-label="链路摘要">
-              <Badge title={balanceLookup.message || undefined} variant="outline">
-                余额 {walletBalance}{balanceLookup.status === "error" ? " · 读取失败" : wallet.connected ? " SOL" : ""}
-              </Badge>
-              <Badge variant="outline">预计交易 {transactionCount || 0}</Badge>
-            </div>
-
-            <AdvancedSettings disabled={pageControlsLocked}>
+            <div className="network-rpc-row" aria-label="网络与 RPC">
+              <Field>
+                <FieldLabel htmlFor="networkId">网络</FieldLabel>
+                <SearchableSelect
+                  disabled={pageControlsLocked}
+                  emptyMessage="未找到匹配的 Solana 网络"
+                  id="networkId"
+                  listboxLabel="Solana 网络"
+                  metaLabel="网络标识"
+                  metaPrefix="Cluster "
+                  onChange={(nextNetworkId) => {
+                    setNetworkId(nextNetworkId);
+                    setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
+                    resetConfirmation();
+                  }}
+                  options={solanaNetworkOptions}
+                  searchable={false}
+                  value={networkId}
+                />
+              </Field>
               <Field>
                 <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
                 <Input
@@ -710,7 +701,14 @@ export function BatchDistributorPage() {
                   value={rpcEndpoint}
                 />
               </Field>
-            </AdvancedSettings>
+            </div>
+
+            <div className="flex flex-wrap gap-2" aria-label="链路摘要">
+              <Badge title={balanceLookup.message || undefined} variant="outline">
+                余额 {walletBalance}{balanceLookup.status === "error" ? " · 读取失败" : wallet.connected ? " SOL" : ""}
+              </Badge>
+              <Badge variant="outline">预计交易 {transactionCount || 0}</Badge>
+            </div>
 
             {balanceLookup.status === "error" ? (
               <Alert variant="destructive">

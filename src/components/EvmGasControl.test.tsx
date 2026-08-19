@@ -66,8 +66,8 @@ function GasHarness({ onSettingsChange }: { onSettingsChange?: () => void }) {
 }
 
 function PollingHarness() {
-  useEvmGas({ network, rpcEndpoint: network.rpcEndpoint });
-  return null;
+  const gas = useEvmGas({ network, rpcEndpoint: network.rpcEndpoint });
+  return <EvmGasBadge gas={gas} />;
 }
 
 function createDeferred<T>() {
@@ -85,7 +85,7 @@ afterEach(() => {
 });
 
 describe("EVM Gas controls", () => {
-  it("requests immediately, polls serially 3 seconds after completion, and stops after unmount", async () => {
+  it("renders a 3 second countdown, polls at 2999 + 1 ms after completion, and stops after unmount", async () => {
     vi.useFakeTimers();
     const firstRequest = createDeferred<EvmFeeQuote>();
     gasMocks.getLiveFeeQuote
@@ -94,6 +94,14 @@ describe("EVM Gas controls", () => {
 
     const { unmount } = render(<PollingHarness />);
     expect(gasMocks.getLiveFeeQuote).toHaveBeenCalledTimes(1);
+    const badge = document.querySelector<HTMLElement>(".gas-live-badge");
+    const refreshTrack = document.querySelector<HTMLElement>(".gas-live-badge__refresh-track");
+    expect(refreshTrack).toBeInTheDocument();
+    expect(badge).toContainElement(refreshTrack);
+    let countdown = document.querySelector<HTMLElement>(".gas-live-badge__refresh-progress");
+    expect(countdown).toBeInTheDocument();
+    expect(countdown?.style.getPropertyValue("--gas-refresh-duration")).toBe("3000ms");
+    expect(countdown).toHaveAttribute("data-active", "false");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_000);
@@ -105,6 +113,10 @@ describe("EVM Gas controls", () => {
       await firstRequest.promise;
       await Promise.resolve();
     });
+    countdown = document.querySelector<HTMLElement>(".gas-live-badge__refresh-progress");
+    expect(countdown?.style.getPropertyValue("--gas-refresh-duration")).toBe("3000ms");
+    expect(countdown).toHaveAttribute("data-active", "true");
+
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_999);
     });
@@ -136,6 +148,8 @@ describe("EVM Gas controls", () => {
     expect(within(rateTabs).getByRole("tab", { name: "慢" })).toBeVisible();
     expect(within(rateTabs).getByRole("tab", { name: "中" })).toBeVisible();
     expect(within(rateTabs).getByRole("tab", { name: "快" })).toBeVisible();
+    expect(screen.queryByText("3 秒")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新 Gas" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -172,11 +186,24 @@ describe("EVM Gas controls", () => {
     render(<GasHarness onSettingsChange={onSettingsChange} />);
 
     const rateTabs = await screen.findByRole("tablist", { name: "Gas 费率" });
-    await user.click(within(rateTabs).getByRole("tab", { name: "自定义" }));
+    const customTab = within(rateTabs).getByRole("tab", { name: "自定义" });
+    await user.click(customTab);
 
-    const customInput = screen.getByRole("spinbutton", { name: "Gas Price（Gwei）" });
+    const customControl = customTab.closest<HTMLElement>(".gas-settings__custom-control");
+    expect(customControl).not.toBeNull();
+    expect(customControl).toContainElement(customTab);
+
+    const customInput = within(customControl as HTMLElement).getByRole("spinbutton", { name: "Gas Price（Gwei）" });
+    const inputWrap = customInput.closest<HTMLElement>(".gas-settings__input-wrap");
+    const inputUnit = within(inputWrap as HTMLElement).getByText("Gwei");
+    expect(customControl).toContainElement(customInput);
+    expect(customControl).toContainElement(inputUnit);
+    expect(inputWrap).toContainElement(customInput);
+    expect(inputWrap).toContainElement(inputUnit);
+    expect(inputUnit).toHaveClass("gas-settings__input-unit");
     expect(customInput).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByText("请输入大于 0、最多 9 位小数的 Gwei 值")).toBeVisible();
+    expect(screen.queryByText("请输入大于 0、最多 9 位小数的 Gwei 值")).not.toBeInTheDocument();
+    expect(customControl?.querySelector('[data-slot="field-error"]')).not.toBeInTheDocument();
     expect(screen.getByLabelText("当前 Gas 设置")).toHaveTextContent("invalid");
     const callbacksAfterModeChange = onSettingsChange.mock.calls.length;
     expect(callbacksAfterModeChange).toBeGreaterThan(0);

@@ -8,11 +8,12 @@ import { NftAssetInput } from "./NftAssetInput";
 
 afterEach(cleanup);
 
-function Harness({ auto = false, disabled = false, initialValue = "" }) {
+function Harness({ auto = false, autoOnly = false, disabled = false, initialValue = "" }) {
   const [value, setValue] = useState(initialValue);
   const [contractAddress, setContractAddress] = useState("");
   return (
     <NftAssetInput
+      autoOnly={autoOnly}
       autoDiscovery={auto ? <div>发现结果</div> : undefined}
       contractAddress={contractAddress}
       defaultMode={auto ? "auto" : "manual"}
@@ -25,6 +26,16 @@ function Harness({ auto = false, disabled = false, initialValue = "" }) {
 }
 
 describe("NftAssetInput", () => {
+  it("can expose automatic discovery without a manual-entry mode selector", () => {
+    render(<Harness auto autoOnly />);
+
+    expect(screen.getByText("发现结果")).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "自动识别" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "手工 / 文件" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Token ID / 区间")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "原始编辑" })).not.toBeInTheDocument();
+  });
+
   it("merges manual and file entry into one tab", () => {
     render(<Harness />);
     expect(screen.getAllByRole("tab")).toHaveLength(1);
@@ -43,16 +54,6 @@ describe("NftAssetInput", () => {
     expect(screen.getByLabelText("Token ID / 区间")).toBeVisible();
   });
 
-  it("keeps advanced raw editing in a Sheet", async () => {
-    const user = userEvent.setup();
-    const value = "0x1111111111111111111111111111111111111111,7";
-    render(<Harness initialValue={value} />);
-    expect(screen.queryByLabelText("资产清单")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "原始编辑" }));
-    expect(screen.getByRole("dialog", { name: "原始资产清单" })).toBeVisible();
-    expect(screen.getByLabelText("资产清单")).toHaveValue(value);
-  });
-
   it("preserves the controlled contract value and disables every active entry control", () => {
     const onChange = vi.fn();
     render(
@@ -67,6 +68,6 @@ describe("NftAssetInput", () => {
     expect(screen.getByLabelText("NFT 合约")).toHaveValue("0x1111111111111111111111111111111111111111");
     expect(screen.getByRole("tab", { name: "手工 / 文件" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("button", { name: "导入 TXT/CSV" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "原始编辑" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "原始编辑" })).not.toBeInTheDocument();
   });
 });

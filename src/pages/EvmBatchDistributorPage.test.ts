@@ -143,12 +143,23 @@ describe("EvmBatchDistributorPage safety", () => {
     render(createElement(EvmBatchDistributorPage));
 
     expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
+    expect(screen.queryByRole("button", { name: "Gas 与链设置" })).not.toBeInTheDocument();
+
+    const networkAndRpc = screen.getByLabelText("网络与 RPC");
+    expect(networkAndRpc).toBeVisible();
+    expect(within(networkAndRpc).getByLabelText("RPC")).toHaveValue("https://ethereum.publicnode.com");
+    expect(within(networkAndRpc).getByText(/Chain ID/)).toHaveTextContent("Chain ID 1");
+
     const gasSettings = screen.getByLabelText("Gas 设置");
+    expect(gasSettings).toBeVisible();
+    expect(within(gasSettings).getByLabelText("预估网络费 预检后显示")).toBeVisible();
+    const preflightButton = screen.getByRole("button", { name: "运行预检" });
+    expect(gasSettings.closest(".workbench-panel")).toBe(preflightButton.closest(".workbench-panel"));
+    expect(gasSettings.compareDocumentPosition(preflightButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "3.25");
     await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
-    await user.click(screen.getByRole("button", { name: "运行预检" }));
+    await user.click(preflightButton);
 
     await screen.findByRole("button", { name: "确认分发" });
     expect(pageMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
@@ -162,12 +173,11 @@ describe("EvmBatchDistributorPage safety", () => {
   it("blocks preflight while the custom Gas Price is invalid", async () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
 
-    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
     expect(pageMocks.preflight).not.toHaveBeenCalled();
   });
@@ -176,7 +186,6 @@ describe("EvmBatchDistributorPage safety", () => {
     const { user } = await prepareReadyDistributionPage();
     expect(screen.getByRole("button", { name: "确认分发" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "RPC、Gas 与链设置" }));
     await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
 
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();

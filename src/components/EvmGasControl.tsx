@@ -1,6 +1,5 @@
+import type { CSSProperties } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { EvmGasChoice, EvmGasController } from "@/hooks/useEvmGas";
@@ -51,19 +50,30 @@ export function EvmGasBadge({ gas }: { gas: EvmGasController }) {
         </span>
       )) : <span>{fallback}</span>}
       {hasRecommendations ? <span className="gas-live-badge__unit">Gwei</span> : null}
+      <span aria-hidden="true" className="gas-live-badge__refresh-track">
+        <span
+          className="gas-live-badge__refresh-progress"
+          data-active={gas.refreshCycle > 0 && gas.live.status !== "loading" ? "true" : "false"}
+          key={gas.refreshCycle}
+          style={{ "--gas-refresh-duration": `${gas.refreshIntervalMs}ms` } as CSSProperties}
+        />
+      </span>
     </Badge>
   );
 }
 
 export function EvmGasSettings({
   disabled = false,
+  feeEstimate,
   gas,
   onSettingsChange
 }: {
   disabled?: boolean;
+  feeEstimate?: string;
   gas: EvmGasController;
   onSettingsChange?: () => void;
 }) {
+  const customOpen = gas.choice === "custom";
   const changeChoice = (nextChoice: string) => {
     if (!["auto", "slow", "standard", "fast", "custom"].includes(nextChoice)) return;
     gas.setChoice(nextChoice as EvmGasChoice);
@@ -75,7 +85,6 @@ export function EvmGasSettings({
       <div className="gas-settings__bar">
         <div className="gas-settings__label" title="行情每 3 秒刷新；推荐值分别为 RPC 报价的 90%、100% 和 120%">
           <strong>Gas</strong>
-          <span>3 秒</span>
         </div>
 
         <Tabs className="gas-settings__choices" onValueChange={changeChoice} value={gas.choice}>
@@ -95,47 +104,45 @@ export function EvmGasSettings({
                 </TabsTrigger>
               );
             })}
-            <TabsTrigger disabled={disabled} title="自定义 Legacy Gas Price" value="custom">自定义</TabsTrigger>
+            <div className="gas-settings__custom-control" data-open={customOpen}>
+              <TabsTrigger disabled={disabled} title="自定义 Legacy Gas Price" value="custom">自定义</TabsTrigger>
+              <div
+                aria-hidden={!customOpen}
+                className="gas-settings__custom-reveal"
+                data-open={customOpen}
+              >
+                <label className="sr-only" htmlFor="customGasPriceGwei">Gas Price（Gwei）</label>
+                <div className="gas-settings__input-wrap">
+                  <Input
+                    aria-invalid={!gas.customGasPriceIsValid || undefined}
+                    autoComplete="off"
+                    disabled={disabled || !customOpen}
+                    id="customGasPriceGwei"
+                    inputMode="decimal"
+                    min="0"
+                    onChange={(event) => {
+                      gas.setCustomGasPriceGwei(event.target.value);
+                      onSettingsChange?.();
+                    }}
+                    placeholder={gas.live.gasPriceWei === null ? "1.5" : formatGasPriceGwei(gas.live.gasPriceWei, 6)}
+                    step="0.000000001"
+                    tabIndex={customOpen ? undefined : -1}
+                    type="number"
+                    value={gas.customGasPriceGwei}
+                  />
+                  <span aria-hidden="true" className="gas-settings__input-unit">Gwei</span>
+                </div>
+              </div>
+            </div>
           </TabsList>
         </Tabs>
 
-        {gas.choice === "custom" ? (
-          <Field className="gas-settings__custom" data-invalid={!gas.customGasPriceIsValid || undefined}>
-            <FieldLabel className="sr-only" htmlFor="customGasPriceGwei">Gas Price（Gwei）</FieldLabel>
-            <div className="gas-settings__input-wrap">
-              <Input
-                aria-invalid={!gas.customGasPriceIsValid || undefined}
-                autoComplete="off"
-                disabled={disabled}
-                id="customGasPriceGwei"
-                inputMode="decimal"
-                min="0"
-                onChange={(event) => {
-                  gas.setCustomGasPriceGwei(event.target.value);
-                  onSettingsChange?.();
-                }}
-                placeholder={gas.live.gasPriceWei === null ? "1.5" : formatGasPriceGwei(gas.live.gasPriceWei, 6)}
-                step="0.000000001"
-                type="number"
-                value={gas.customGasPriceGwei}
-              />
-              <span>Gwei</span>
-            </div>
-            {!gas.customGasPriceIsValid ? <FieldError>请输入大于 0、最多 9 位小数的 Gwei 值</FieldError> : null}
-          </Field>
+        {feeEstimate ? (
+          <div className="gas-settings__fee" aria-label={`预估网络费 ${feeEstimate}`}>
+            <span>预估网络费</span>
+            <strong>{feeEstimate}</strong>
+          </div>
         ) : null}
-
-        <Button
-          aria-label="刷新 Gas"
-          disabled={disabled || gas.live.status === "loading"}
-          onClick={gas.refresh}
-          size="xs"
-          title="立即刷新 Gas 推荐"
-          type="button"
-          variant="ghost"
-        >
-          刷新
-        </Button>
       </div>
 
       <span className={gas.live.status === "error" ? "gas-settings__status" : "sr-only"} role="status">

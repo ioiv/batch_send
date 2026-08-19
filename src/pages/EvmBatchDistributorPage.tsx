@@ -11,7 +11,6 @@ import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionCon
 import { SearchableSelect } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
-  AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
   ResultTable,
@@ -812,6 +811,7 @@ export function EvmBatchDistributorPage() {
       )}
       className="page-distributor"
       currentToolId="evm-distribution"
+      stickyActions
       status={pageStatus}
       statusLabel={pageStatusLabel}
       title="EVM 批量分发"
@@ -889,30 +889,51 @@ export function EvmBatchDistributorPage() {
             </Alert>
           ) : null}
 
-          <Field>
-            <FieldLabel htmlFor="networkId">网络</FieldLabel>
-            <SearchableSelect
-              disabled={pageControlsLocked}
-              emptyMessage="未找到匹配的 EVM 链"
-              id="networkId"
-              listboxLabel="EVM 链"
-              metaLabel="Chain ID"
-              metaPrefix="ID "
-              onChange={(nextNetworkId) => {
-                const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
-                setNetworkId(nextNetworkId);
-                setRpcEndpoint(nextNetwork.rpcEndpoint);
-                if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
-                setTokenLookup(initialTokenLookupState);
-                rememberPreferredEvmDistributionNetwork(nextNetworkId);
-                resetConfirmation();
-              }}
-              options={networkOptions}
-              placeholder="搜索链名称或 Chain ID"
-              searchLabel="搜索 EVM 链名称或 Chain ID"
-              value={networkId}
-            />
-          </Field>
+          <div className="evm-network-row" aria-label="网络与 RPC">
+            <Field>
+              <div className="evm-network-label-row">
+                <FieldLabel htmlFor="networkId">网络</FieldLabel>
+                <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
+              </div>
+              <SearchableSelect
+                disabled={pageControlsLocked}
+                emptyMessage="未找到匹配的 EVM 链"
+                id="networkId"
+                listboxLabel="EVM 链"
+                metaLabel="Chain ID"
+                metaPrefix="ID "
+                onChange={(nextNetworkId) => {
+                  const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
+                  setNetworkId(nextNetworkId);
+                  setRpcEndpoint(nextNetwork.rpcEndpoint);
+                  if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
+                  setTokenLookup(initialTokenLookupState);
+                  rememberPreferredEvmDistributionNetwork(nextNetworkId);
+                  resetConfirmation();
+                }}
+                options={networkOptions}
+                placeholder="搜索链名称或 Chain ID"
+                searchLabel="搜索 EVM 链名称或 Chain ID"
+                value={networkId}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
+              <Input
+                autoComplete="off"
+                disabled={pageControlsLocked}
+                id="rpcEndpoint"
+                onChange={(event) => {
+                  setRpcEndpoint(event.target.value);
+                  setTokenLookup(initialTokenLookupState);
+                  resetConfirmation();
+                }}
+                spellCheck={false}
+                type="url"
+                value={rpcEndpoint}
+              />
+            </Field>
+          </div>
 
           {!nativeCurrencyEnabled ? (
             <Alert>
@@ -987,50 +1008,6 @@ export function EvmBatchDistributorPage() {
             </TabsContent>
           </Tabs>
 
-          <AdvancedSettings disabled={pageControlsLocked} label="RPC、Gas 与链设置">
-            <EvmGasSettings
-              disabled={pageControlsLocked}
-              gas={gas}
-              onSettingsChange={resetConfirmation}
-            />
-            <Field>
-              <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
-              <Input
-                autoComplete="off"
-                disabled={pageControlsLocked}
-                id="rpcEndpoint"
-                onChange={(event) => {
-                  setRpcEndpoint(event.target.value);
-                  setTokenLookup(initialTokenLookupState);
-                  resetConfirmation();
-                }}
-                spellCheck={false}
-                type="url"
-                value={rpcEndpoint}
-              />
-            </Field>
-            <div className="summary-list">
-              <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
-              <div><span>预估网络费</span><strong>{preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "预检后显示"}</strong></div>
-            </div>
-            {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
-              <ConfirmActionDialog
-                confirmLabel="移除链配置"
-                description={(
-                  <div className="summary-list">
-                    <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                    <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
-                  </div>
-                )}
-                disabled={pageControlsLocked}
-                onConfirm={removeSelectedVerifiedNetwork}
-                title="移除此链配置"
-                triggerLabel="移除此链配置"
-                triggerVariant="destructive"
-              />
-            ) : null}
-          </AdvancedSettings>
-
           <DistributionListGenerator
             key={`evm-distribution-${generatorRevision}`}
             addressKind="evm"
@@ -1053,6 +1030,30 @@ export function EvmBatchDistributorPage() {
             <Badge variant={invalidCount > 0 ? "destructive" : "outline"}>需修正 {invalidCount}</Badge>
             <Badge variant={duplicateCount > 0 ? "destructive" : "outline"}>重复 {duplicateCount}</Badge>
           </div>
+
+          {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
+            <ConfirmActionDialog
+              confirmLabel="移除链配置"
+              description={(
+                <div className="summary-list">
+                  <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                  <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
+                </div>
+              )}
+              disabled={pageControlsLocked}
+              onConfirm={removeSelectedVerifiedNetwork}
+              title="移除此链配置"
+              triggerLabel="移除此链配置"
+              triggerVariant="destructive"
+            />
+          ) : null}
+
+          <EvmGasSettings
+            disabled={pageControlsLocked}
+            feeEstimate={preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "预检后显示"}
+            gas={gas}
+            onSettingsChange={resetConfirmation}
+          />
         </WorkbenchPanel>
 
         <WorkbenchPanel

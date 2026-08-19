@@ -119,6 +119,16 @@ async function waitForInitialBalanceLookup() {
 }
 
 describe("BatchDistributorPage network safety", () => {
+  it("shows the network and RPC together without an advanced-settings disclosure", () => {
+    render(<BatchDistributorPage />);
+
+    const networkAndRpc = screen.getByLabelText("网络与 RPC");
+    expect(within(networkAndRpc).getByRole("combobox")).toBeVisible();
+    expect(within(networkAndRpc).getByRole("textbox", { name: "RPC" }))
+      .toHaveValue("https://api.mainnet-beta.solana.com");
+    expect(screen.queryByRole("button", { name: "高级设置" })).not.toBeInTheDocument();
+  });
+
   it("clears the mixed URL amount warning when the user supplies a uniform amount", async () => {
     const list = "11111111111111111111111111111111,1\nBPFLoader1111111111111111111111111111111111,2";
     window.history.replaceState({}, "", `/sol/?${new URLSearchParams({ list }).toString()}`);
@@ -139,7 +149,6 @@ describe("BatchDistributorPage network safety", () => {
       screen.getByRole("textbox", { name: "收款地址" }),
       "11111111111111111111111111111111"
     );
-    await user.click(screen.getByRole("button", { name: "高级设置" }));
     const rpcInput = screen.getByRole("textbox", { name: "RPC" });
     const connectionCount = solanaMocks.connectionEndpoints.length;
 
@@ -155,11 +164,9 @@ describe("BatchDistributorPage network safety", () => {
   });
 
   it("turns a synchronous connection constructor failure into a balance error", async () => {
-    const user = userEvent.setup();
     render(<BatchDistributorPage />);
     await waitForInitialBalanceLookup();
 
-    await user.click(screen.getByRole("button", { name: "高级设置" }));
     solanaMocks.connectionConstructorErrorEndpoint = "https://throws.example";
     fireEvent.change(screen.getByRole("textbox", { name: "RPC" }), {
       target: { value: solanaMocks.connectionConstructorErrorEndpoint }
@@ -172,7 +179,6 @@ describe("BatchDistributorPage network safety", () => {
   });
 
   it("checks the RPC cluster before exposing its wallet balance", async () => {
-    const user = userEvent.setup();
     render(<BatchDistributorPage />);
     await waitForInitialBalanceLookup();
     solanaMocks.assertNetwork.mockImplementation(async (connection: { endpoint?: string }) => {
@@ -183,7 +189,6 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.getBalance.mockClear();
     solanaMocks.getBalance.mockResolvedValue(99_000_000_000n);
 
-    await user.click(screen.getByRole("button", { name: "高级设置" }));
     fireEvent.change(screen.getByRole("textbox", { name: "RPC" }), {
       target: { value: "https://api.devnet.solana.com" }
     });

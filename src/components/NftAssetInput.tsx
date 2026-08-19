@@ -4,9 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import {
   mergeNftAssetInput,
   parseNftAssetFile,
@@ -37,6 +35,7 @@ const autoNftAssetInputMode = {
 };
 
 export function NftAssetInput({
+  autoOnly = false,
   autoDiscovery,
   children,
   contractAddress,
@@ -48,6 +47,7 @@ export function NftAssetInput({
   onImportingChange,
   value
 }: {
+  autoOnly?: boolean;
   autoDiscovery?: ReactNode;
   children?: ReactNode;
   contractAddress: string;
@@ -70,7 +70,7 @@ export function NftAssetInput({
   const [message, setMessage] = useState("");
   const autoDiscoveryPanel = autoDiscovery ?? children;
   const [mode, setMode] = useState<NftAssetInputMode>(() => (
-    defaultMode === "auto" && autoDiscoveryPanel ? "auto" : "manual"
+    (autoOnly || defaultMode === "auto") && autoDiscoveryPanel ? "auto" : "manual"
   ));
   const availableModes = useMemo(() => (
     autoDiscoveryPanel ? [autoNftAssetInputMode, ...manualNftAssetInputModes] : manualNftAssetInputModes
@@ -95,8 +95,12 @@ export function NftAssetInput({
   }, [cancelPendingImport, disabled]);
 
   useEffect(() => {
+    if (autoOnly && autoDiscoveryPanel && mode !== "auto") {
+      setMode("auto");
+      return;
+    }
     if (mode === "auto" && !autoDiscoveryPanel) setMode("manual");
-  }, [autoDiscoveryPanel, mode]);
+  }, [autoDiscoveryPanel, autoOnly, mode]);
 
   useEffect(() => () => {
     cancelLocalFileImport(importEpochRef.current);
@@ -240,79 +244,54 @@ export function NftAssetInput({
         type="file"
       />
 
-      <Tabs className="nft-mode-picker" onValueChange={(nextMode) => selectMode(nextMode as NftAssetInputMode)} value={mode}>
-        <TabsList aria-label="NFT 添加方式" className="nft-mode-tabs">
-          {availableModes.map((option) => (
-            <TabsTrigger
-              disabled={controlsDisabled}
-              key={option.value}
-              value={option.value}
-            >
-              {option.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      {autoOnly && autoDiscoveryPanel ? (
+        <div className="nft-mode-picker">{autoDiscoveryPanel}</div>
+      ) : (
+        <Tabs className="nft-mode-picker" onValueChange={(nextMode) => selectMode(nextMode as NftAssetInputMode)} value={mode}>
+          <TabsList aria-label="NFT 添加方式" className="nft-mode-tabs">
+            {availableModes.map((option) => (
+              <TabsTrigger
+                disabled={controlsDisabled}
+                key={option.value}
+                value={option.value}
+              >
+                {option.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-        {autoDiscoveryPanel ? <TabsContent value="auto">{autoDiscoveryPanel}</TabsContent> : null}
+          {autoDiscoveryPanel ? <TabsContent value="auto">{autoDiscoveryPanel}</TabsContent> : null}
 
-        <TabsContent className="nft-asset-builder-fields" value="manual">
-          <Field>
-            <FieldLabel htmlFor="nft-token-expression">Token ID / 区间</FieldLabel>
-            <Input
-              disabled={controlsDisabled}
-              id="nft-token-expression"
-              onChange={(event) => {
-                cancelPendingImport();
-                setTokenExpression(event.target.value);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  addExpression();
-                }
-              }}
-              placeholder="例如 1, 3, 8-12"
-              spellCheck={false}
-              value={tokenExpression}
-            />
-          </Field>
-          <Button className="nft-add-button" disabled={controlsDisabled || !contractAddress.trim() || !tokenExpression.trim()} onClick={addExpression} type="button">
-            加入清单
-          </Button>
-          <Button disabled={controlsDisabled} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
-            {importing ? "正在导入" : "导入 TXT/CSV"}
-          </Button>
-        </TabsContent>
-      </Tabs>
-
-      <Sheet>
-        <SheetTrigger disabled={controlsDisabled} render={<Button disabled={controlsDisabled} type="button" variant="ghost" />}>
-          原始编辑
-        </SheetTrigger>
-        <SheetContent className="nft-raw-sheet" side="right">
-          <SheetHeader>
-            <SheetTitle>原始资产清单</SheetTitle>
-            <SheetDescription className="sr-only">每行填写合约地址和 Token ID。</SheetDescription>
-          </SheetHeader>
-          <Field className="nft-raw-sheet__field">
-            <FieldLabel htmlFor="nft-asset-raw-input">资产清单</FieldLabel>
-            <Textarea
-              className="collection-asset-textarea"
-              disabled={controlsDisabled}
-              id="nft-asset-raw-input"
-              onChange={(event) => {
-                cancelPendingImport();
-                setIssues([]);
-                setMessage("");
-                onChange(event.target.value);
-              }}
-              placeholder="0x合约地址,Token ID"
-              spellCheck={false}
-              value={value}
-            />
-          </Field>
-        </SheetContent>
-      </Sheet>
+          <TabsContent className="nft-asset-builder-fields" value="manual">
+            <Field>
+              <FieldLabel htmlFor="nft-token-expression">Token ID / 区间</FieldLabel>
+              <Input
+                disabled={controlsDisabled}
+                id="nft-token-expression"
+                onChange={(event) => {
+                  cancelPendingImport();
+                  setTokenExpression(event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addExpression();
+                  }
+                }}
+                placeholder="例如 1, 3, 8-12"
+                spellCheck={false}
+                value={tokenExpression}
+              />
+            </Field>
+            <Button className="nft-add-button" disabled={controlsDisabled || !contractAddress.trim() || !tokenExpression.trim()} onClick={addExpression} type="button">
+              加入清单
+            </Button>
+            <Button disabled={controlsDisabled} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
+              {importing ? "正在导入" : "导入 TXT/CSV"}
+            </Button>
+          </TabsContent>
+        </Tabs>
+      )}
 
       {message ? <Alert><AlertDescription role="status">{message}</AlertDescription></Alert> : null}
       {issues.length ? (

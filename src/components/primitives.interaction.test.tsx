@@ -186,7 +186,9 @@ describe("shadcn Base UI interactions", () => {
     await user.click(input);
     await user.clear(input);
     await user.type(input, "8453");
-    expect(screen.getByRole("option", { name: /Base.*8453/ })).toBeVisible();
+    const baseOption = screen.getByRole("option", { name: /Base.*8453/ });
+    expect(baseOption).toBeVisible();
+    expect(baseOption).toHaveClass("pr-7");
     expect(screen.queryByRole("option", { name: /Base Sepolia/ })).not.toBeInTheDocument();
     await user.keyboard("{ArrowDown}{Enter}");
     expect(onChange).toHaveBeenCalledWith("base");

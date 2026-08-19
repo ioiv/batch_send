@@ -178,12 +178,32 @@ async function discoverNft() {
 }
 
 describe("EvmCollectionPage workbench", () => {
+  it("orders private keys before assets and keeps network, RPC, fee, and Gas visible below them", () => {
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    const secretKeys = screen.getByRole("textbox", { name: "来源钱包密钥" });
+    const target = screen.getByRole("textbox", { name: "目标地址" });
+    const assets = screen.getByRole("textbox", { name: "Token 清单" });
+    const networkAndRpc = screen.getByLabelText("网络与 RPC");
+    const maximumFee = screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ });
+    const gasSettings = screen.getByLabelText("Gas 设置");
+
+    expect(within(networkAndRpc).getByRole("combobox")).toBeVisible();
+    expect(within(networkAndRpc).getByRole("textbox", { name: "RPC" }))
+      .toHaveValue("https://ethereum.publicnode.com");
+    expect(within(networkAndRpc).getByText(/Chain ID/)).toHaveTextContent("Chain ID 1");
+    expect(screen.queryByRole("button", { name: "RPC 与 Gas 设置" })).not.toBeInTheDocument();
+    expect(secretKeys.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(assets.compareDocumentPosition(networkAndRpc) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(networkAndRpc.compareDocumentPosition(maximumFee) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(maximumFee.compareDocumentPosition(gasSettings) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
   it("shows live Gas and passes a custom Gas Price into collection preflight", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "4.5");
@@ -205,14 +225,13 @@ describe("EvmCollectionPage workbench", () => {
   it("blocks collection preflight while the custom Gas Price is invalid", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
-    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
 
-    expect(within(gasSettings).getByText(/请输入大于 0/)).toBeVisible();
+    expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "预检资产与费用" })).toBeDisabled();
     expect(evmMocks.preflight).not.toHaveBeenCalled();
   });
@@ -221,7 +240,6 @@ describe("EvmCollectionPage workbench", () => {
     const user = await prepareReadyErc20Page();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "RPC 与 Gas 设置" }));
     await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
 
     expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
@@ -238,6 +256,23 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getAllByRole("textbox", { name: "NFT 合约" })).toHaveLength(1);
     expect(screen.getByText("编辑中")).toBeInTheDocument();
     expect(screen.queryByText(/下一步|预检准备项|平台费 0|不上传密钥|密钥仅在本地内存/)).not.toBeInTheDocument();
+  });
+
+  it("places NFT source keys above asset discovery and keeps ERC721 discovery automatic-only", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="nft" />);
+
+    await user.click(screen.getByRole("tab", { name: "来源密钥" }));
+    const secretKeys = screen.getByRole("textbox", { name: "来源钱包密钥" });
+    const nftContract = screen.getByRole("textbox", { name: "NFT 合约" });
+
+    expect(secretKeys.compareDocumentPosition(nftContract) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByRole("tab", { name: "手工 / 文件" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Token ID / 区间")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "识别持仓" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "发现方式与事件范围" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "NFT 发现方式" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("事件起始区块")).not.toBeInTheDocument();
   });
 
   it("shows a blocking error when asset and transaction preflight has no executable item", async () => {
@@ -264,14 +299,12 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.execute).not.toHaveBeenCalled();
   });
 
-  it("keeps complete discovery results out of the asset table until explicitly added", async () => {
-    const user = await discoverNft();
-    expect(await screen.findByRole("button", { name: "加入资产清单" })).toBeInTheDocument();
-    expect(screen.getByText("暂无资产")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "加入资产清单" }));
+  it("automatically adds complete discovery results to the pending asset table", async () => {
+    await discoverNft();
     expect(await screen.findByText("1 个有效")).toBeInTheDocument();
     expect(screen.getByRole("table", { name: "ERC721 待归集资产清单" })).toBeInTheDocument();
+    expect(screen.getByText("已识别并自动加入 1 个 NFT")).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("button", { name: "加入资产清单" })).not.toBeInTheDocument();
   });
 
   it("requires a separate confirmation before adding partial discovery results", async () => {

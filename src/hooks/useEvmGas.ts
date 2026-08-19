@@ -142,6 +142,8 @@ export function useEvmGas({
     mode,
     recommendations,
     refresh,
+    refreshCycle: live.updatedAt ?? 0,
+    refreshIntervalMs,
     setChoice,
     setCustomGasPriceGwei,
     setMode,
