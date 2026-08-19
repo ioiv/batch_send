@@ -18,8 +18,12 @@ describe("SiteHeader sidebar navigation", () => {
     expect(screen.queryByRole("link", { name: /工具首页/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "站点主导航" })).not.toBeInTheDocument();
     expect(header.getByRole("link", { name: "ChainKit 首页" })).toBeVisible();
+    expect(header.getByRole("search")).toBeVisible();
+    expect(header.getByRole("combobox", { name: "搜索工具" })).toBeVisible();
     expect(screen.getByRole("navigation", { name: "工具导航" })).toBeVisible();
     expect(screen.getByRole("link", { name: /SOL 分发/ })).toHaveAttribute("aria-current", "page");
+    expect(container.querySelector('[data-region="header"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-region="sidebar"]')).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "收起侧边导航" }));
     expect(container.querySelector(".site-sidebar")).toHaveAttribute("data-collapsed", "true");

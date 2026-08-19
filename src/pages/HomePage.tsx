@@ -40,51 +40,53 @@ export function HomePage() {
   return (
     <div className="site-page page-home">
       <SiteHeader />
-      <main className="home-main" id="main">
-        <Tabs
-          className="home-tool-tabs"
-          onValueChange={(value) => setSelectedEcosystem(value as "all" | ToolEcosystem)}
-          value={selectedEcosystem}
-        >
-          <TabsList aria-label="按生态筛选工具">
-            <TabsTrigger value="all">全部</TabsTrigger>
-            {supportedEcosystems.map((ecosystem) => (
-              <TabsTrigger key={ecosystem.id} value={ecosystem.id}>{ecosystem.label}</TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+      <div className="site-content" data-region="main">
+        <main className="home-main" id="main">
+          <Tabs
+            className="home-tool-tabs"
+            onValueChange={(value) => setSelectedEcosystem(value as "all" | ToolEcosystem)}
+            value={selectedEcosystem}
+          >
+            <TabsList aria-label="按生态筛选工具">
+              <TabsTrigger value="all">全部</TabsTrigger>
+              {supportedEcosystems.map((ecosystem) => (
+                <TabsTrigger key={ecosystem.id} value={ecosystem.id}>{ecosystem.label}</TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
 
-        <div aria-live="polite" className="home-tool-groups">
-          {toolCategories.map((category) => {
-            const categoryTools = filteredTools.filter((tool) => tool.category === category.id);
-            if (categoryTools.length === 0) return null;
-            return (
-              <section id={category.id} key={category.id} aria-labelledby={`${category.id}-title`}>
-                <h2 id={`${category.id}-title`}>{category.label}</h2>
-                <div className="home-tool-grid">
-                  {categoryTools.map((tool) => (
-                    <a className="home-tool-link" href={tool.href} key={tool.id}>
-                      <Card className="home-tool-card" size="sm">
-                        <CardHeader>
-                          <CardTitle>{tool.shortTitle}</CardTitle>
-                          <CardAction>
-                            <Badge variant="outline">{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</Badge>
-                          </CardAction>
-                        </CardHeader>
-                        <CardContent>
-                          <span className="home-tool-icon"><ToolIcon name={tool.icon} /></span>
-                          <span aria-hidden="true" className="home-tool-arrow">↗</span>
-                        </CardContent>
-                      </Card>
-                    </a>
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      </main>
-      <SiteFooter />
+          <div aria-live="polite" className="home-tool-groups">
+            {toolCategories.map((category) => {
+              const categoryTools = filteredTools.filter((tool) => tool.category === category.id);
+              if (categoryTools.length === 0) return null;
+              return (
+                <section id={category.id} key={category.id} aria-labelledby={`${category.id}-title`}>
+                  <h2 id={`${category.id}-title`}>{category.label}</h2>
+                  <div className="home-tool-grid">
+                    {categoryTools.map((tool) => (
+                      <a className="home-tool-link" href={tool.href} key={tool.id}>
+                        <Card className="home-tool-card" size="sm">
+                          <CardHeader>
+                            <CardTitle>{tool.shortTitle}</CardTitle>
+                            <CardAction>
+                              <Badge variant="outline">{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</Badge>
+                            </CardAction>
+                          </CardHeader>
+                          <CardContent>
+                            <span className="home-tool-icon"><ToolIcon name={tool.icon} /></span>
+                            <span aria-hidden="true" className="home-tool-arrow">↗</span>
+                          </CardContent>
+                        </Card>
+                      </a>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        </main>
+        <SiteFooter />
+      </div>
     </div>
   );
 }

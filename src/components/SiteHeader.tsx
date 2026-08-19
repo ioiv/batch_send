@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { getToolsByCategory, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { getToolsByCategory, toolCategories, tools, type ToolIcon as ToolIconName } from "@/config/tools";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -66,6 +66,61 @@ function Brand() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="8.75" cy="8.75" r="4.75" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m12.25 12.25 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ToolSearch() {
+  const [query, setQuery] = useState("");
+  const [message, setMessage] = useState("");
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return;
+
+    const match = tools.find((tool) => (
+      [tool.title, tool.shortTitle, tool.description, ...tool.keywords]
+        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
+    ));
+
+    if (match) {
+      window.location.assign(match.href);
+      return;
+    }
+
+    setMessage("没有匹配的工具");
+  }
+
+  return (
+    <form className="site-tool-search" onSubmit={handleSubmit} role="search">
+      <span className="site-tool-search__icon"><SearchIcon /></span>
+      <input
+        aria-describedby="site-tool-search-message"
+        aria-label="搜索工具"
+        list="site-tool-search-options"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setMessage("");
+        }}
+        placeholder="搜索工具、链或功能"
+        type="search"
+        value={query}
+      />
+      <kbd aria-hidden="true">Enter</kbd>
+      <datalist id="site-tool-search-options">
+        {tools.map((tool) => <option key={tool.id} value={tool.title} />)}
+      </datalist>
+      <span className="sr-only" id="site-tool-search-message" role="status">{message}</span>
+    </form>
+  );
+}
+
 function SidebarNavigation({ currentToolId, mobile = false }: { currentToolId?: string; mobile?: boolean }) {
   return (
     <nav className={`site-sidebar__nav${mobile ? " site-sidebar__nav--mobile" : ""}`} aria-label={mobile ? "移动端工具导航" : "工具导航"}>
@@ -122,25 +177,10 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
     <>
       <a className="site-skip-link" href="#main">跳到主要内容</a>
 
-      <aside className="site-sidebar" data-collapsed={sidebarCollapsed || undefined}>
-        <SidebarNavigation currentToolId={currentToolId} />
-        <Button
-          aria-expanded={!sidebarCollapsed}
-          aria-label={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
-          className="site-sidebar__toggle"
-          onClick={toggleSidebar}
-          size="icon"
-          title={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
-          variant="outline"
-        >
-          <CollapseIcon />
-        </Button>
-        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.0</span></p>
-      </aside>
-
-      <header className="site-header">
+      <header className="site-header" data-region="header">
         <div className="site-header__inner">
           <Brand />
+          <ToolSearch />
 
           <div className="site-header__actions">
             {action}
@@ -162,6 +202,22 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
           </div>
         </div>
       </header>
+
+      <aside className="site-sidebar" data-collapsed={sidebarCollapsed || undefined} data-region="sidebar">
+        <SidebarNavigation currentToolId={currentToolId} />
+        <Button
+          aria-expanded={!sidebarCollapsed}
+          aria-label={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
+          className="site-sidebar__toggle"
+          onClick={toggleSidebar}
+          size="icon"
+          title={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
+          variant="outline"
+        >
+          <CollapseIcon />
+        </Button>
+        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.0</span></p>
+      </aside>
     </>
   );
 }

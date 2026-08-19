@@ -28,18 +28,21 @@ describe("ToolPageLayout", () => {
     expect(markup).not.toContain("site-tool-step");
   });
 
-  it("keeps the tool toolbar outside the scrolling main content", () => {
+  it("groups the toolbar, main content and footer inside the main region", () => {
     const markup = renderToStaticMarkup(
       <ToolPageLayout currentToolId="sol-distribution" title="测试工具">
         <div>滚动内容</div>
       </ToolPageLayout>
     );
+    const contentStart = markup.indexOf('class="site-content"');
     const toolbarStart = markup.indexOf('class="site-tool-toolbar"');
-    const toolbarEnd = markup.indexOf("</div><main", toolbarStart);
     const mainStart = markup.indexOf("<main", toolbarStart);
+    const footerStart = markup.indexOf("<footer", mainStart);
 
+    expect(contentStart).toBeGreaterThan(-1);
+    expect(toolbarStart).toBeGreaterThan(contentStart);
     expect(toolbarStart).toBeGreaterThan(-1);
-    expect(toolbarEnd).toBeGreaterThan(toolbarStart);
-    expect(mainStart).toBeGreaterThan(toolbarEnd);
+    expect(mainStart).toBeGreaterThan(toolbarStart);
+    expect(footerStart).toBeGreaterThan(mainStart);
   });
 });

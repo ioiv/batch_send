@@ -50,29 +50,31 @@ export function ToolPageLayout({
       data-tool={currentToolId}
     >
       <SiteHeader currentToolId={currentToolId} />
-      <div className="site-tool-toolbar">
-        <div className="site-tool-heading">
-          <h1 id={headingId}>{title}</h1>
+      <div className="site-content" data-region="main">
+        <div className="site-tool-toolbar">
+          <div className="site-tool-heading">
+            <h1 id={headingId}>{title}</h1>
+          </div>
+          <div aria-label="页面状态与快捷操作" className="site-tool-heading__actions">
+            <Badge
+              aria-atomic="true"
+              aria-live="polite"
+              className="workbench-status"
+              data-state={status}
+              role="status"
+              variant="outline"
+            >
+              <span aria-hidden="true" className="workbench-status__dot" />
+              {statusLabel || STATUS_LABELS[status]}
+            </Badge>
+            {actions}
+          </div>
         </div>
-        <div aria-label="页面状态与快捷操作" className="site-tool-heading__actions">
-          <Badge
-            aria-atomic="true"
-            aria-live="polite"
-            className="workbench-status"
-            data-state={status}
-            role="status"
-            variant="outline"
-          >
-            <span aria-hidden="true" className="workbench-status__dot" />
-            {statusLabel || STATUS_LABELS[status]}
-          </Badge>
-          {actions}
-        </div>
+        <main className={`site-tool-shell ${className}`.trim()} id="main">
+          {children}
+        </main>
+        <SiteFooter />
       </div>
-      <main className={`site-tool-shell ${className}`.trim()} id="main">
-        {children}
-      </main>
-      <SiteFooter />
     </div>
   );
 }
