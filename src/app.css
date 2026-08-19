@@ -1,13 +1,17 @@
 #root {
-  height: 100dvh;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 .site-page {
   --site-sidebar-width: 15.5rem;
   --site-header-height: 3.75rem;
   --site-footer-height: 2.25rem;
+  position: fixed;
+  inset: 0;
   min-width: 0;
-  height: 100dvh;
+  height: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -22,10 +26,16 @@
 
 .site-container,
 .site-header__inner,
+.site-tool-toolbar,
 .site-tool-shell,
 .home-main {
   width: min(86rem, calc(100% - 2.5rem));
   margin-inline: auto;
+}
+
+.site-tool-toolbar,
+.site-tool-shell {
+  width: min(70rem, calc(100% - 2.5rem));
 }
 
 .site-skip-link {
@@ -46,9 +56,9 @@
 }
 
 .site-header {
-  position: sticky;
+  position: relative;
   z-index: 60;
-  top: 0;
+  flex: 0 0 var(--site-header-height);
   width: calc(100% + var(--site-sidebar-width));
   margin-left: calc(-1 * var(--site-sidebar-width));
   border-bottom: 1px solid var(--border);
@@ -352,7 +362,8 @@
   min-height: 0;
   padding-block: clamp(2rem, 4vw, 3.5rem) 5rem;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
   scrollbar-gutter: stable;
 }
 
@@ -447,26 +458,30 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+  display: block;
+  padding-block: 0 4.5rem;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+.site-tool-toolbar {
+  position: relative;
+  z-index: 40;
+  flex: 0 0 auto;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-content: start;
+  align-items: center;
   gap: 1rem;
-  padding-block: 1.4rem 4.5rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  padding-block: 1.4rem 1rem;
+  background: var(--background);
 }
 
 .site-tool-heading {
   min-width: 0;
-  grid-column: 1;
-  grid-row: 1;
-  align-self: center;
   padding: 0.35rem 0 0.45rem;
-}
-
-.site-tool-shell > :not(.site-tool-heading):not(.site-tool-heading__actions) {
-  grid-column: 1 / -1;
 }
 
 .site-tool-heading h1 {
@@ -479,16 +494,10 @@
 }
 
 .site-tool-heading__actions {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: start;
   justify-content: flex-end;
 }
 
 .site-page[data-sticky-actions="true"] .site-tool-heading__actions {
-  position: sticky;
-  z-index: 30;
-  top: 1rem;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   padding: 0.3rem;
@@ -542,9 +551,9 @@
 .workbench-grid {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(19rem, 0.92fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 1rem;
+  gap: clamp(1rem, 2vw, 1.5rem);
 }
 
 .workspace > *,
@@ -563,17 +572,15 @@
 }
 
 .workbench-panel--actionable {
-  position: sticky;
-  top: 1rem;
-  max-height: calc(100dvh - var(--site-header-height) - var(--site-footer-height) - 2rem);
-  overflow: hidden;
+  position: static;
+  max-height: none;
+  overflow: visible;
 }
 
 .workbench-panel--actionable .workbench-panel__content {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 
 .panel-header,
@@ -619,6 +626,82 @@
 .workbench-panel__footer > .actions {
   width: 100%;
   justify-content: space-between;
+}
+
+.collection-actions {
+  justify-content: flex-end;
+}
+
+.workbench-review {
+  min-width: 0;
+}
+
+.workbench-review__card {
+  box-shadow: 0 0.65rem 2rem color-mix(in oklab, black 14%, transparent);
+}
+
+.workbench-review .workbench-review__header {
+  min-height: 3.35rem;
+  border-bottom-color: transparent;
+  padding-block: 0.7rem;
+}
+
+.workbench-review[data-open] .workbench-review__header {
+  border-bottom-color: var(--border);
+}
+
+.workbench-review__heading,
+.workbench-review__controls,
+.workbench-review__trigger {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.workbench-review__heading {
+  flex: 1 1 auto;
+  gap: 0.65rem;
+}
+
+.workbench-review__summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  color: var(--muted-foreground);
+}
+
+.workbench-review__controls {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.workbench-review__trigger {
+  gap: 0.28rem;
+  color: var(--muted-foreground);
+}
+
+.workbench-review__trigger svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  transition: transform 180ms ease;
+}
+
+.workbench-review[data-open] .workbench-review__trigger svg {
+  transform: rotate(180deg);
+}
+
+.workbench-review__content {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+  opacity: 1;
+  transition: height 200ms cubic-bezier(0.2, 0.75, 0.2, 1), opacity 160ms ease;
+}
+
+.workbench-review__content[data-starting-style],
+.workbench-review__content[data-ending-style] {
+  height: 0;
+  opacity: 0;
 }
 
 .secret-input,
@@ -1066,7 +1149,7 @@
 
 .collection-workspace,
 .collection-workspace.has-results {
-  grid-template-columns: minmax(0, 1.08fr) minmax(19rem, 0.92fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .collection-workbench-panel {
@@ -1077,11 +1160,10 @@
 .review-panel,
 .deployment-review {
   min-width: 0;
-  grid-column: 2;
-  position: sticky;
-  top: 1rem;
-  max-height: calc(100dvh - var(--site-header-height) - var(--site-footer-height) - 2rem);
-  overflow: auto;
+  grid-column: 1;
+  position: static;
+  max-height: none;
+  overflow: visible;
 }
 
 .collection-results[hidden] {
@@ -1453,6 +1535,7 @@
 
   .site-container,
   .site-header__inner,
+  .site-tool-toolbar,
   .site-tool-shell,
   .home-main {
     width: min(100% - 2rem, 70rem);
@@ -1505,6 +1588,7 @@
 
   .site-container,
   .site-header__inner,
+  .site-tool-toolbar,
   .site-tool-shell,
   .home-main {
     width: min(100% - 1.25rem, 44rem);
@@ -1532,19 +1616,16 @@
     grid-column: span 12;
   }
 
-  .site-tool-shell {
+  .site-tool-toolbar {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .site-tool-heading__actions {
-    grid-column: 1;
-    grid-row: 2;
     width: 100%;
     justify-content: space-between;
   }
 
   .site-page[data-sticky-actions="true"] .site-tool-heading__actions {
-    top: 1rem;
     border-color: color-mix(in oklab, var(--border) 72%, transparent);
     padding: 0.38rem 0.45rem;
   }

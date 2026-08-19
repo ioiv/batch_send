@@ -13,6 +13,7 @@ import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayo
 import {
   ConfirmActionDialog,
   ExecutionProgress,
+  ReviewPanel,
   ResultTable,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
@@ -356,6 +357,25 @@ export function EvmBatchDistributorPage() {
         : preflighting
           ? "预检中"
           : undefined;
+  const reviewHasRisk = unresolvedSubmission || sendFailed || preflightFailed;
+  const reviewShouldOpen = reviewHasRisk || sendState.signatures.length > 0;
+  const reviewSummaryLabel = unresolvedSubmission
+    ? "链上状态待核对"
+    : sendComplete
+      ? `已完成 · ${sendState.signatures.length} 笔`
+      : sendFailed
+        ? "执行失败"
+        : preflightFailed
+          ? "预检未通过"
+          : sending
+            ? "执行中"
+            : preflighting
+              ? "预检中"
+              : showFinalSummary
+                ? `预检通过 · ${preflightState.result?.totalTransactions || 0} 笔`
+                : reviewRows.length
+                  ? `清单 ${reviewRows.length} 项`
+                  : "尚无清单";
 
   const removeSelectedVerifiedNetwork = () => {
     if (!removeVerifiedEvmDistributionNetwork(selectedNetwork.chainId)) return;
@@ -1056,9 +1076,11 @@ export function EvmBatchDistributorPage() {
           />
         </WorkbenchPanel>
 
-        <WorkbenchPanel
-          actions={<Badge variant="outline">{sendState.signatures.length > 0 ? `${sendState.signatures.length} 笔交易` : `${reviewRows.length} 行`}</Badge>}
+        <ReviewPanel
+          autoOpen={reviewShouldOpen}
           className="review-panel"
+          stateKey={`${preflightState.status}:${sendState.status}:${sendState.signatures.length > 0 ? "submitted" : "local"}`}
+          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
           title={sendState.signatures.length > 0 || sendComplete || sendFailed ? "分发结果" : confirmVisible ? "预检结果" : "清单预览"}
         >
           {preflightState.status !== "idle" && sendState.status === "idle" ? (
@@ -1165,7 +1187,7 @@ export function EvmBatchDistributorPage() {
               <AlertDescription>已有交易提交到链上。请先核对交易哈希，再创建空白任务。</AlertDescription>
             </Alert>
           ) : null}
-        </WorkbenchPanel>
+        </ReviewPanel>
       </div>
     </ToolPageLayout>
   );

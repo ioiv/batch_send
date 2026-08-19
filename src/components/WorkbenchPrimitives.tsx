@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -59,6 +59,76 @@ export function WorkbenchPanel({
       <CardContent className="workbench-panel__content">{children}</CardContent>
       {footer ? <CardFooter className="workbench-panel__footer">{footer}</CardFooter> : null}
     </Card>
+  );
+}
+
+export function ReviewPanel({
+  actions,
+  autoOpen = false,
+  children,
+  className = "",
+  defaultOpen = false,
+  stateKey,
+  summary,
+  title
+}: {
+  actions?: ReactNode;
+  autoOpen?: boolean;
+  children: ReactNode;
+  className?: string;
+  defaultOpen?: boolean;
+  stateKey?: string | number;
+  summary: ReactNode;
+  title: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen || autoOpen);
+  const previousAutomaticState = useRef({ autoOpen, stateKey });
+  const titleText = typeof title === "string" ? title : "详情";
+
+  useEffect(() => {
+    const previous = previousAutomaticState.current;
+    if (previous.autoOpen === autoOpen && previous.stateKey === stateKey) return;
+    previousAutomaticState.current = { autoOpen, stateKey };
+    setOpen(autoOpen);
+  }, [autoOpen, stateKey]);
+
+  return (
+    <Collapsible
+      className={`workbench-review ${className}`.trim()}
+      onOpenChange={setOpen}
+      open={open}
+    >
+      <Card className="workbench-panel workbench-review__card overflow-visible">
+        <CardHeader className="workbench-panel__header workbench-review__header">
+          <div className="workbench-review__heading">
+            <CardTitle>{title}</CardTitle>
+            <div className="workbench-review__summary">{summary}</div>
+          </div>
+          <div className="workbench-review__controls">
+            {actions}
+            <CollapsibleTrigger
+              aria-label={`${open ? "收起" : "展开"}${titleText}`}
+              render={(
+                <Button
+                  className="workbench-review__trigger"
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                />
+              )}
+            >
+              {open ? "收起" : "查看"}
+              <svg aria-hidden="true" fill="none" viewBox="0 0 20 20">
+                <path d="m6 8 4 4 4-4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" />
+              </svg>
+            </CollapsibleTrigger>
+          </div>
+        </CardHeader>
+        <CollapsibleContent className="workbench-review__content">
+          <CardContent className="workbench-panel__content">{children}</CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   );
 }
 

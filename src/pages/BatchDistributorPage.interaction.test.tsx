@@ -237,7 +237,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
     await waitFor(() => expect(solanaMocks.assertNetwork).toHaveBeenCalledTimes(1));
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
 
     const confirmTrigger = await screen.findByRole("button", { name: "确认并签名" });
     await user.click(confirmTrigger);
@@ -265,7 +265,7 @@ describe("BatchDistributorPage network safety", () => {
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
 
     const confirmTrigger = screen.getByRole("button", { name: "确认并签名" });
     await user.click(confirmTrigger);
@@ -289,7 +289,7 @@ describe("BatchDistributorPage network safety", () => {
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
     expect(screen.getByRole("button", { name: "确认并签名" })).toBeEnabled();
 
     await user.type(editor, "\nBPFLoader1111111111111111111111111111111111");
@@ -309,7 +309,7 @@ describe("BatchDistributorPage network safety", () => {
     const editor = screen.getByRole("textbox", { name: "收款地址" });
     await user.type(editor, "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
     await user.click(screen.getByRole("button", { name: "确认并签名" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" }))
       .getByRole("button", { name: "确认并签名" }));
@@ -346,7 +346,7 @@ describe("BatchDistributorPage network safety", () => {
       "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
     await user.click(screen.getByRole("button", { name: "确认并签名" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" }))
       .getByRole("button", { name: "确认并签名" }));
@@ -370,7 +370,7 @@ describe("BatchDistributorPage network safety", () => {
       "11111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/只读预检已通过/);
+    await screen.findByText(/预检通过 · \d+ 笔/);
     solanaMocks.getLatestBlockhash.mockClear();
 
     await user.click(screen.getByRole("button", { name: "确认并签名" }));

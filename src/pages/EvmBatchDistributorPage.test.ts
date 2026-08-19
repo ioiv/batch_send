@@ -239,7 +239,7 @@ describe("EvmBatchDistributorPage safety", () => {
     await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
     await user.click(screen.getByRole("button", { name: "运行预检" }));
 
-    expect(await screen.findByText("预检未通过")).toBeVisible();
+    expect((await screen.findAllByText("预检未通过")).length).toBeGreaterThan(0);
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "error");
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
     expect(pageMocks.sendNative).not.toHaveBeenCalled();

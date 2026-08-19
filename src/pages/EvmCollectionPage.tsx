@@ -17,6 +17,7 @@ import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayo
 import {
   ConfirmActionDialog,
   ExecutionProgress,
+  ReviewPanel,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
@@ -344,6 +345,18 @@ export function EvmCollectionPage({
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
+  const reviewErrorCount = results.filter((result) => result.status === "error").length;
+  const reviewHasRisk = workbenchStatus === "error" || workbenchStatus === "uncertain" || reviewErrorCount > 0;
+  const reviewShouldOpen = hasSubmittedHash || (reviewHasRisk && results.length > 0);
+  const reviewSummaryLabel = workbenchStatus === "ready" && reviewErrorCount > 0
+    ? `部分通过 · ${reviewErrorCount} 项需处理`
+    : workbenchStatus === "ready"
+      ? `预检通过 · ${readyTransactionCount} 笔`
+      : workbenchStatus === "editing"
+        ? results.length ? `${results.length} 项待查看` : "尚未预检"
+        : workbenchStatus === "success"
+          ? `已完成 · ${results.length} 项`
+          : `${evmStatusLabels[workbenchStatus]}${results.length ? ` · ${results.length} 项` : ""}`;
   const networkOptions = useMemo<SearchableSelectOption<EvmDistributionNetworkId>[]>(() => (
     networks.map((network) => ({
       keywords: [String(network.chainId), network.nativeCurrency.symbol],
@@ -1441,7 +1454,13 @@ export function EvmCollectionPage({
           </div>
         </WorkbenchPanel>
 
-        <WorkbenchPanel className="collection-results-panel" title="预检与结果">
+        <ReviewPanel
+          autoOpen={reviewShouldOpen}
+          className="collection-results-panel"
+          stateKey={`${stage}:${reviewHasRisk ? "risk" : "safe"}:${hasSubmittedHash ? "submitted" : "local"}`}
+          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
+          title="预检与结果"
+        >
           <CollectionResults
             embedded
             emptyMessage="预检后显示资产与交易。"
@@ -1454,7 +1473,7 @@ export function EvmCollectionPage({
                 ? `${selectedNetwork.nativeCurrency.symbol} 归集结果`
                 : "ERC20 归集结果"}
           />
-        </WorkbenchPanel>
+        </ReviewPanel>
       </div>
     </ToolPageLayout>
   );

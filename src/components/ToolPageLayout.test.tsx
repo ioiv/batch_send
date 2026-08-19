@@ -27,4 +27,19 @@ describe("ToolPageLayout", () => {
     expect(markup).not.toContain("操作步骤");
     expect(markup).not.toContain("site-tool-step");
   });
+
+  it("keeps the tool toolbar outside the scrolling main content", () => {
+    const markup = renderToStaticMarkup(
+      <ToolPageLayout currentToolId="sol-distribution" title="测试工具">
+        <div>滚动内容</div>
+      </ToolPageLayout>
+    );
+    const toolbarStart = markup.indexOf('class="site-tool-toolbar"');
+    const toolbarEnd = markup.indexOf("</div><main", toolbarStart);
+    const mainStart = markup.indexOf("<main", toolbarStart);
+
+    expect(toolbarStart).toBeGreaterThan(-1);
+    expect(toolbarEnd).toBeGreaterThan(toolbarStart);
+    expect(mainStart).toBeGreaterThan(toolbarEnd);
+  });
 });

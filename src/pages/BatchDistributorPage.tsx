@@ -11,6 +11,7 @@ import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import {
   ConfirmActionDialog,
   ExecutionProgress,
+  ReviewPanel,
   ResultTable,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
@@ -571,6 +572,25 @@ export function BatchDistributorPage() {
     : confirmVisible
       ? preflightState.message
       : readinessMessage;
+  const reviewHasRisk = unresolvedSubmission || sendFailed || preflightFailed;
+  const reviewShouldOpen = reviewHasRisk || sendState.signatures.length > 0;
+  const reviewSummaryLabel = unresolvedSubmission
+    ? "链上状态待核对"
+    : sendComplete
+      ? `已完成 · ${sendState.signatures.length} 笔`
+      : sendFailed
+        ? "执行失败"
+        : preflightFailed
+          ? "预检未通过"
+          : sending
+            ? "执行中"
+            : preflighting
+              ? "预检中"
+              : showFinalSummary
+                ? `预检通过 · ${preflightState.transactionCount} 笔`
+                : parsed.validRows.length
+                  ? `清单 ${parsed.validRows.length} 项`
+                  : "尚无清单";
   const confirmationSummaryRows = [
     { label: "网络", value: selectedNetwork.label },
     { label: "RPC", value: effectiveRpcEndpoint },
@@ -737,9 +757,11 @@ export function BatchDistributorPage() {
           </div>
         </WorkbenchPanel>
 
-        <WorkbenchPanel
-          actions={<Badge variant="outline">{transactionCount || 0} 笔交易</Badge>}
+        <ReviewPanel
+          autoOpen={reviewShouldOpen}
           className="min-w-0"
+          stateKey={`${preflightState.status}:${sendState.status}:${sendState.signatures.length > 0 ? "submitted" : "local"}`}
+          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
           title="预检与结果"
         >
           <div className="flex min-w-0 flex-col gap-4">
@@ -814,7 +836,7 @@ export function BatchDistributorPage() {
               </Alert>
             ) : null}
           </div>
-        </WorkbenchPanel>
+        </ReviewPanel>
       </div>
     </ToolPageLayout>
   );

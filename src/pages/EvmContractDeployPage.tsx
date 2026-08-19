@@ -13,6 +13,7 @@ import {
   AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
+  ReviewPanel,
   ResultTable,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
@@ -258,6 +259,25 @@ export function EvmContractDeployPage() {
         : status === "confirming"
           ? "链上验证中"
           : undefined;
+  const reviewHasRisk = status === "error";
+  const reviewShouldOpen = reviewHasRisk || Boolean(hash);
+  const reviewSummaryLabel = submittedButUncertain
+    ? "链上状态待核对"
+    : status === "already-deployed"
+      ? "合约已存在"
+      : status === "success"
+        ? "部署完成"
+        : status === "ready"
+          ? "校验通过"
+          : status === "validating"
+            ? `校验中 · ${checks.length}/${disperseDeploymentCheckDefinitions.length}`
+            : status === "awaiting-wallet"
+              ? "等待钱包签名"
+              : status === "confirming"
+                ? "链上验证中"
+                : status === "error"
+                  ? "校验未通过"
+                  : "尚未校验";
 
   const isOperationCurrent = (operationId: number, expectedContextKey: string) => (
     operationIdRef.current === operationId && latestContextKeyRef.current === expectedContextKey
@@ -933,9 +953,11 @@ export function EvmContractDeployPage() {
           ) : null}
         </WorkbenchPanel>
 
-        <WorkbenchPanel
-          actions={<Badge variant="outline">{checks.length}/{disperseDeploymentCheckDefinitions.length}</Badge>}
+        <ReviewPanel
+          autoOpen={reviewShouldOpen}
           className="deployment-review"
+          stateKey={`${status}:${hash ? "submitted" : "local"}`}
+          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
           title="部署校验"
         >
           {busy ? <ExecutionProgress current={checks.length} label="部署校验进度" total={disperseDeploymentCheckDefinitions.length} /> : null}
@@ -968,7 +990,7 @@ export function EvmContractDeployPage() {
               };
             })}
           />
-        </WorkbenchPanel>
+        </ReviewPanel>
       </div>
     </ToolPageLayout>
   );

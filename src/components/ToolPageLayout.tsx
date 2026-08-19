@@ -50,10 +50,10 @@ export function ToolPageLayout({
       data-tool={currentToolId}
     >
       <SiteHeader currentToolId={currentToolId} />
-      <main className={`site-tool-shell ${className}`.trim()} id="main">
-        <header className="site-tool-heading">
+      <div className="site-tool-toolbar">
+        <div className="site-tool-heading">
           <h1 id={headingId}>{title}</h1>
-        </header>
+        </div>
         <div aria-label="页面状态与快捷操作" className="site-tool-heading__actions">
           <Badge
             aria-atomic="true"
@@ -68,6 +68,8 @@ export function ToolPageLayout({
           </Badge>
           {actions}
         </div>
+      </div>
+      <main className={`site-tool-shell ${className}`.trim()} id="main">
         {children}
       </main>
       <SiteFooter />

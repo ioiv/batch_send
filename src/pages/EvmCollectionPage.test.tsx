@@ -317,6 +317,17 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.execute).not.toHaveBeenCalled();
   });
 
+  it("keeps the empty result panel collapsed for input-only errors", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
+
+    expect(await screen.findByText("请修正输入后重新扫描")).toBeVisible();
+    expect(screen.getByRole("button", { name: "展开预检与结果" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("预检后显示资产与交易。")).not.toBeInTheDocument();
+  });
+
   it("automatically adds complete discovery results to the pending asset table", async () => {
     await discoverNft();
     expect(await screen.findByText("1 个有效")).toBeInTheDocument();

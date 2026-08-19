@@ -101,6 +101,17 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.queryByText(/下一步|预检准备项|密钥仅在本地内存/)).not.toBeInTheDocument();
   });
 
+  it("keeps the empty result panel collapsed for input-only errors", async () => {
+    const user = userEvent.setup();
+    render(<SolCollectionPage />);
+
+    await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
+
+    expect(await screen.findByText("请修正输入后重新检查")).toBeVisible();
+    expect(screen.getByRole("button", { name: "展开预检与结果" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("预检后显示钱包与金额。")).not.toBeInTheDocument();
+  });
+
   it("shows a blocking error when read-only preflight fails", async () => {
     solMocks.preflight.mockResolvedValueOnce({
       ...preflightResult,

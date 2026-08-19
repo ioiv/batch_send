@@ -26,6 +26,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ConfirmActionDialog,
+  ReviewPanel,
   WalletChooserDialog,
   WorkbenchPanel
 } from "@/components/WorkbenchPrimitives";
@@ -46,6 +47,56 @@ describe("shadcn Base UI interactions", () => {
     expect(panel).toHaveClass("workbench-panel", "overflow-visible");
     expect(footer).toHaveClass("workbench-panel__footer");
     expect(panel?.lastElementChild).toBe(footer);
+  });
+
+  it("keeps review details collapsed until requested and opens them for attention", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ReviewPanel summary={<span>预检通过</span>} title="预检与结果">
+        <div>完整预检清单</div>
+      </ReviewPanel>
+    );
+
+    expect(screen.getByText("预检通过")).toBeVisible();
+    expect(screen.queryByText("完整预检清单")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开预检与结果" }));
+    expect(screen.getByText("完整预检清单")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "收起预检与结果" }));
+    expect(screen.queryByText("完整预检清单")).not.toBeInTheDocument();
+
+    rerender(
+      <ReviewPanel autoOpen stateKey="error" summary={<span>预检未通过</span>} title="预检与结果">
+        <div>完整预检清单</div>
+      </ReviewPanel>
+    );
+    await waitFor(() => expect(screen.getByText("完整预检清单")).toBeVisible());
+    await user.click(screen.getByRole("button", { name: "收起预检与结果" }));
+
+    rerender(
+      <ReviewPanel autoOpen stateKey="error" summary={<span>仍有一项需处理</span>} title="预检与结果">
+        <div>完整预检清单</div>
+      </ReviewPanel>
+    );
+    expect(screen.queryByText("完整预检清单")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开预检与结果" }));
+
+    rerender(
+      <ReviewPanel stateKey="ready" summary={<span>预检通过</span>} title="预检与结果">
+        <div>完整预检清单</div>
+      </ReviewPanel>
+    );
+    await waitFor(() => expect(screen.queryByText("完整预检清单")).not.toBeInTheDocument());
+  });
+
+  it("respects the review panel default-open state", () => {
+    render(
+      <ReviewPanel defaultOpen summary={<span>等待处理</span>} title="预检与结果">
+        <div>默认展示的详情</div>
+      </ReviewPanel>
+    );
+
+    expect(screen.getByText("默认展示的详情")).toBeVisible();
+    expect(screen.getByRole("button", { name: "收起预检与结果" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("supports pointer and keyboard selection in Tabs", async () => {

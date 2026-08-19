@@ -11,20 +11,22 @@ function readRule(selector: string) {
 }
 
 describe("workbench layout CSS contract", () => {
-  it("keeps actions visible in a bounded panel without covering its content", () => {
+  it("uses natural page flow without an action footer covering form fields", () => {
     const actionableRule = readRule(".workbench-panel--actionable");
-    expect(actionableRule).toContain("position: sticky");
-    expect(actionableRule).toContain("max-height:");
-    expect(actionableRule).toContain("overflow: hidden");
+    expect(actionableRule).toContain("position: static");
+    expect(actionableRule).toContain("max-height: none");
+    expect(actionableRule).toContain("overflow: visible");
     const footerRule = readRule(".workbench-panel__footer");
     expect(footerRule).toContain("position: static");
+    expect(footerRule).not.toMatch(/(?:^|\n)\s*bottom:/);
     expect(footerRule).toContain("background:");
   });
 
-  it("collapses the shared workbench grid at the 1024px boundary", () => {
-    const compactRules = appCss.match(/@media \(max-width: 64rem\) \{([\s\S]*?)@media \(max-width: 48rem\)/)?.[1] || "";
-    expect(compactRules).toMatch(/\.workbench-grid,[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/);
-    expect(compactRules).toMatch(/\.workbench-panel--actionable\s*\{[\s\S]*?position:\s*static/);
+  it("keeps every shared workbench and collection workspace single-column", () => {
+    expect(readRule(".workbench-grid"))
+      .toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(readRule(".collection-workspace.has-results"))
+      .toContain("grid-template-columns: minmax(0, 1fr)");
   });
 
   it("keeps the fixed distribution amount in normal flow at full width", () => {
