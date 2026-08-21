@@ -8,13 +8,17 @@ import type { EvmCollectionPlanItem } from "../lib/evm-collection";
 
 const evmMocks = vi.hoisted(() => ({
   assertNetwork: vi.fn(),
+  createPublicClient: vi.fn(),
   createWalletClient: vi.fn(),
   discoverEnumerable: vi.fn(),
   execute: vi.fn(),
+  getBalance: vi.fn(),
   getLiveGas: vi.fn(),
   inspectContract: vi.fn(),
   plan: vi.fn(),
-  preflight: vi.fn()
+  preflight: vi.fn(),
+  readContract: vi.fn(),
+  readMetadata: vi.fn()
 }));
 
 vi.mock("viem", async (importOriginal) => {
@@ -24,7 +28,11 @@ vi.mock("viem", async (importOriginal) => {
 
 vi.mock("../lib/evm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/evm")>();
-  return { ...actual, assertEvmRpcNetwork: evmMocks.assertNetwork };
+  return {
+    ...actual,
+    assertEvmRpcNetwork: evmMocks.assertNetwork,
+    createEvmPublicClient: evmMocks.createPublicClient
+  };
 });
 
 vi.mock("../lib/evm-gas", async (importOriginal) => {
@@ -38,7 +46,8 @@ vi.mock("../lib/evm-collection", async (importOriginal) => {
     ...actual,
     executeEvmCollectionPlan: evmMocks.execute,
     planEvmCollection: evmMocks.plan,
-    preflightEvmCollectionPlan: evmMocks.preflight
+    preflightEvmCollectionPlan: evmMocks.preflight,
+    readErc20Metadata: evmMocks.readMetadata
   };
 });
 
@@ -63,7 +72,9 @@ const targetAddress = "0x0000000000000000000000000000000000000001";
 const tokenAddress = "0x0000000000000000000000000000000000000002";
 const secondTokenAddress = "0x0000000000000000000000000000000000000004";
 const privateKey = ("0x" + "11".repeat(32)) as `0x${string}`;
+const secondPrivateKey = ("0x" + "22".repeat(32)) as `0x${string}`;
 const signerAccount = privateKeyToAccount(privateKey);
+const secondSignerAccount = privateKeyToAccount(secondPrivateKey);
 const transactionHash = "0x" + "ab".repeat(32);
 const planItem = {
   account: signerAccount,
@@ -108,7 +119,12 @@ afterEach(() => {
 
 beforeEach(() => {
   evmMocks.assertNetwork.mockResolvedValue(undefined);
+  evmMocks.createPublicClient.mockReturnValue({
+    getBalance: evmMocks.getBalance,
+    readContract: evmMocks.readContract
+  });
   evmMocks.createWalletClient.mockReturnValue({});
+  evmMocks.getBalance.mockResolvedValue(3_000_000_000_000_000_000n);
   evmMocks.getLiveGas.mockResolvedValue({
     gasPrice: 2_000_000_000n,
     sampledAt: 1_700_000_000_000,
@@ -121,6 +137,13 @@ beforeEach(() => {
     executableTransactions: 1,
     plan: [planItem]
   });
+  evmMocks.readContract.mockResolvedValue(2_000_000_000_000_000_000n);
+  evmMocks.readMetadata.mockImplementation(async (_client, address) => ({
+    contractAddress: address,
+    decimals: 18,
+    name: address.toLowerCase() === secondTokenAddress.toLowerCase() ? "Token Two" : "Token",
+    symbol: address.toLowerCase() === secondTokenAddress.toLowerCase() ? "TOK2" : "TOK"
+  }));
   evmMocks.execute.mockResolvedValue([]);
   evmMocks.inspectContract.mockResolvedValue({
     address: tokenAddress,
@@ -151,15 +174,42 @@ beforeEach(() => {
   });
 });
 
+async function fillTokenList(
+  user: ReturnType<typeof userEvent.setup>,
+  assetInput: string
+) {
+  const [firstToken = "", ...additionalTokens] = assetInput
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (firstToken) {
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), firstToken);
+  }
+  for (const [index, address] of additionalTokens.entries()) {
+    await user.click(screen.getByRole("button", { name: "添加 Token" }));
+    await user.type(screen.getByRole("textbox", { name: `Token 地址 ${index + 2}` }), address);
+  }
+}
+
 async function prepareReadyErc20Page(assetInput = tokenAddress) {
   const user = userEvent.setup();
   render(<EvmCollectionPage fixedStandard="erc20" />);
   await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
-  await user.type(screen.getByRole("textbox", { name: "Token 清单" }), assetInput);
-  await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+  await fillTokenList(user, assetInput);
+  await importEvmSecret(user);
   await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
   await screen.findByRole("button", { name: "确认并开始归集" });
   return user;
+}
+
+async function importEvmSecret(
+  user: ReturnType<typeof userEvent.setup>,
+  secret: string = privateKey
+) {
+  await user.click(screen.getByRole("button", { name: /导入钱包/ }));
+  const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+  await user.type(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), secret);
+  await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 
 async function confirmEvmExecution(user: ReturnType<typeof userEvent.setup>) {
@@ -183,11 +233,14 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     const tokenList = screen.getByRole("textbox", { name: "Token 清单" });
-    expect(tokenList).toHaveAttribute("rows", "3");
+    expect(tokenList).toHaveAttribute("placeholder", "0x…");
+    expect(screen.getByText("ERC20")).toBeVisible();
+    expect(screen.getByRole("button", { name: "添加 Token" })).toBeVisible();
+    expect(screen.queryByText("Token 识别")).not.toBeInTheDocument();
     expect(screen.getByText("可选；留空则归集 ETH，填写后归集列出的 ERC20 Token。")).toBeVisible();
 
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await importEvmSecret(user);
     await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
 
     await screen.findByRole("button", { name: "确认并开始归集" });
@@ -196,12 +249,13 @@ describe("EvmCollectionPage workbench", () => {
     }));
   });
 
-  it("orders private keys before assets and keeps network, RPC, fee, and Gas visible below them", () => {
+  it("orders wallet import, Token recognition, balances and the moved target before network settings", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
-    const secretKeys = screen.getByRole("textbox", { name: "来源钱包密钥" });
+    const walletImport = screen.getByRole("button", { name: "导入钱包" });
     const target = screen.getByRole("textbox", { name: "目标地址" });
     const assets = screen.getByRole("textbox", { name: "Token 清单" });
+    const addressBalanceControl = screen.getByLabelText("地址余额查询");
     const networkAndRpc = screen.getByLabelText("网络与 RPC");
     const maximumFee = screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ });
     const gasSettings = screen.getByLabelText("Gas 设置");
@@ -211,10 +265,92 @@ describe("EvmCollectionPage workbench", () => {
       .toHaveValue("https://ethereum.publicnode.com");
     expect(within(networkAndRpc).getByText(/Chain ID/)).toHaveTextContent("Chain ID 1");
     expect(screen.queryByRole("button", { name: "RPC 与 Gas 设置" })).not.toBeInTheDocument();
-    expect(secretKeys.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(walletImport.compareDocumentPosition(assets) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(assets.compareDocumentPosition(addressBalanceControl) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(addressBalanceControl.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(target.compareDocumentPosition(networkAndRpc) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(assets.compareDocumentPosition(networkAndRpc) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(networkAndRpc.compareDocumentPosition(maximumFee) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(maximumFee.compareDocumentPosition(gasSettings) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it("automatically resolves Token symbols and queries balances for selected source addresses", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    await importEvmSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+
+    await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalledWith(
+      expect.anything(),
+      tokenAddress
+    ), { timeout: 1_500 });
+    expect(screen.getByText("TOK")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveAttribute("readonly");
+
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    await waitFor(() => expect(within(walletList).getByText("2")).toBeVisible());
+    expect(within(walletList).getByText("3")).toBeVisible();
+    expect(within(walletList).getByText("ETH")).toBeVisible();
+    expect(within(walletList).getByText("TOK")).toBeVisible();
+    expect(within(walletList).queryByText("钱包 1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "地址余额" })).not.toBeInTheDocument();
+    expect(evmMocks.readContract).toHaveBeenCalledWith(expect.objectContaining({
+      args: [signerAccount.address],
+      functionName: "balanceOf"
+    }));
+    expect(evmMocks.getBalance).toHaveBeenCalledWith({ address: signerAccount.address });
+  });
+
+  it("locks recognized Token addresses and reuses their metadata when rows are added or removed", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    const firstTokenInput = screen.getByRole("textbox", { name: "Token 清单" });
+    await user.type(firstTokenInput, tokenAddress);
+    await screen.findByText("TOK", {}, { timeout: 1_500 });
+
+    expect(firstTokenInput).toHaveAttribute("readonly");
+    expect(evmMocks.readMetadata).toHaveBeenCalledTimes(1);
+    await user.type(firstTokenInput, "1");
+    expect(firstTokenInput).toHaveValue(tokenAddress);
+
+    await user.click(screen.getByRole("button", { name: "添加 Token" }));
+    const secondTokenInput = screen.getByRole("textbox", { name: "Token 地址 2" });
+    expect(secondTokenInput).not.toHaveAttribute("readonly");
+    expect(evmMocks.readMetadata).toHaveBeenCalledTimes(1);
+
+    await user.type(secondTokenInput, secondTokenAddress);
+    await screen.findByText("TOK2", {}, { timeout: 1_500 });
+    expect(secondTokenInput).toHaveAttribute("readonly");
+    expect(evmMocks.readMetadata).toHaveBeenCalledTimes(2);
+    expect(evmMocks.readMetadata.mock.calls.filter(([, address]) => address === tokenAddress)).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "删除 Token 地址 2" }));
+    expect(screen.queryByRole("textbox", { name: "Token 地址 2" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveAttribute("readonly");
+    expect(evmMocks.readMetadata).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps remaining inline balances when one imported address is deleted", async () => {
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    await importEvmSecret(user);
+    await importEvmSecret(user, secondPrivateKey);
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    await waitFor(() => expect(within(walletList).getAllByText("2")).toHaveLength(2));
+    await user.click(screen.getByRole("button", { name: new RegExp(`删除.*${signerAccount.address}`, "i") }));
+
+    expect(within(walletList).queryByTitle(signerAccount.address)).not.toBeInTheDocument();
+    expect(within(walletList).getByTitle(secondSignerAccount.address)).toBeVisible();
+    expect(within(walletList).getByText("2")).toBeVisible();
+    expect(within(walletList).getByText("TOK")).toBeVisible();
   });
 
   it("shows live Gas and passes a custom Gas Price into collection preflight", async () => {
@@ -227,7 +363,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "4.5");
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await importEvmSecret(user);
     await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
 
     await screen.findByRole("button", { name: "确认并开始归集" });
@@ -247,7 +383,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await importEvmSecret(user);
 
     expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "预检资产与费用" })).toBeDisabled();
@@ -281,10 +417,10 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
 
     await user.click(screen.getByRole("tab", { name: "来源密钥" }));
-    const secretKeys = screen.getByRole("textbox", { name: "来源钱包密钥" });
+    const walletImport = screen.getByRole("button", { name: "导入钱包" });
     const nftContract = screen.getByRole("textbox", { name: "NFT 合约" });
 
-    expect(secretKeys.compareDocumentPosition(nftContract) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(walletImport.compareDocumentPosition(nftContract) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(screen.queryByRole("tab", { name: "手工 / 文件" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Token ID / 区间")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "识别持仓" })).toBeVisible();
@@ -308,7 +444,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await importEvmSecret(user);
     await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
 
     expect(await screen.findByText(/没有可执行项/)).toBeInTheDocument();
@@ -395,7 +531,7 @@ describe("EvmCollectionPage workbench", () => {
 
     await user.type(target, targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), privateKey);
+    await importEvmSecret(user);
     await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
     expect(await screen.findByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
@@ -424,7 +560,7 @@ describe("EvmCollectionPage workbench", () => {
     await waitFor(() => expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0));
     expect(screen.getByRole("button", { name: "请先核对链上结果" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "目标地址" })).toBeDisabled();
-    expect(evmMocks.assertNetwork).toHaveBeenCalledTimes(2);
+    expect(evmMocks.assertNetwork.mock.calls.length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("button", { name: "清空任务" }));
     const clearDialog = screen.getByRole("alertdialog", { name: "清空当前归集任务？" });
@@ -495,7 +631,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.execute.mock.calls[0][0].gasSettings).toEqual({ mode: "auto" });
     expect(await screen.findByText(/执行结束：1 笔确认成功/)).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
-    expect(screen.getByRole("textbox", { name: "来源钱包密钥" })).toHaveValue("");
+    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看来源一的交易" })).toBeInTheDocument();
   });
 

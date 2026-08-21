@@ -76,10 +76,17 @@ async function prepareReadySolPage() {
   const user = userEvent.setup();
   render(<SolCollectionPage />);
   await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-  await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), "local-secret");
+  await importSolSecret(user, "local-secret");
   await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
   await screen.findByRole("button", { name: "确认并开始归集" });
   return user;
+}
+
+async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret: string) {
+  await user.click(screen.getByRole("button", { name: /导入钱包/ }));
+  const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+  await user.type(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), secret);
+  await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 
 async function confirmSolExecution(user: ReturnType<typeof userEvent.setup>) {
@@ -92,7 +99,7 @@ describe("SolCollectionPage workbench", () => {
   it("orders target, source and network fields without legacy steps", () => {
     render(<SolCollectionPage />);
     const target = screen.getByRole("textbox", { name: "目标钱包" });
-    const source = screen.getByRole("textbox", { name: "来源钱包密钥" });
+    const source = screen.getByRole("button", { name: "导入钱包" });
     const network = screen.getByRole("combobox", { name: "选择 Solana 网络" });
 
     expect(target.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -126,7 +133,7 @@ describe("SolCollectionPage workbench", () => {
     const user = userEvent.setup();
     render(<SolCollectionPage />);
     await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), "local-secret");
+    await importSolSecret(user, "local-secret");
     await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
 
     expect(await screen.findByText(/1 个来源预检失败/)).toBeInTheDocument();
@@ -153,7 +160,7 @@ describe("SolCollectionPage workbench", () => {
 
     expect(await screen.findByText(/执行结束：1 笔成功/)).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
-    expect(screen.getByRole("textbox", { name: "来源钱包密钥" })).toHaveValue("");
+    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看来源一的交易" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "目标钱包" })).toBeDisabled();
   });
@@ -236,10 +243,10 @@ describe("SolCollectionPage workbench", () => {
     clearDialog = screen.getByRole("alertdialog", { name: "清空当前 SOL 归集任务？" });
     await user.click(within(clearDialog).getByRole("button", { name: "清空任务" }));
     expect(target).toHaveValue("");
-    expect(screen.getByRole("textbox", { name: "来源钱包密钥" })).toHaveValue("");
+    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
 
     await user.type(target, targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "来源钱包密钥" }), "new-local-secret");
+    await importSolSecret(user, "new-local-secret");
     await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
     expect(await screen.findByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });

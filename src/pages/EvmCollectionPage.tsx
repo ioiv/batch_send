@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createWalletClient, formatUnits, getAddress, http, isAddress, parseUnits, zeroAddress } from "viem";
+import {
+  createWalletClient,
+  formatUnits,
+  getAddress,
+  http,
+  isAddress,
+  parseUnits,
+  zeroAddress,
+  type Address
+} from "viem";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,10 +32,12 @@ import {
 import { useEvmGas } from "../hooks/useEvmGas";
 import {
   executeEvmCollectionPlan,
+  erc20CollectionAbi,
   parseEvmCollectionAssets,
   parseEvmPrivateKeyInput,
   planEvmCollection,
   preflightEvmCollectionPlan,
+  readErc20Metadata,
   type EvmCollectionAccount,
   type EvmCollectionAsset,
   type EvmCollectionPreflightResult,
@@ -79,6 +90,71 @@ type CollectionPreflightSummary = Pick<
   EvmCollectionPreflightResult,
   "estimatedNetworkFee" | "executableTransactions"
 >;
+
+type Erc20TokenPreview = {
+  address: Address;
+  decimals?: number;
+  message?: string;
+  name?: string;
+  status: "error" | "ready";
+  symbol?: string;
+};
+
+type TokenRecognitionState = {
+  items: Erc20TokenPreview[];
+  message: string;
+  status: "error" | "idle" | "loading" | "ready";
+};
+
+type AddressBalanceAsset = {
+  amount: string;
+  contractAddress?: Address;
+  symbol: string;
+};
+
+type AddressBalanceRow = {
+  address: Address;
+  assets: AddressBalanceAsset[];
+  label: string;
+};
+
+type AddressBalanceState = {
+  message: string;
+  rows: AddressBalanceRow[];
+  status: "error" | "idle" | "loading" | "ready";
+};
+
+const emptyTokenRecognitionState: TokenRecognitionState = {
+  items: [],
+  message: "",
+  status: "idle"
+};
+
+const emptyAddressBalanceState: AddressBalanceState = {
+  message: "",
+  rows: [],
+  status: "idle"
+};
+
+const maximumAutomaticTokenMetadata = 50;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>
+) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 export function getEvmCollectionWorkbenchStatus(
   stage: CollectionStage,
@@ -167,6 +243,13 @@ function getFormattedAmount(
     return formatUnits(item.amount, item.metadata?.decimals ?? 0);
   }
   return item.amount.toString();
+}
+
+function formatBalanceForDisplay(value: bigint, decimals: number) {
+  const formatted = formatUnits(value, decimals);
+  const [whole, fraction = ""] = formatted.split(".");
+  const compactFraction = fraction.slice(0, 8).replace(/0+$/u, "");
+  return compactFraction ? `${whole}.${compactFraction}` : whole;
 }
 
 function planItemToDisplay(
@@ -288,11 +371,16 @@ export function EvmCollectionPage({
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
   const [preflightSummary, setPreflightSummary] = useState<CollectionPreflightSummary | null>(null);
+  const [tokenRecognition, setTokenRecognition] = useState<TokenRecognitionState>(emptyTokenRecognitionState);
+  const [addressBalances, setAddressBalances] = useState<AddressBalanceState>(emptyAddressBalanceState);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const assetImportingRef = useRef(false);
+  const balanceRequestRef = useRef(0);
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
   const planRef = useRef<EvmCollectionPlanItem[]>([]);
+  const tokenMetadataCacheRef = useRef(new Map<string, Erc20TokenPreview>());
+  const tokenRecognitionRequestRef = useRef(0);
   const selectedNetwork = getEvmNetworkConfig(networkId, networks);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
   const gas = useEvmGas({
@@ -316,6 +404,16 @@ export function EvmCollectionPage({
     () => parseEvmCollectionAssets(assetInput, standard).validAssets.length,
     [assetInput, standard]
   );
+  const walletBalances = useMemo<Record<string, AddressBalanceAsset[]>>(() => Object.fromEntries(
+    addressBalances.rows.map((row) => [row.address.toLowerCase(), row.assets])
+  ), [addressBalances.rows]);
+  const tokenInputRows = useMemo(() => {
+    const rows = erc20AssetInput.split(/\r?\n/);
+    return rows.length ? rows : [""];
+  }, [erc20AssetInput]);
+  const recognizedTokenByAddress = useMemo(() => new Map(
+    tokenRecognition.items.map((item) => [item.address.toLowerCase(), item] as const)
+  ), [tokenRecognition.items]);
   const parsedReadonlySources = useMemo(
     () => parseDiscoveryAddressInput(discoverySourceInput),
     [discoverySourceInput]
@@ -400,12 +498,133 @@ export function EvmCollectionPage({
     };
   }, []);
 
+  useEffect(() => {
+    if (fixedStandard !== "erc20" || !erc20AssetInput.trim()) {
+      tokenRecognitionRequestRef.current += 1;
+      setTokenRecognition(emptyTokenRecognitionState);
+      return;
+    }
+
+    const parsed = parseEvmCollectionAssets(erc20AssetInput, "erc20");
+    const tokenAssets = parsed.validAssets.filter((asset): asset is Extract<
+      EvmCollectionAsset,
+      { standard: "erc20" }
+    > => asset.standard === "erc20");
+    const invalidRows = parsed.rows.filter((row) => row.status === "invalid");
+    if (!tokenAssets.length) {
+      tokenRecognitionRequestRef.current += 1;
+      setTokenRecognition({
+        items: [],
+        message: invalidRows.length ? `第 ${invalidRows[0].line} 行不是有效的 ERC20 合约地址` : "",
+        status: "error"
+      });
+      return;
+    }
+
+    const limitedAssets = tokenAssets.slice(0, maximumAutomaticTokenMetadata);
+    const recognitionScope = `${selectedNetwork.id}:${effectiveRpcEndpoint}`;
+    const getCacheKey = (address: Address) => `${recognitionScope}:${address.toLowerCase()}`;
+    const cachedItems = limitedAssets.flatMap((asset) => {
+      const cached = tokenMetadataCacheRef.current.get(getCacheKey(asset.contractAddress));
+      return cached ? [cached] : [];
+    });
+    const missingAssets = limitedAssets.filter(
+      (asset) => !tokenMetadataCacheRef.current.has(getCacheKey(asset.contractAddress))
+    );
+
+    if (!missingAssets.length) {
+      tokenRecognitionRequestRef.current += 1;
+      const failed = cachedItems.filter((item) => item.status === "error").length;
+      const truncated = tokenAssets.length > limitedAssets.length;
+      setTokenRecognition({
+        items: cachedItems,
+        message: truncated
+          ? `已识别前 ${limitedAssets.length} 个 Token；其余将在预检时读取`
+          : failed ? `${cachedItems.length - failed} 个已识别，${failed} 个读取失败` : `${cachedItems.length} 个 Token 已识别`,
+        status: failed === cachedItems.length ? "error" : "ready"
+      });
+      return;
+    }
+
+    const requestId = tokenRecognitionRequestRef.current + 1;
+    tokenRecognitionRequestRef.current = requestId;
+    setTokenRecognition({
+      items: cachedItems,
+      message: `正在识别 ${missingAssets.length} 个新 Token…`,
+      status: "loading"
+    });
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
+          await assertEvmRpcNetwork(publicClient, selectedNetwork);
+          const fetchedItems = await mapWithConcurrency(missingAssets, 5, async (asset): Promise<Erc20TokenPreview> => {
+            try {
+              const metadata = await readErc20Metadata(publicClient, asset.contractAddress);
+              return { ...metadata, address: metadata.contractAddress, status: "ready" };
+            } catch {
+              return {
+                address: asset.contractAddress,
+                message: "无法读取代币符号，请确认网络与合约地址",
+                status: "error"
+              };
+            }
+          });
+          if (requestId !== tokenRecognitionRequestRef.current) return;
+          fetchedItems.forEach((item) => {
+            if (item.status === "ready") {
+              tokenMetadataCacheRef.current.set(getCacheKey(item.address), item);
+            }
+          });
+          const fetchedByAddress = new Map(
+            fetchedItems.map((item) => [item.address.toLowerCase(), item] as const)
+          );
+          const items = limitedAssets.flatMap((asset) => {
+            const item = tokenMetadataCacheRef.current.get(getCacheKey(asset.contractAddress))
+              || fetchedByAddress.get(asset.contractAddress.toLowerCase());
+            return item ? [item] : [];
+          });
+          const failed = items.filter((item) => item.status === "error").length;
+          const truncated = tokenAssets.length > limitedAssets.length;
+          setTokenRecognition({
+            items,
+            message: truncated
+              ? `已识别前 ${limitedAssets.length} 个 Token；其余将在预检时读取`
+              : failed ? `${items.length - failed} 个已识别，${failed} 个读取失败` : `${items.length} 个 Token 已识别`,
+            status: failed === items.length ? "error" : "ready"
+          });
+        } catch {
+          if (requestId !== tokenRecognitionRequestRef.current) return;
+          setTokenRecognition({
+            items: [],
+            message: "Token 识别失败，请检查当前网络与 RPC",
+            status: "error"
+          });
+        }
+      })();
+    }, 450);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (tokenRecognitionRequestRef.current === requestId) tokenRecognitionRequestRef.current += 1;
+    };
+  }, [effectiveRpcEndpoint, erc20AssetInput, fixedStandard, selectedNetwork]);
+
   const parseMaximumFee = () => maximumFeeAmount;
 
-  const invalidatePlan = (clearResults = true, preserveDiscovery = false) => {
+  const invalidatePlan = (
+    clearResults = true,
+    preserveDiscovery = false,
+    clearAddressBalances = true
+  ) => {
     if (operationRef.current || transactionRunning) return;
     planRef.current = [];
     setPreflightSummary(null);
+    if (clearAddressBalances) {
+      balanceRequestRef.current += 1;
+      setAddressBalances(emptyAddressBalanceState);
+    }
     if (!preserveDiscovery) {
       setDiscoveryMessage("");
       setDiscoveryIssues([]);
@@ -416,6 +635,11 @@ export function EvmCollectionPage({
     if (clearResults) setResults([]);
   };
 
+  const updateErc20TokenRows = (rows: string[]) => {
+    setErc20AssetInput(rows.length ? rows.join("\n") : "");
+    invalidatePlan();
+  };
+
   const selectNetwork = (value: EvmDistributionNetworkId) => {
     const nextNetwork = getEvmNetworkConfig(value, networks);
     setNetworkId(value);
@@ -424,6 +648,137 @@ export function EvmCollectionPage({
     setContractInspection(null);
     rememberPreferredEvmDistributionNetwork(value);
     invalidatePlan();
+  };
+
+  const viewAddressBalances = async () => {
+    if (fixedStandard !== "erc20" || running) return;
+    const parsedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "");
+    if (!parsedAccounts.accounts.length) {
+      setAddressBalances({
+        message: "请先导入并勾选至少一个来源钱包",
+        rows: [],
+        status: "error"
+      });
+      return;
+    }
+
+    const parsedAssets = erc20AssetInput.trim()
+      ? parseEvmCollectionAssets(erc20AssetInput, "erc20")
+      : null;
+    const tokenAssets = (parsedAssets?.validAssets || []).filter((asset): asset is Extract<
+      EvmCollectionAsset,
+      { standard: "erc20" }
+    > => asset.standard === "erc20");
+    const invalidAssetRow = parsedAssets?.rows.find((row) => row.status !== "valid");
+    if (invalidAssetRow) {
+      setAddressBalances({
+        message: `Token 清单第 ${invalidAssetRow.line} 行需要修正后才能查询余额`,
+        rows: [],
+        status: "error"
+      });
+      return;
+    }
+    if (!tokenAssets.length && !nativeCurrencyEnabled) {
+      setAddressBalances({
+        message: "当前网络的原生币信息尚未确认，请先填写 Token 合约地址",
+        rows: [],
+        status: "error"
+      });
+      return;
+    }
+
+    const workloadIssues = validateEvmCollectionWorkload({
+      accountCount: parsedAccounts.accounts.length,
+      assetCount: tokenAssets.length + (nativeCurrencyEnabled ? 1 : 0),
+      standard: tokenAssets.length ? "erc20" : "native"
+    });
+    if (workloadIssues.length) {
+      setAddressBalances({ message: workloadIssues[0], rows: [], status: "error" });
+      return;
+    }
+
+    const requestId = balanceRequestRef.current + 1;
+    balanceRequestRef.current = requestId;
+    setAddressBalances({
+      message: `正在查询 ${parsedAccounts.accounts.length} 个地址的余额…`,
+      rows: [],
+      status: "loading"
+    });
+
+    try {
+      const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
+      await assertEvmRpcNetwork(publicClient, selectedNetwork);
+      const recognizedByAddress = new Map(
+        tokenRecognition.items
+          .filter((item) => item.status === "ready")
+          .map((item) => [item.address.toLowerCase(), item] as const)
+      );
+      const metadata = await mapWithConcurrency(tokenAssets, 5, async (asset) => {
+        const recognized = recognizedByAddress.get(asset.contractAddress.toLowerCase());
+        if (recognized?.symbol && recognized.decimals !== undefined) {
+          return {
+            contractAddress: asset.contractAddress,
+            decimals: recognized.decimals,
+            symbol: recognized.symbol
+          };
+        }
+        const resolved = await readErc20Metadata(publicClient, asset.contractAddress);
+        return {
+          contractAddress: resolved.contractAddress,
+          decimals: resolved.decimals,
+          symbol: resolved.symbol
+        };
+      });
+
+      const rows = await mapWithConcurrency(parsedAccounts.accounts, 4, async (account): Promise<AddressBalanceRow> => {
+        const assets: AddressBalanceAsset[] = [];
+        if (nativeCurrencyEnabled) {
+          const nativeBalance = await publicClient.getBalance({ address: account.address });
+          assets.push({
+            amount: formatBalanceForDisplay(nativeBalance, selectedNetwork.nativeCurrency.decimals),
+            symbol: selectedNetwork.nativeCurrency.symbol
+          });
+        }
+        if (tokenAssets.length) {
+          const tokenBalances = await mapWithConcurrency(metadata, 5, async (token) => {
+            try {
+              const balance = await publicClient.readContract({
+                abi: erc20CollectionAbi,
+                address: token.contractAddress,
+                args: [account.address],
+                functionName: "balanceOf"
+              });
+              return {
+                amount: formatBalanceForDisplay(balance, token.decimals),
+                contractAddress: token.contractAddress,
+                symbol: token.symbol
+              } satisfies AddressBalanceAsset;
+            } catch {
+              return {
+                amount: "读取失败",
+                contractAddress: token.contractAddress,
+                symbol: token.symbol
+              } satisfies AddressBalanceAsset;
+            }
+          });
+          assets.push(...tokenBalances);
+        }
+        return { address: account.address, assets, label: account.label };
+      });
+      if (requestId !== balanceRequestRef.current) return;
+      setAddressBalances({
+        message: `已更新 ${rows.length} 个地址的余额`,
+        rows,
+        status: "ready"
+      });
+    } catch {
+      if (requestId !== balanceRequestRef.current) return;
+      setAddressBalances({
+        message: "地址余额查询失败，请检查当前网络、RPC 与 Token 合约",
+        rows: [],
+        status: "error"
+      });
+    }
   };
 
   const scanAssets = async (assetInputOverride?: string) => {
@@ -999,6 +1354,8 @@ export function EvmCollectionPage({
 
   const resetTask = () => {
     keyInputRef.current?.clear();
+    balanceRequestRef.current += 1;
+    tokenRecognitionRequestRef.current += 1;
     planRef.current = [];
     setErc20AssetInput("");
     setNftAssetInputs({ erc721: "", erc1155: "" });
@@ -1014,6 +1371,8 @@ export function EvmCollectionPage({
     setTargetAddress("");
     setMaxFeeAmount("0.01");
     setResults([]);
+    setAddressBalances(emptyAddressBalanceState);
+    setTokenRecognition(emptyTokenRecognitionState);
     setKeysCleared(false);
     setPreflightSummary(null);
     setIssues([]);
@@ -1101,13 +1460,20 @@ export function EvmCollectionPage({
               <SecretKeyInput
                 disabled={controlsLocked || assetImporting}
                 mode="evm"
-                onDirty={() => {
+                onDirty={(reason, address) => {
                   setKeysCleared(false);
-                  invalidatePlan();
+                  if (reason === "remove" && address) {
+                    setAddressBalances((current) => ({
+                      ...current,
+                      rows: current.rows.filter((row) => row.address.toLowerCase() !== address.toLowerCase())
+                    }));
+                  }
+                  invalidatePlan(true, false, reason !== "remove");
                 }}
                 onImportingChange={handleKeyImportingChange}
                 onLineCountChange={setSourceKeyLineCount}
                 ref={keyInputRef}
+                walletBalances={walletBalances}
               />
             ) : null}
 
@@ -1194,6 +1560,154 @@ export function EvmCollectionPage({
 
             {fixedStandard === "erc20" ? (
               <>
+                <Field>
+                  <FieldLabel htmlFor="evm-collection-asset-0">Token 清单</FieldLabel>
+                  <div className="erc20-token-editor">
+                    {tokenInputRows.map((row, index) => {
+                      const trimmed = row.trim();
+                      const validAddress = isAddress(trimmed) && getAddress(trimmed) !== zeroAddress;
+                      const preview = validAddress
+                        ? recognizedTokenByAddress.get(getAddress(trimmed).toLowerCase())
+                        : undefined;
+                      const recognitionLabel = !trimmed
+                        ? "ERC20"
+                        : !validAddress
+                          ? "地址无效"
+                          : preview?.status === "ready"
+                            ? preview.symbol || "TOKEN"
+                            : preview?.status === "error" || tokenRecognition.status === "error"
+                              ? "识别失败"
+                              : "识别中";
+                      const recognitionStatus = !trimmed
+                        ? "idle"
+                        : !validAddress
+                          ? "error"
+                          : preview?.status === "ready"
+                            ? "ready"
+                            : preview?.status === "error" || tokenRecognition.status === "error"
+                              ? "error"
+                              : "loading";
+                      const tokenLocked = preview?.status === "ready";
+                      return (
+                        <div
+                          className="erc20-token-row"
+                          data-locked={tokenLocked || undefined}
+                          data-status={recognitionStatus}
+                          key={index}
+                        >
+                          <Input
+                            aria-describedby={`evm-collection-asset-status-${index}`}
+                            aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
+                            autoCapitalize="none"
+                            autoComplete="off"
+                            disabled={controlsLocked}
+                            id={`evm-collection-asset-${index}`}
+                            onChange={(event) => {
+                              if (tokenLocked) return;
+                              const nextRows = [...tokenInputRows];
+                              nextRows[index] = event.target.value;
+                              updateErc20TokenRows(nextRows);
+                            }}
+                            onPaste={(event) => {
+                              if (tokenLocked) {
+                                event.preventDefault();
+                                return;
+                              }
+                              const pastedRows = event.clipboardData.getData("text")
+                                .split(/\r?\n/)
+                                .map((value) => value.trim())
+                                .filter(Boolean);
+                              if (pastedRows.length <= 1) return;
+                              event.preventDefault();
+                              updateErc20TokenRows([
+                                ...tokenInputRows.slice(0, index),
+                                ...pastedRows,
+                                ...tokenInputRows.slice(index + 1)
+                              ]);
+                            }}
+                            placeholder="0x…"
+                            readOnly={tokenLocked}
+                            spellCheck={false}
+                            title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
+                            value={row}
+                          />
+                          <span
+                            aria-live="polite"
+                            className="erc20-token-symbol"
+                            data-status={recognitionStatus}
+                            id={`evm-collection-asset-status-${index}`}
+                            title={preview?.name || preview?.message || recognitionLabel}
+                          >
+                            {recognitionLabel}
+                          </span>
+                          {tokenInputRows.length > 1 || trimmed ? (
+                            <Button
+                              aria-label={`删除 Token 地址 ${index + 1}`}
+                              disabled={controlsLocked}
+                              onClick={() => updateErc20TokenRows(
+                                tokenInputRows.length === 1
+                                  ? [""]
+                                  : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
+                              )}
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              删除
+                            </Button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    <Button
+                      className="erc20-token-add"
+                      disabled={controlsLocked}
+                      onClick={() => {
+                        const nextIndex = tokenInputRows.length;
+                        updateErc20TokenRows([...tokenInputRows, ""]);
+                        window.requestAnimationFrame(() => {
+                          document.getElementById(`evm-collection-asset-${nextIndex}`)?.focus();
+                        });
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      添加 Token
+                    </Button>
+                  </div>
+                  <FieldDescription>
+                    {nativeCurrencyEnabled
+                      ? `可选；留空则归集 ${selectedNetwork.nativeCurrency.symbol}，填写后归集列出的 ERC20 Token。`
+                      : "当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。"}
+                  </FieldDescription>
+                  <div aria-label="地址余额查询" className="address-balance-control">
+                    <Button
+                      disabled={controlsLocked
+                        || addressBalances.status === "loading"
+                        || sourceKeyLineCount === 0
+                        || !effectiveRpcEndpoint
+                        || (Boolean(assetInput.trim()) && parsedAssetCount === 0)}
+                      onClick={() => void viewAddressBalances()}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {addressBalances.status === "loading" ? "查询中" : "查看地址余额"}
+                    </Button>
+                    {addressBalances.status === "error" ? (
+                      <p
+                        aria-live="polite"
+                        className="address-balance-control__status"
+                        data-status={addressBalances.status}
+                        role="status"
+                      >
+                        {addressBalances.message}
+                      </p>
+                    ) : null}
+                  </div>
+                </Field>
+
                 <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
                   <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
                   <Input
@@ -1211,27 +1725,6 @@ export function EvmCollectionPage({
                     value={targetAddress}
                   />
                   {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="evm-collection-assets">Token 清单</FieldLabel>
-                  <Textarea
-                    className="collection-asset-textarea"
-                    disabled={controlsLocked}
-                    id="evm-collection-assets"
-                    onChange={(event) => {
-                      setCurrentAssetInput(event.target.value);
-                      invalidatePlan();
-                    }}
-                    placeholder="每行一个 ERC20 合约地址"
-                    rows={3}
-                    spellCheck={false}
-                    value={assetInput}
-                  />
-                  <FieldDescription>
-                    {nativeCurrencyEnabled
-                      ? `可选；留空则归集 ${selectedNetwork.nativeCurrency.symbol}，填写后归集列出的 ERC20 Token。`
-                      : "当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。"}
-                  </FieldDescription>
                 </Field>
               </>
             ) : (

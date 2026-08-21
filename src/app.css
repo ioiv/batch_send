@@ -4,6 +4,54 @@
   overflow: hidden;
 }
 
+:root {
+  --scrollbar-thumb: color-mix(in oklab, var(--muted-foreground) 34%, transparent);
+  --scrollbar-thumb-hover: color-mix(in oklab, var(--foreground) 42%, transparent);
+  --scrollbar-thumb-active: color-mix(in oklab, var(--foreground) 58%, transparent);
+}
+
+* {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 0.55rem;
+  height: 0.55rem;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*:hover {
+  scrollbar-color: var(--scrollbar-thumb-hover) transparent;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-active);
+  background-clip: padding-box;
+}
+
+@media (forced-colors: active) {
+  * {
+    scrollbar-color: auto;
+  }
+}
+
 .site-page {
   --site-sidebar-width: 13.4375rem;
   --site-header-brand-width: 13.4375rem;
@@ -1402,6 +1450,239 @@
   flex-wrap: wrap;
 }
 
+.secret-dom-store {
+  display: none !important;
+}
+
+.secret-import-dialog {
+  max-width: min(36rem, calc(100vw - 2rem));
+}
+
+.secret-import-textarea {
+  min-height: clamp(12rem, 34vh, 20rem);
+  max-height: 48vh;
+  overflow: auto;
+  resize: vertical;
+  scrollbar-gutter: stable;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.secret-import-draft-heading,
+.imported-wallet-toolbar,
+.imported-wallet-toolbar__actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.secret-import-draft-heading [data-status="error"] {
+  border-color: color-mix(in oklab, var(--destructive) 38%, var(--border));
+  color: var(--destructive);
+}
+
+.secret-import-file-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.secret-empty-state {
+  min-height: 4.25rem;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.imported-wallet-list {
+  min-width: 0;
+  display: grid;
+  gap: 0.4rem;
+  max-height: min(24rem, 52vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.15rem;
+  scrollbar-gutter: stable;
+}
+
+.imported-wallet-browser {
+  min-width: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.imported-wallet-toolbar {
+  padding: 0.15rem 0.25rem;
+}
+
+.imported-wallet-toolbar > span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.imported-wallet-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--card) 94%, var(--muted));
+}
+
+.imported-wallet-identity {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.imported-wallet-identity strong {
+  overflow: hidden;
+  font-size: 0.7rem;
+  font-weight: 580;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imported-wallet-identity code {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imported-wallet-balances {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.imported-wallet-balances > span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.22rem 0.42rem;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  font-family: var(--font-mono);
+}
+
+.imported-wallet-balances strong {
+  font-size: 0.66rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.imported-wallet-balances small {
+  color: var(--muted-foreground);
+  font-size: 0.56rem;
+}
+
+.erc20-token-editor {
+  min-width: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.erc20-token-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.erc20-token-row input {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.erc20-token-row[data-locked="true"] input[readonly] {
+  cursor: default;
+  border-color: color-mix(in oklab, var(--foreground) 18%, var(--border));
+  background: color-mix(in oklab, var(--muted) 42%, var(--card));
+  color: var(--foreground);
+}
+
+.erc20-token-symbol {
+  min-width: 4.6rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 38%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.erc20-token-symbol[data-status="ready"] {
+  border-color: color-mix(in oklab, var(--foreground) 24%, var(--border));
+  background: color-mix(in oklab, var(--foreground) 7%, var(--card));
+  color: var(--foreground);
+}
+
+.erc20-token-symbol[data-status="error"] {
+  border-color: color-mix(in oklab, var(--destructive) 38%, var(--border));
+  background: color-mix(in oklab, var(--destructive) 8%, var(--card));
+  color: var(--destructive);
+}
+
+.erc20-token-add {
+  justify-self: start;
+}
+
+.address-balance-control__status {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+}
+
+.address-balance-control__status[data-status="error"] {
+  color: var(--destructive);
+}
+
+.address-balance-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.1rem;
+}
+
+.address-balance-control__status {
+  flex-basis: 100%;
+  text-align: right;
+}
+
 .secret-file-status,
 .nft-inventory-review__selection-count {
   min-width: 0;
@@ -1753,12 +2034,68 @@
     overflow: visible;
   }
 
+  .secret-import-file-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .imported-wallet-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .secret-import-file-row > button,
+  .address-balance-control > button {
+    width: 100%;
+  }
+
+  .address-balance-control__status {
+    text-align: left;
+  }
+
+  .imported-wallet-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .imported-wallet-row > button {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .imported-wallet-balances {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    justify-content: flex-start;
+  }
+
   .address-only-input {
     font-size: 1rem;
   }
 }
 
 @media (max-width: 30rem) {
+  .secret-import-textarea {
+    min-height: 12rem;
+    max-height: 42vh;
+  }
+
+  .imported-wallet-list {
+    max-height: 18rem;
+  }
+
+  .erc20-token-row {
+    gap: 0.35rem;
+  }
+
+  .erc20-token-symbol {
+    min-width: 3.8rem;
+    padding-inline: 0.45rem;
+  }
+
+  .erc20-token-row > button {
+    padding-inline: 0.4rem;
+  }
+
   .network-rpc-row {
     grid-template-columns: minmax(0, 1fr);
   }
