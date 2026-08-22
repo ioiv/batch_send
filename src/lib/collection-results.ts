@@ -11,6 +11,7 @@ export type CollectionDisplayResult = {
   address: string;
   amount?: string;
   asset: string;
+  assetKey?: string;
   explorerUrl?: string;
   hash?: string;
   label?: string;

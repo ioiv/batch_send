@@ -660,6 +660,16 @@ export function BatchDistributorPage() {
                 {sendFailed && !unresolvedSubmission ? (
                   <Button onClick={resetConfirmation} type="button" variant="outline">返回修改并重新预检</Button>
                 ) : null}
+                {sendComplete ? (
+                  <ConfirmActionDialog
+                    confirmLabel="保留清单并新建任务"
+                    description="当前交易记录会从结果区移除，收款清单与金额会保留。链上交易不会撤销；请先修改或核对清单，避免重复分发。"
+                    onConfirm={resetConfirmation}
+                    title="复制当前设置为新任务？"
+                    triggerLabel="保留清单，新建任务"
+                    triggerVariant="outline"
+                  />
+                ) : null}
                 {sendComplete || unresolvedSubmission ? (
                   <ConfirmActionDialog
                     confirmLabel="清空并开始新任务"

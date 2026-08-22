@@ -566,6 +566,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                   ) : null}
                   <Button
                     aria-label={`删除 ${accessibleName}`}
+                    className="imported-wallet-remove"
                     disabled={disabled}
                     onClick={() => removeWallet(wallet.id)}
                     size="sm"

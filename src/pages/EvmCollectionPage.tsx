@@ -79,6 +79,7 @@ import {
   findErc721DeploymentBlock,
   type Erc721TransferDiscoveryScope
 } from "../lib/erc721-transfer-discovery";
+import { discoverErc1155AssetsByTransfer } from "../lib/erc1155-transfer-discovery";
 import { mergeNftAssetInput } from "../lib/nft-asset-input";
 import { inspectNftContract, type NftContractInspection } from "../lib/nft-contract-inspection";
 import { getPreferredRpcEndpoint, isRpcEndpoint, rememberRpcEndpoint } from "../lib/rpc-preferences";
@@ -92,6 +93,7 @@ type PendingNftDiscovery = {
   kind: "enumerable" | "indexer" | "transfer";
   latestBlock?: bigint;
   scope?: Erc721TransferDiscoveryScope;
+  standard: "erc721" | "erc1155";
 };
 
 type AmountMode = CollectionAmountPolicy["mode"];
@@ -390,6 +392,7 @@ function planItemToDisplay(
     address: item.address || "—",
     amount: getFormattedAmount(item, nativeCurrency),
     asset: getAssetName(item, nativeCurrency),
+    assetKey: item.asset.key,
     label: item.label,
     message: item.message,
     status: item.status === "ready" ? "pending" : item.status === "skipped" ? "skipped" : "error"
@@ -409,6 +412,7 @@ function resultToDisplay(
       nativeCurrency
     ),
     asset: getAssetName(item, nativeCurrency),
+    assetKey: item.asset.key,
     ...(result.hash ? { explorerUrl: explorerUrl(result.hash), hash: result.hash } : {}),
     label: result.label,
     message: result.message,
@@ -493,6 +497,7 @@ export function EvmCollectionPage({
   const [discoveryMessage, setDiscoveryMessage] = useState("");
   const [contractInspection, setContractInspection] = useState<NftContractInspection | null>(null);
   const [pendingDiscovery, setPendingDiscovery] = useState<PendingNftDiscovery | null>(null);
+  const [discoveryComplete, setDiscoveryComplete] = useState(false);
   const [discoveryRunning, setDiscoveryRunning] = useState(false);
   const [assetImporting, setAssetImporting] = useState(false);
   const [keyImporting, setKeyImporting] = useState(false);
@@ -616,6 +621,7 @@ export function EvmCollectionPage({
       setIssues([]);
       setDiscoveryIssues([]);
       setPendingDiscovery(null);
+      setDiscoveryComplete(false);
       retryPlanRef.current = [];
       setMessage("页面从历史记录恢复，签名材料已清除；请重新导入来源钱包");
       setStage("editing");
@@ -777,6 +783,7 @@ export function EvmCollectionPage({
     setRpcEndpoint(getPreferredRpcEndpoint("evm", value, nextNetwork.rpcEndpoint));
     setMaxFeeAmount(getDefaultEvmCollectionFeeCap(nextNetwork));
     setPendingDiscovery(null);
+    setDiscoveryComplete(false);
     setContractInspection(null);
     rememberPreferredEvmDistributionNetwork(value);
     invalidatePlan();
@@ -973,7 +980,11 @@ export function EvmCollectionPage({
     if (!contractAddress) return false;
 
     const tokenExpression = discovery.assets.map((asset) => asset.tokenId.toString()).join(",");
-    const merged = mergeNftAssetInput(assetInput, contractAddress, tokenExpression);
+    const merged = mergeNftAssetInput(
+      nftAssetInputs[discovery.standard],
+      contractAddress,
+      tokenExpression
+    );
     const mergeErrors = merged.issues.filter((issue) => issue.severity === "error");
     if (mergeErrors.length) {
       setDiscoveryIssues((current) => [
@@ -990,24 +1001,24 @@ export function EvmCollectionPage({
     setMessage("");
     setStage("editing");
     setResults([]);
-    setCurrentAssetInput(merged.serialized);
+    setNftStandard(discovery.standard);
+    setNftAssetInputs((current) => ({ ...current, [discovery.standard]: merged.serialized }));
     setPendingDiscovery(null);
-    setDiscoveryIssues((current) => Array.from(new Set([
-      ...current,
-      ...merged.issues.map((issue) => issue.message)
-    ])));
+    setDiscoveryComplete(true);
+    setDiscoveryIssues(Array.from(new Set(merged.issues.map((issue) => issue.message))));
     setDiscoveryMessage(
       merged.added
-        ? "已识别并自动加入 " + merged.added + " 个 NFT"
+        ? (allowPartial ? "已加入 " : "已识别并自动加入 ") + merged.added + " 个 NFT"
           + (merged.duplicates ? "，跳过 " + merged.duplicates + " 个重复项" : "")
+          + (allowPartial ? "；这是经链上验证的部分结果" : "")
         : "识别完成；发现的 NFT 已全部在待归集资产中"
     );
     return true;
   };
 
-  const discoverOwnedErc721 = async () => {
+  const discoverOwnedNft = async () => {
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current
-      || running || fixedStandard !== "nft" || standard !== "erc721") return;
+      || running || fixedStandard !== "nft" || discoveryComplete) return;
 
     setDiscoveryIssues([]);
     setDiscoveryMessage("");
@@ -1020,7 +1031,7 @@ export function EvmCollectionPage({
       }
     }
     if (!isAddress(discoveryContract.trim())) {
-      setDiscoveryMessage("请输入有效的 ERC721 合约地址");
+      setDiscoveryMessage("请输入有效的 NFT 合约地址");
       return;
     }
 
@@ -1082,8 +1093,72 @@ export function EvmCollectionPage({
       if (inspection.standard === "erc1155") {
         setNftStandard("erc1155");
         setPendingDiscovery(null);
-        setDiscoveryIssues(sourceIssues);
-        setDiscoveryMessage("已识别为 ERC1155，已切换标准；请填写 Token ID，归集时会读取每个来源的完整余额");
+        setDiscoveryIssues([...sourceIssues, ...inspection.issues]);
+        setDiscoveryMessage("已识别为 ERC1155，正在定位部署区块并扫描 TransferSingle / TransferBatch 历史…");
+
+        const blockscoutBaseUrl = getBlockscoutBaseUrl(selectedNetwork.blockExplorerUrl);
+        let erc1155FromBlock: bigint;
+        try {
+          erc1155FromBlock = await findErc721DeploymentBlock({
+            contractAddress: discoveryContract.trim(),
+            onProgress: () => setDiscoveryMessage("正在定位 ERC1155 合约部署区块…"),
+            publicClient
+          });
+        } catch {
+          if (!blockscoutBaseUrl) {
+            setDiscoveryMessage("无法自动定位 ERC1155 部署区块；请更换支持历史查询的 RPC 后重试");
+            return;
+          }
+          try {
+            setDiscoveryMessage("当前 RPC 不支持历史代码，正在通过 Blockscout 查询 ERC1155 部署区块…");
+            erc1155FromBlock = await resolveBlockscoutDeploymentBlock(
+              blockscoutBaseUrl,
+              discoveryContract.trim()
+            );
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : "无法查询部署区块";
+            setDiscoveryIssues([...sourceIssues, "部署区块：" + detail]);
+            setDiscoveryMessage("无法自动定位 ERC1155 部署区块，现有资产清单未修改");
+            return;
+          }
+        }
+
+        const erc1155Discovery = await discoverErc1155AssetsByTransfer({
+          contractAddress: discoveryContract.trim(),
+          fromBlock: erc1155FromBlock,
+          onProgress: (progress) => {
+            setDiscoveryMessage(progress.stage === "reading-events"
+              ? `正在回溯 ERC1155 区块 ${progress.fromBlock}–${progress.toBlock} · 候选 ${progress.candidateCount} 个`
+              : `正在快照区块 ${progress.toBlock} 复核 ${progress.candidateCount} 个 Token ID 的余额…`);
+          },
+          ownerAddresses,
+          publicClient,
+          toBlock: inspection.snapshotBlock
+        });
+        setDiscoveryIssues([
+          ...sourceIssues,
+          ...erc1155Discovery.issues.map((issue) => issue.message)
+        ]);
+        if (!erc1155Discovery.assets.length) {
+          setDiscoveryMessage(erc1155Discovery.issues[0]?.message
+            || "完整事件历史与快照余额已核对；这些来源钱包当前未持有该 ERC1155 资产");
+          return;
+        }
+        const discovery: PendingNftDiscovery = {
+          assets: erc1155Discovery.assets,
+          complete: erc1155Discovery.complete,
+          kind: "transfer",
+          latestBlock: erc1155Discovery.latestBlock,
+          standard: "erc1155"
+        };
+        if (erc1155Discovery.complete) {
+          addDiscoveredAssets(discovery);
+          return;
+        }
+        setPendingDiscovery(discovery);
+        setDiscoveryMessage(
+          `已验证 ${erc1155Discovery.assets.length} 个仍有余额的 Token ID；扫描存在限制，请核对提示后决定是否加入部分结果。`
+        );
         return;
       }
 
@@ -1122,7 +1197,8 @@ export function EvmCollectionPage({
         const discovery: PendingNftDiscovery = {
           assets: enumerable.assets,
           complete: enumerableComplete,
-          kind: "enumerable"
+          kind: "enumerable",
+          standard: "erc721"
         };
         if (enumerableComplete) {
           addDiscoveredAssets(discovery);
@@ -1175,7 +1251,8 @@ export function EvmCollectionPage({
               assets: verified.assets,
               complete: true,
               kind: "indexer",
-              latestBlock: verified.snapshotBlock ?? undefined
+              latestBlock: verified.snapshotBlock ?? undefined,
+              standard: "erc721"
             });
             return;
           }
@@ -1184,7 +1261,8 @@ export function EvmCollectionPage({
               assets: verified.assets,
               complete: false,
               kind: "indexer",
-              latestBlock: verified.snapshotBlock ?? undefined
+              latestBlock: verified.snapshotBlock ?? undefined,
+              standard: "erc721"
             };
           }
           setDiscoveryIssues([...sourceIssues, ...indexedIssues]);
@@ -1268,7 +1346,8 @@ export function EvmCollectionPage({
         complete: transferDiscovery.complete,
         kind: "transfer",
         latestBlock: transferDiscovery.latestBlock,
-        scope: transferDiscovery.scope
+        scope: transferDiscovery.scope,
+        standard: "erc721"
       };
       if (transferDiscovery.complete) {
         addDiscoveredAssets(completedDiscovery);
@@ -1296,7 +1375,7 @@ export function EvmCollectionPage({
   };
 
   const applyPendingDiscovery = (allowPartial = false) => {
-    if (!pendingDiscovery || operationRef.current || running || standard !== "erc721") return;
+    if (!pendingDiscovery || operationRef.current || running) return;
     if (!pendingDiscovery.complete && !allowPartial) {
       setDiscoveryMessage("这是部分发现结果。请先确认仅归集已验证项目，或修正提示后重新扫描完整历史。");
       return;
@@ -1455,6 +1534,7 @@ export function EvmCollectionPage({
     setDiscoverySourceInput("");
     setSourceInputMode("readonly");
     setPendingDiscovery(null);
+    setDiscoveryComplete(false);
     setContractInspection(null);
     setDiscoveryIssues([]);
     setDiscoveryMessage("");
@@ -1475,6 +1555,18 @@ export function EvmCollectionPage({
     setTokenRecognition(emptyTokenRecognitionState);
     setIssues([]);
     setMessage("");
+    setStage("editing");
+  };
+
+  const beginNextTaskWithCurrentSettings = () => {
+    if (running) return;
+    balanceRequestRef.current += 1;
+    planRef.current = [];
+    retryPlanRef.current = [];
+    setResults([]);
+    setAddressBalances(emptyAddressBalanceState);
+    setIssues([]);
+    setMessage("已保留来源钱包、资产与归集配置；请按需修改后开始新任务");
     setStage("editing");
   };
 
@@ -1536,7 +1628,17 @@ export function EvmCollectionPage({
                   triggerVariant="outline"
                 />
               ) : hasSubmittedHash ? (
-                <Button disabled type="button">本次任务已结束</Button>
+                stage === "complete" ? (
+                  <ConfirmActionDialog
+                    confirmLabel="保留设置并新建任务"
+                    description="当前交易记录会从本页结果中移除，但链上交易不会撤销。来源钱包、资产和归集配置会保留；再次执行前请确认不会重复归集。"
+                    disabled={running}
+                    onConfirm={beginNextTaskWithCurrentSettings}
+                    title="使用当前设置新建归集任务？"
+                    triggerLabel="保留设置，新建任务"
+                    triggerVariant="outline"
+                  />
+                ) : <Button disabled type="button">本次任务已结束</Button>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -1591,6 +1693,7 @@ export function EvmCollectionPage({
                     const nextMode = value as NftSourceInputMode;
                     setSourceInputMode(nextMode);
                     setPendingDiscovery(null);
+                    setDiscoveryComplete(false);
                     setDiscoveryIssues([]);
                     setDiscoveryMessage("");
                     invalidatePlan();
@@ -1613,6 +1716,7 @@ export function EvmCollectionPage({
                         onChange={(event) => {
                           setDiscoverySourceInput(event.target.value);
                           setPendingDiscovery(null);
+                          setDiscoveryComplete(false);
                           setDiscoveryIssues([]);
                           setDiscoveryMessage("");
                           invalidatePlan();
@@ -1630,39 +1734,16 @@ export function EvmCollectionPage({
                       disabled={controlsLocked || assetImporting}
                       mode="evm"
                       onDirty={() => {
+                        setDiscoveryComplete(false);
                         invalidatePlan();
                       }}
                       onImportingChange={handleKeyImportingChange}
                       onLineCountChange={setSourceKeyLineCount}
                       ref={keyInputRef}
-                      walletStatuses={walletStatuses}
                     />
                   </TabsContent>
                 </Tabs>
               </>
-            ) : null}
-
-            {fixedStandard === "nft" ? (
-              <Field>
-                <FieldLabel>NFT 标准</FieldLabel>
-                <Tabs
-                  onValueChange={(value) => {
-                    const nextStandard = value as "erc721" | "erc1155";
-                    setNftStandard(nextStandard);
-                    if (nextStandard === "erc1155") setSourceInputMode("keys");
-                    setNftInputResetNonce((current) => current + 1);
-                    setPendingDiscovery(null);
-                    setContractInspection(null);
-                    invalidatePlan();
-                  }}
-                  value={nftStandard}
-                >
-                  <TabsList aria-label="NFT 标准">
-                    <TabsTrigger disabled={controlsLocked} value="erc721">ERC721</TabsTrigger>
-                    <TabsTrigger disabled={controlsLocked} value="erc1155">ERC1155</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-              </Field>
             ) : null}
 
             {fixedStandard === "erc20" ? (
@@ -1837,18 +1918,18 @@ export function EvmCollectionPage({
             ) : (
               <>
                 <NftAssetInput
-                  autoOnly={standard === "erc721"}
-                  autoDiscovery={standard === "erc721" ? (
+                  autoOnly
+                  autoDiscovery={(
                     <section aria-labelledby="nft-discovery-title" className="nft-discovery-card">
                       <div className="nft-discovery-card__bar">
                         <h4 id="nft-discovery-title">自动识别</h4>
                         <Button
-                          disabled={controlsLocked || !discoveryContractIsValid || !discoverySourceReady}
-                          onClick={() => void discoverOwnedErc721()}
+                          disabled={controlsLocked || discoveryComplete || !discoveryContractIsValid || !discoverySourceReady}
+                          onClick={() => void discoverOwnedNft()}
                           size="sm"
                           type="button"
                         >
-                          {discoveryRunning ? "正在识别" : "识别持仓"}
+                          {discoveryRunning ? "正在识别" : discoveryComplete ? "已识别" : "识别持仓"}
                         </Button>
                       </div>
 
@@ -1904,10 +1985,10 @@ export function EvmCollectionPage({
                         </Alert>
                       ) : null}
                     </section>
-                  ) : undefined}
+                  )}
                   contractAddress={discoveryContract}
                   contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
-                  defaultMode={standard === "erc721" ? "auto" : "manual"}
+                  defaultMode="auto"
                   disabled={controlsLocked || keyImporting}
                   key={[nftInputResetNonce, standard].join("-")}
                   onChange={(value) => {
@@ -1917,6 +1998,7 @@ export function EvmCollectionPage({
                   onContractAddressChange={(value) => {
                     setDiscoveryContract(value);
                     setPendingDiscovery(null);
+                    setDiscoveryComplete(false);
                     setContractInspection(null);
                     setDiscoveryMessage("");
                     setDiscoveryIssues([]);
@@ -1934,6 +2016,7 @@ export function EvmCollectionPage({
                     setCurrentAssetInput(value);
                     invalidatePlan();
                   }}
+                  results={results}
                   standard={standard as "erc721" | "erc1155"}
                 />
 
@@ -1989,6 +2072,7 @@ export function EvmCollectionPage({
                   onChange={(event) => {
                     setRpcEndpoint(event.target.value);
                     setPendingDiscovery(null);
+                    setDiscoveryComplete(false);
                     setContractInspection(null);
                     invalidatePlan();
                   }}

@@ -882,6 +882,17 @@ export function EvmBatchDistributorPage() {
                 {safetyState.canRetryInPlace ? (
                   <Button onClick={resetConfirmation} type="button" variant="outline">返回修改并重新预检</Button>
                 ) : null}
+                {sendComplete ? (
+                  <ConfirmActionDialog
+                    confirmLabel="保留清单并新建任务"
+                    description="当前交易记录会从结果区移除，网络、资产与收款清单会保留。链上交易不会撤销；请先修改或核对清单，避免重复分发。"
+                    disabled={sending}
+                    onConfirm={resetConfirmation}
+                    title="复制当前设置为新任务？"
+                    triggerLabel="保留清单，新建任务"
+                    triggerVariant="outline"
+                  />
+                ) : null}
                 {sendComplete || unresolvedSubmission ? (
                   sendState.signatures.length > 0 ? (
                     <ConfirmActionDialog

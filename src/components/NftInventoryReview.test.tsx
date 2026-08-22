@@ -70,6 +70,33 @@ describe("NftInventoryReview", () => {
     expect(screen.getByRole("button", { name: "移除第 1 行 NFT" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "移除全部" })).toBeDisabled();
   });
+
+  it("shows execution state in the asset row and renders a successful hash as a green explorer link", () => {
+    const assetKey = `erc721:${contractOne.toLowerCase()}:42`;
+    const hash = `0x${"ab".repeat(32)}`;
+    render(
+      <NftInventoryReview
+        assetInput={`${contractOne},42`}
+        onChange={vi.fn()}
+        results={[{
+          address: contractTwo,
+          asset: "ERC721 #42",
+          assetKey,
+          explorerUrl: `https://scan.example/tx/${hash}`,
+          hash,
+          label: "来源一",
+          message: "交易已确认",
+          status: "success"
+        }]}
+        standard="erc721"
+      />
+    );
+
+    const link = screen.getByRole("link", { name: new RegExp(`查看 来源一 的成功交易 ${hash}`) });
+    expect(link).toHaveAttribute("href", `https://scan.example/tx/${hash}`);
+    expect(link).toHaveTextContent(/^0xabababab…ababab$/);
+    expect(link).toHaveClass("nft-inventory-review__hash");
+  });
 });
 
 describe("removeValidNftInventoryAssets", () => {

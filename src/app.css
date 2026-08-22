@@ -1564,6 +1564,11 @@
   background: color-mix(in oklab, var(--card) 94%, var(--muted));
 }
 
+.imported-wallet-remove {
+  grid-column: 5;
+  justify-self: end;
+}
+
 .imported-wallet-statuses {
   min-width: min(28rem, 42vw);
   display: grid;
@@ -1893,6 +1898,41 @@
   background: color-mix(in oklab, var(--destructive) 7%, transparent);
 }
 
+.nft-inventory-review__statuses {
+  min-width: 11rem;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.nft-inventory-review__status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.nft-inventory-review__status > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nft-inventory-review__status > a,
+.nft-inventory-review__status > code.is-success {
+  color: var(--success);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--success) 52%, transparent);
+  text-underline-offset: 0.16rem;
+  white-space: nowrap;
+}
+
 .generator-mode-row {
   display: flex;
   align-items: stretch;
@@ -2142,6 +2182,10 @@
   .imported-wallet-row > button {
     grid-column: 3;
     grid-row: 1;
+  }
+
+  .imported-wallet-remove {
+    grid-column: 3;
   }
 
   .imported-wallet-balances {

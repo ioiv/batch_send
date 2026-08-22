@@ -385,6 +385,15 @@ export function SolCollectionPage() {
     setStage("editing");
   };
 
+  const beginNextTaskWithCurrentSettings = () => {
+    if (running) return;
+    retrySourcesRef.current = [];
+    setResults([]);
+    setIssues([]);
+    setMessage("已保留来源钱包与归集配置；请按需修改后开始新任务");
+    setStage("editing");
+  };
+
   const amountPolicyValid = getAmountPolicy() !== null;
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(rpcEndpoint);
@@ -433,7 +442,17 @@ export function SolCollectionPage() {
                   triggerVariant="outline"
                 />
               ) : hasSubmittedHash ? (
-                <Button disabled type="button">本次任务已结束</Button>
+                stage === "complete" ? (
+                  <ConfirmActionDialog
+                    confirmLabel="保留设置并新建任务"
+                    description="当前交易记录会从本页结果中移除，但链上交易不会撤销。来源钱包和归集配置会保留；再次执行前请确认不会重复归集。"
+                    disabled={running}
+                    onConfirm={beginNextTaskWithCurrentSettings}
+                    title="使用当前设置新建归集任务？"
+                    triggerLabel="保留设置，新建任务"
+                    triggerVariant="outline"
+                  />
+                ) : <Button disabled type="button">本次任务已结束</Button>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"

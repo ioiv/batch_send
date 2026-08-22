@@ -40,7 +40,9 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     await user.click(checkbox);
     expect(inputRef.current?.read()).toBe(sentinel);
 
-    await user.click(screen.getByRole("button", { name: new RegExp(`删除.*${address}`, "i") }));
+    const removeButton = screen.getByRole("button", { name: new RegExp(`删除.*${address}`, "i") });
+    expect(removeButton).toHaveClass("imported-wallet-remove");
+    await user.click(removeButton);
     expect(inputRef.current?.read()).toBe("");
     expect(screen.getByText("导入后将在这里显示钱包地址，可勾选或删除。")).toBeVisible();
 

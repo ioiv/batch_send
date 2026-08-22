@@ -10,11 +10,13 @@ const evmMocks = vi.hoisted(() => ({
   assertNetwork: vi.fn(),
   createPublicClient: vi.fn(),
   createWalletClient: vi.fn(),
+  discoverErc1155: vi.fn(),
   discoverEnumerable: vi.fn(),
   execute: vi.fn(),
   getBalance: vi.fn(),
   getLiveGas: vi.fn(),
   inspectContract: vi.fn(),
+  findDeployment: vi.fn(),
   plan: vi.fn(),
   preflight: vi.fn(),
   readContract: vi.fn(),
@@ -59,6 +61,16 @@ vi.mock("../lib/nft-contract-inspection", async (importOriginal) => {
 vi.mock("../lib/erc721-discovery", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/erc721-discovery")>();
   return { ...actual, discoverEnumerableErc721Assets: evmMocks.discoverEnumerable };
+});
+
+vi.mock("../lib/erc721-transfer-discovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/erc721-transfer-discovery")>();
+  return { ...actual, findErc721DeploymentBlock: evmMocks.findDeployment };
+});
+
+vi.mock("../lib/erc1155-transfer-discovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/erc1155-transfer-discovery")>();
+  return { ...actual, discoverErc1155AssetsByTransfer: evmMocks.discoverErc1155 };
 });
 
 import {
@@ -173,6 +185,21 @@ beforeEach(() => {
     }],
     rpcRequests: 6,
     snapshotBlock: 100n
+  });
+  evmMocks.findDeployment.mockResolvedValue(12n);
+  evmMocks.discoverErc1155.mockResolvedValue({
+    assets: [{
+      contractAddress: tokenAddress,
+      key: "erc1155:" + tokenAddress.toLowerCase() + ":9",
+      standard: "erc1155",
+      tokenId: 9n
+    }],
+    candidateCount: 1,
+    complete: true,
+    fromBlock: 12n,
+    issues: [],
+    latestBlock: 100n,
+    rpcRequests: 5
   });
 });
 
@@ -422,13 +449,14 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
   });
 
-  it("renders source-mode and standard controls without legacy steps or promotion copy", () => {
+  it("renders source modes while keeping both NFT standards automatic-only", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
 
     expect(screen.getByRole("heading", { name: "EVM NFT 归集", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "只读地址" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "来源密钥" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "ERC721" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "ERC721" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "ERC1155" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("textbox", { name: "NFT 合约" })).toHaveLength(1);
     expect(screen.getByText("编辑中")).toBeInTheDocument();
     expect(screen.queryByText(/下一步|预检准备项|平台费 0|不上传密钥|密钥仅在本地内存/)).not.toBeInTheDocument();
@@ -484,7 +512,35 @@ describe("EvmCollectionPage workbench", () => {
     expect(await screen.findByText("1 个有效")).toBeInTheDocument();
     expect(screen.getByRole("table", { name: "ERC721 待归集资产清单" })).toBeInTheDocument();
     expect(screen.getByText("已识别并自动加入 1 个 NFT")).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "已识别" })).toBeDisabled();
+    expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "加入资产清单" })).not.toBeInTheDocument();
+  });
+
+  it("automatically identifies and discovers ERC1155 holdings without manual Token ID input", async () => {
+    evmMocks.inspectContract.mockResolvedValueOnce({
+      address: tokenAddress,
+      enumerable: false,
+      issues: [],
+      name: "Multi Collection",
+      snapshotBlock: 100n,
+      standard: "erc1155",
+      symbol: "MULTI"
+    });
+
+    await discoverNft();
+
+    expect(await screen.findByRole("table", { name: "ERC1155 待归集资产清单" })).toBeVisible();
+    expect(screen.getByText("9")).toBeVisible();
+    expect(screen.getByText("全部余额")).toBeVisible();
+    expect(screen.queryByLabelText("Token ID / 区间")).not.toBeInTheDocument();
+    expect(evmMocks.findDeployment).toHaveBeenCalledTimes(1);
+    expect(evmMocks.discoverErc1155).toHaveBeenCalledWith(expect.objectContaining({
+      fromBlock: 12n,
+      ownerAddresses: [sourceAddress],
+      toBlock: 100n
+    }));
+    expect(screen.getByRole("button", { name: "已识别" })).toBeDisabled();
   });
 
   it("requires a separate confirmation before adding partial discovery results", async () => {
@@ -636,6 +692,15 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
     expect(screen.getByRole("link", { name: "查看交易" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "保留设置，新建任务" }));
+    const nextTaskDialog = screen.getByRole("alertdialog", { name: "使用当前设置新建归集任务？" });
+    await user.click(within(nextTaskDialog).getByRole("button", { name: "保留设置并新建任务" }));
+    expect(screen.getByRole("textbox", { name: "目标地址" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "目标地址" })).toHaveValue(targetAddress);
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveValue(tokenAddress);
+    expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
+    expect(screen.queryByRole("link", { name: "查看交易" })).not.toBeInTheDocument();
   });
 
   it("keeps mixed results inline and offers safe retry", async () => {

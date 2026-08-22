@@ -7,6 +7,7 @@ import { FieldLabel } from "@/components/ui/field";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmActionDialog } from "@/components/WorkbenchPrimitives";
+import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
 import {
   parseEvmCollectionAssets,
   type EvmCollectionAsset,
@@ -20,7 +21,18 @@ export type NftInventoryReviewProps = {
   contractLabels?: ReadonlyMap<string, string>;
   disabled?: boolean;
   onChange: (value: string) => void;
+  results?: readonly CollectionDisplayResult[];
   standard: NftInventoryStandard;
+};
+
+const statusLabels: Record<CollectionResultStatus, string> = {
+  confirming: "确认中",
+  error: "失败",
+  pending: "待处理",
+  scanning: "读取中",
+  skipped: "已跳过",
+  submitting: "提交中",
+  success: "成功"
 };
 
 function shortAddress(address: string) {
@@ -36,6 +48,10 @@ function contractLabel(contractLabels: ReadonlyMap<string, string> | undefined, 
 
 function getAssetTokenId(asset: EvmCollectionAsset) {
   return "tokenId" in asset ? asset.tokenId.toString() : "";
+}
+
+function shortHash(hash: string) {
+  return hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
 
 /**
@@ -70,6 +86,7 @@ export function NftInventoryReview({
   contractLabels,
   disabled,
   onChange,
+  results = [],
   standard
 }: NftInventoryReviewProps) {
   const titleId = useId();
@@ -84,6 +101,16 @@ export function NftInventoryReview({
     [parsed.assets]
   );
   const validAssetIdentity = validAssetKeys.join("\u0000");
+  const resultsByAssetKey = useMemo(() => {
+    const grouped = new Map<string, CollectionDisplayResult[]>();
+    results.forEach((result) => {
+      if (!result.assetKey) return;
+      const current = grouped.get(result.assetKey) || [];
+      current.push(result);
+      grouped.set(result.assetKey, current);
+    });
+    return grouped;
+  }, [results]);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -210,6 +237,7 @@ export function NftInventoryReview({
                   const selected = row.status === "valid" && selectedKeys.has(row.asset.key);
                   const duplicate = row.status === "duplicate";
                   const name = contractLabel(contractLabels, row.asset.contractAddress);
+                  const assetResults = resultsByAssetKey.get(row.asset.key) || [];
                   return (
                     <TableRow
                       className={`nft-inventory-review__row${duplicate ? " is-duplicate" : ""}`}
@@ -243,7 +271,38 @@ export function NftInventoryReview({
                         ) : "1 枚"}
                       </TableCell>
                       <TableCell>
-                        {duplicate ? (
+                        {assetResults.length ? (
+                          <div className="nft-inventory-review__statuses">
+                            {assetResults.map((result, index) => (
+                              <div
+                                className="nft-inventory-review__status"
+                                data-status={result.status}
+                                key={`${result.address}-${index}`}
+                                title={result.message}
+                              >
+                                <span>{result.label || shortAddress(result.address)}</span>
+                                {result.status === "success" && result.hash ? (
+                                  result.explorerUrl ? (
+                                    <a
+                                      aria-label={`查看 ${result.label || shortAddress(result.address)} 的成功交易 ${result.hash}`}
+                                      className="nft-inventory-review__hash"
+                                      href={result.explorerUrl}
+                                      rel="noreferrer"
+                                      target="_blank"
+                                      title={result.hash}
+                                    >
+                                      {shortHash(result.hash)}
+                                    </a>
+                                  ) : <code className="is-success" title={result.hash}>{shortHash(result.hash)}</code>
+                                ) : (
+                                  <Badge variant={result.status === "error" ? "destructive" : "outline"}>
+                                    {statusLabels[result.status]}
+                                  </Badge>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : duplicate ? (
                           <>
                             <Badge variant="outline">重复行</Badge>
                             <small>{row.problems.join(" / ")}</small>
