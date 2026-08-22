@@ -24,6 +24,7 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { parseEvmPrivateKeyInput } from "../lib/evm-collection";
+import type { CollectionResultStatus } from "../lib/collection-results";
 import { readSecretKeyFile, SecretKeyImportError } from "../lib/secret-key-import";
 import { parseSolanaSourceKeys } from "../lib/sol-collection";
 
@@ -34,6 +35,15 @@ export type SecretKeyInputHandle = {
 };
 
 export type SecretKeyInputChangeReason = "import" | "remove" | "selection";
+
+export type WalletExecutionItem = {
+  amount?: string;
+  asset: string;
+  explorerUrl?: string;
+  hash?: string;
+  message: string;
+  status: CollectionResultStatus;
+};
 
 type ImportedWallet = {
   address: string;
@@ -121,13 +131,15 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     string,
     readonly { amount: string; contractAddress?: string; symbol: string }[]
   >>;
+  walletStatuses?: Readonly<Record<string, readonly WalletExecutionItem[]>>;
 }>(function SecretKeyInput({
   disabled = false,
   mode,
   onDirty,
   onImportingChange,
   onLineCountChange,
-  walletBalances = {}
+  walletBalances = {},
+  walletStatuses = {}
 }, ref) {
   const disabledRef = useRef(disabled);
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -491,7 +503,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             role="list"
           >
             {visibleWallets.map((wallet) => {
-              const balances = walletBalances[wallet.id] || walletBalances[wallet.address] || [];
+              const balances = walletBalances[wallet.id]
+                || walletBalances[wallet.address]
+                || walletBalances[wallet.address.toLowerCase()]
+                || [];
+              const statuses = walletStatuses[wallet.id]
+                || walletStatuses[wallet.address]
+                || walletStatuses[wallet.address.toLowerCase()]
+                || [];
               const accessibleName = [wallet.label, wallet.address].filter(Boolean).join(" ");
               return (
                 <div className="imported-wallet-row" key={wallet.id} role="listitem">
@@ -512,6 +531,36 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                           <strong>{balance.amount}</strong>
                           <small>{balance.symbol}</small>
                         </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {statuses.length ? (
+                    <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-statuses">
+                      {statuses.map((status, index) => (
+                        <div className="imported-wallet-status" data-status={status.status} key={`${status.asset}-${index}`}>
+                          <div className="imported-wallet-status__heading">
+                            <Badge variant={status.status === "error" ? "destructive" : "outline"}>
+                              {status.status === "success"
+                                ? "已完成"
+                                : status.status === "error"
+                                  ? "失败"
+                                  : status.status === "skipped"
+                                    ? "已跳过"
+                                    : status.status === "confirming"
+                                      ? "确认中"
+                                      : status.status === "submitting"
+                                        ? "提交中"
+                                        : status.status === "scanning"
+                                          ? "读取中"
+                                          : "待处理"}
+                            </Badge>
+                            <strong>{status.asset}{status.amount ? ` · ${status.amount}` : ""}</strong>
+                            {status.explorerUrl && status.hash ? (
+                              <a href={status.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
+                            ) : null}
+                          </div>
+                          <span title={status.message}>{status.message}</span>
+                        </div>
                       ))}
                     </div>
                   ) : null}

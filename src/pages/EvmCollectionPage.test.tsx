@@ -78,7 +78,7 @@ const secondSignerAccount = privateKeyToAccount(secondPrivateKey);
 const transactionHash = "0x" + "ab".repeat(32);
 const planItem = {
   account: signerAccount,
-  address: sourceAddress,
+  address: signerAccount.address,
   amount: 1_000_000_000_000_000_000n,
   asset: {
     contractAddress: tokenAddress,
@@ -118,6 +118,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  window.localStorage.clear();
   evmMocks.assertNetwork.mockResolvedValue(undefined);
   evmMocks.createPublicClient.mockReturnValue({
     getBalance: evmMocks.getBalance,
@@ -197,8 +198,7 @@ async function prepareReadyErc20Page(assetInput = tokenAddress) {
   await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
   await fillTokenList(user, assetInput);
   await importEvmSecret(user);
-  await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
-  await screen.findByRole("button", { name: "确认并开始归集" });
+  expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   return user;
 }
 
@@ -241,9 +241,8 @@ describe("EvmCollectionPage workbench", () => {
 
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await importEvmSecret(user);
-    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
-
-    await screen.findByRole("button", { name: "确认并开始归集" });
+    await confirmEvmExecution(user);
+    await waitFor(() => expect(evmMocks.plan).toHaveBeenCalled());
     expect(evmMocks.plan).toHaveBeenCalledWith(expect.objectContaining({
       assets: [{ key: "native", standard: "native" }]
     }));
@@ -353,7 +352,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(walletList).getByText("TOK")).toBeVisible();
   });
 
-  it("shows live Gas and passes a custom Gas Price into collection preflight", async () => {
+  it("shows live Gas and passes a custom Gas Price into direct execution", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
@@ -364,10 +363,10 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await importEvmSecret(user);
-    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
+    await confirmEvmExecution(user);
 
-    await screen.findByRole("button", { name: "确认并开始归集" });
-    expect(evmMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalled());
+    expect(evmMocks.execute).toHaveBeenCalledWith(expect.objectContaining({
       gasSettings: {
         fee: { gasPrice: 4_500_000_000n, type: "legacy" },
         mode: "custom"
@@ -376,7 +375,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ })).toBeInTheDocument();
   });
 
-  it("blocks collection preflight while the custom Gas Price is invalid", async () => {
+  it("blocks direct confirmation while the custom Gas Price is invalid", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
     const gasSettings = screen.getByLabelText("Gas 设置");
@@ -386,18 +385,18 @@ describe("EvmCollectionPage workbench", () => {
     await importEvmSecret(user);
 
     expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "预检资产与费用" })).toBeDisabled();
-    expect(evmMocks.preflight).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
   });
 
-  it("invalidates a ready collection plan when the Gas setting changes", async () => {
+  it("keeps imported wallets while Gas settings are edited", async () => {
     const user = await prepareReadyErc20Page();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
 
     await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
 
-    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重新导入来源密钥" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
   });
 
   it("renders source-mode and standard controls without legacy steps or promotion copy", () => {
@@ -429,39 +428,32 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.queryByLabelText("事件起始区块")).not.toBeInTheDocument();
   });
 
-  it("shows a blocking error when asset and transaction preflight has no executable item", async () => {
-    const failedPlanItem = {
-      ...planItem,
+  it("shows execution failures inside the wallet row and offers retry", async () => {
+    evmMocks.execute.mockResolvedValueOnce([{
+      address: planItem.address,
+      amount: planItem.amount,
+      asset: planItem.asset,
+      hash: null,
+      id: planItem.id,
+      label: planItem.label,
       message: "模拟失败",
-      status: "failed" as const
-    };
-    evmMocks.preflight.mockResolvedValueOnce({
-      estimatedNetworkFee: 0n,
-      executableTransactions: 0,
-      plan: [failedPlanItem]
-    });
-    const user = userEvent.setup();
-    render(<EvmCollectionPage fixedStandard="erc20" />);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await importEvmSecret(user);
-    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
+      retryable: true,
+      status: "failed"
+    }]);
+    const user = await prepareReadyErc20Page();
+    await confirmEvmExecution(user);
 
-    expect(await screen.findByText(/没有可执行项/)).toBeInTheDocument();
-    expect(screen.getAllByText("需要处理").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
-    expect(evmMocks.execute).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(within(walletList).getByText("失败")).toBeVisible();
+    expect(within(walletList).getByText("模拟失败")).toBeVisible();
   });
 
-  it("keeps the empty result panel collapsed for input-only errors", async () => {
-    const user = userEvent.setup();
+  it("does not render a separate preflight or result section", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
-    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
-
-    expect(await screen.findByText("请修正输入后重新扫描")).toBeVisible();
-    expect(screen.getByRole("button", { name: "展开预检与结果" })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("预检后显示资产与交易。")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(screen.queryByText(/预检与结果|等待预检/)).not.toBeInTheDocument();
   });
 
   it("automatically adds complete discovery results to the pending asset table", async () => {
@@ -504,7 +496,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(await screen.findByText("1 个有效")).toBeInTheDocument();
   });
 
-  it("cancels execution, invalidates a ready preflight on edit, and confirms clearing", async () => {
+  it("cancels direct execution, preserves edits, and confirms clearing", async () => {
     const user = await prepareReadyErc20Page();
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const executeDialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
@@ -513,9 +505,10 @@ describe("EvmCollectionPage workbench", () => {
 
     const target = screen.getByRole("textbox", { name: "目标地址" });
     await user.clear(target);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
     await user.type(target, targetAddress);
     expect(screen.getByText("编辑中")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
 
     const clearTrigger = screen.getByRole("button", { name: "清空任务" });
     await user.click(clearTrigger);
@@ -532,14 +525,13 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(target, targetAddress);
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await importEvmSecret(user);
-    await user.click(screen.getByRole("button", { name: "预检资产与费用" }));
-    expect(await screen.findByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
 
   it("maps a submitted hash followed by interruption to uncertain and locks retry", async () => {
     evmMocks.execute.mockImplementationOnce(async ({ onProgress }) => {
       onProgress?.({
-        address: sourceAddress,
+        address: planItem.address,
         amount: planItem.amount,
         completed: 0,
         hash: transactionHash,
@@ -558,9 +550,10 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
 
     await waitFor(() => expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0));
-    expect(screen.getByRole("button", { name: "请先核对链上结果" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "本次任务已结束" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /重试失败项/ })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "目标地址" })).toBeDisabled();
-    expect(evmMocks.assertNetwork.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(evmMocks.assertNetwork).toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "清空任务" }));
     const clearDialog = screen.getByRole("alertdialog", { name: "清空当前归集任务？" });
@@ -569,51 +562,31 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0);
   });
 
-  it("blocks wallet-client creation when the fresh ownership plan drifts", async () => {
-    const driftedPlanItem = {
-      ...planItem,
-      amount: planItem.amount + 1n,
-      message: "签名前余额已变化"
-    };
-    evmMocks.plan
-      .mockResolvedValueOnce([planItem])
-      .mockResolvedValueOnce([driftedPlanItem]);
-    evmMocks.preflight
-      .mockResolvedValueOnce({
-        estimatedNetworkFee: 1_000_000_000_000n,
-        executableTransactions: 1,
-        plan: [planItem]
-      })
-      .mockResolvedValueOnce({
-        estimatedNetworkFee: 2_000_000_000_000n,
-        executableTransactions: 1,
-        plan: [driftedPlanItem]
-      });
-
+  it("supports fixed amounts and passes execution settings without a preflight call", async () => {
     const user = await prepareReadyErc20Page();
-    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
-    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
-    await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
+    await user.click(screen.getByRole("tab", { name: "固定数量" }));
+    const fixed = screen.getByRole("spinbutton", { name: "每钱包每资产固定归集数量" });
+    await user.clear(fixed);
+    await user.type(fixed, "0.25");
+    await confirmEvmExecution(user);
 
-    expect(await screen.findByText(/资产余额、所有权或可执行交易已变化/)).toBeVisible();
-    expect(evmMocks.plan).toHaveBeenCalledTimes(2);
-    expect(evmMocks.preflight).toHaveBeenCalledTimes(2);
-    expect(evmMocks.execute).not.toHaveBeenCalled();
-    expect(evmMocks.createWalletClient).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "重新导入来源密钥" })).toBeEnabled();
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
+    expect(evmMocks.preflight).not.toHaveBeenCalled();
+    expect(evmMocks.execute.mock.calls[0][0].plan[0].amount).toBe(250_000_000_000_000_000n);
   });
 
-  it("continues with the freshly checked plan when its safety fingerprint is stable", async () => {
+  it("executes once, keeps the source wallet and renders status inline", async () => {
     evmMocks.execute.mockImplementationOnce(async ({ getWalletClient, plan }) => {
       await getWalletClient(plan[0].account, plan[0]);
       return [{
-        address: sourceAddress,
+        address: planItem.address,
         amount: planItem.amount,
         asset: planItem.asset,
         hash: transactionHash,
         id: planItem.id,
         label: planItem.label,
         message: "已确认",
+        retryable: false,
         status: "success"
       }];
     });
@@ -624,56 +597,61 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
 
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
-    expect(evmMocks.plan).toHaveBeenCalledTimes(2);
-    expect(evmMocks.preflight).toHaveBeenCalledTimes(2);
+    expect(evmMocks.plan).toHaveBeenCalledTimes(1);
+    expect(evmMocks.preflight).not.toHaveBeenCalled();
     expect(evmMocks.createWalletClient).toHaveBeenCalledTimes(1);
-    expect(evmMocks.execute.mock.calls[0][0].plan).toEqual([planItem]);
+    expect(evmMocks.execute.mock.calls[0][0].plan).toEqual([
+      expect.objectContaining({
+        address: planItem.address,
+        amount: planItem.amount,
+        amountPolicy: { mode: "all" },
+        id: planItem.id
+      })
+    ]);
     expect(evmMocks.execute.mock.calls[0][0].gasSettings).toEqual({ mode: "auto" });
-    expect(await screen.findByText(/执行结束：1 笔确认成功/)).toBeInTheDocument();
+    expect(await screen.findByText(/执行结束：1 项确认成功/)).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
-    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看来源一的交易" })).toBeInTheDocument();
+    expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
+    expect(screen.getByRole("link", { name: "查看交易" })).toBeInTheDocument();
   });
 
-  it("keeps mixed success and failure results visible and blocks blind retry", async () => {
+  it("keeps mixed results inline and offers safe retry", async () => {
     const stablePlan = [planItem, secondPlanItem];
     evmMocks.plan.mockResolvedValue(stablePlan);
-    evmMocks.preflight.mockResolvedValue({
-      estimatedNetworkFee: 2_000_000_000_000n,
-      executableTransactions: 2,
-      plan: stablePlan
-    });
     evmMocks.execute.mockResolvedValueOnce([
       {
-        address: sourceAddress,
+        address: planItem.address,
         amount: planItem.amount,
         asset: planItem.asset,
         hash: transactionHash,
         id: planItem.id,
         label: planItem.label,
         message: "归集成功",
+        retryable: false,
         status: "success"
       },
       {
-        address: sourceAddress,
+        address: planItem.address,
         amount: secondPlanItem.amount,
         asset: secondPlanItem.asset,
         hash: null,
         id: secondPlanItem.id,
         label: secondPlanItem.label,
         message: "提交失败",
+        retryable: true,
         status: "failed"
       }
     ]);
     const user = await prepareReadyErc20Page(tokenAddress + "\n" + secondTokenAddress);
     await confirmEvmExecution(user);
 
-    expect(await screen.findByText(/执行结束：1 笔确认成功，1 笔失败/)).toBeInTheDocument();
-    const resultRows = screen.getAllByRole("row");
-    expect(resultRows.some((row) => row.textContent?.includes("TOK") && row.textContent.includes("已完成"))).toBe(true);
-    expect(resultRows.some((row) => row.textContent?.includes("TOK2") && row.textContent.includes("失败"))).toBe(true);
+    expect(await screen.findByText(/执行结束：1 项确认成功，1 项失败/)).toBeInTheDocument();
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(within(walletList).getByText(/TOK · 1/)).toBeVisible();
+    expect(within(walletList).getByText(/TOK2 · 1/)).toBeVisible();
+    expect(within(walletList).getByText("失败")).toBeVisible();
     expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "请先核对链上结果" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
   });
 
   it("exposes the complete status mapping, including hash uncertainty", () => {

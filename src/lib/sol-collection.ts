@@ -12,6 +12,13 @@ import {
   type TransactionSignature
 } from "@solana/web3.js";
 import { formatLamports } from "./amount";
+import { resolveCollectionAmount, type CollectionAmountPolicy } from "./collection-amount";
+import {
+  mapWithCollectionConcurrency,
+  normalizeCollectionExecutionSettings,
+  waitForCollectionDelay,
+  type CollectionExecutionSettings
+} from "./collection-execution";
 import { maximumCollectionSources } from "./collection-workload";
 
 globalThis.Buffer = globalThis.Buffer || Buffer;
@@ -79,12 +86,13 @@ export type SolCollectionItemResult = {
   message: string;
   reason?: SolCollectionSkipReason;
   reserveLamports: bigint;
+  retryable: boolean;
   signature?: TransactionSignature;
   status: SolCollectionItemStatus;
   transferLamports: bigint;
 };
 
-export type SolCollectionPreflightItem = Omit<SolCollectionItemResult, "signature" | "status"> & {
+export type SolCollectionPreflightItem = Omit<SolCollectionItemResult, "retryable" | "signature" | "status"> & {
   status: "error" | "ready" | "skipped";
 };
 
@@ -130,12 +138,14 @@ type AssertTrue<T extends true> = T;
 type Web3ConnectionIsCompatible = AssertTrue<Web3Connection extends SolCollectionConnection ? true : false>;
 
 export type CollectSolFromSourcesOptions = {
+  amountPolicy?: CollectionAmountPolicy;
   commitment?: Commitment;
   connection: SolCollectionConnection;
   destination: PublicKey | string;
   fallbackFeeLamports?: bigint | null;
   minCollectionLamports: bigint;
   onProgress?: (progress: SolCollectionProgress) => void;
+  executionSettings?: Partial<CollectionExecutionSettings>;
   reserveLamports: bigint;
   sendOptions?: SendOptions;
   sources: readonly SolCollectionSource[];
@@ -369,12 +379,19 @@ export function parseSolanaSourceKeys(input: string): SolCollectionSourceParseRe
 }
 
 export function planSolCollection(options: {
+  amountPolicy?: CollectionAmountPolicy;
   balanceLamports: bigint;
   feeLamports: bigint;
   minCollectionLamports: bigint;
   reserveLamports: bigint;
 }): SolCollectionPlan {
-  const { balanceLamports, feeLamports, minCollectionLamports, reserveLamports } = options;
+  const {
+    amountPolicy = { mode: "all" },
+    balanceLamports,
+    feeLamports,
+    minCollectionLamports,
+    reserveLamports
+  } = options;
   assertNonNegativeLamports(balanceLamports, "balanceLamports");
   assertNonNegativeLamports(feeLamports, "feeLamports");
   assertNonNegativeLamports(minCollectionLamports, "minCollectionLamports");
@@ -388,7 +405,12 @@ export function planSolCollection(options: {
     return { reason: "insufficient-balance", status: "skipped", transferLamports: 0n };
   }
 
-  const transferLamports = balanceLamports - feeLamports - reserveLamports;
+  const spendableLamports = balanceLamports - feeLamports - reserveLamports;
+  const resolvedAmount = resolveCollectionAmount(spendableLamports, amountPolicy);
+  if (resolvedAmount.status === "skipped") {
+    return { reason: "insufficient-balance", status: "skipped", transferLamports: 0n };
+  }
+  const transferLamports = resolvedAmount.amount;
   if (transferLamports < minCollectionLamports) {
     return { reason: "below-minimum", status: "skipped", transferLamports: 0n };
   }
@@ -442,6 +464,7 @@ function getSkipMessage(reason: SolCollectionSkipReason) {
 }
 
 export async function preflightSolCollectionSources({
+  amountPolicy = { mode: "all" },
   commitment = "confirmed",
   connection,
   destination,
@@ -513,6 +536,7 @@ export async function preflightSolCollectionSources({
         ? fallbackFeeLamports as bigint
         : toSafeLamports(feeResponse.value, "fee");
       const plan = planSolCollection({
+        amountPolicy,
         balanceLamports,
         feeLamports,
         minCollectionLamports,
@@ -570,16 +594,19 @@ function emitProgress(callback: CollectSolFromSourcesOptions["onProgress"], prog
 
 export async function collectSolFromSources(options: CollectSolFromSourcesOptions) {
   const {
+    amountPolicy = { mode: "all" },
     commitment = "confirmed",
     connection,
     destination,
+    executionSettings: rawExecutionSettings,
     fallbackFeeLamports = defaultSolCollectionFeeLamports,
     minCollectionLamports,
     onProgress,
     reserveLamports,
-    sendOptions = { preflightCommitment: "confirmed", skipPreflight: false },
+    sendOptions = { preflightCommitment: "confirmed", skipPreflight: true },
     sources
   } = options;
+  const executionSettings = normalizeCollectionExecutionSettings(rawExecutionSettings);
 
   assertNonNegativeLamports(minCollectionLamports, "minCollectionLamports");
   assertNonNegativeLamports(reserveLamports, "reserveLamports");
@@ -593,21 +620,30 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
   }
 
   const destinationAddress = destinationPublicKey.toBase58();
-  const seenAddresses = new Set<string>();
-  const results: SolCollectionItemResult[] = [];
+  const firstIndexByAddress = new Map<string, number>();
+  const duplicateIndexes = new Set<number>();
+  sources.forEach((source, index) => {
+    const address = source.keypair.publicKey.toBase58();
+    if (firstIndexByAddress.has(address)) duplicateIndexes.add(index);
+    else firstIndexByAddress.set(address, index);
+  });
+  let completed = 0;
 
-  for (let index = 0; index < sources.length; index += 1) {
-    const source = sources[index];
+  const results = await mapWithCollectionConcurrency(
+    sources,
+    executionSettings.concurrency,
+    async (source, index): Promise<SolCollectionItemResult> => {
     const address = source.keypair.publicKey.toBase58();
     let balanceLamports = 0n;
     let feeLamports = 0n;
     let submittedSignature: TransactionSignature | undefined;
     let broadcastAcknowledged = false;
+    let chainExecutionFailed = false;
     let transferLamports = 0n;
 
     emitProgress(onProgress, {
       address,
-      completed: results.length,
+      completed,
       current: index + 1,
       label: source.label,
       phase: "preparing",
@@ -625,38 +661,36 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         message: getSkipMessage(reason),
         reason,
         reserveLamports,
+        retryable: false,
         status: "skipped",
         transferLamports: 0n
       };
-      results.push(result);
+      completed += 1;
       emitProgress(onProgress, {
         address,
-        completed: results.length,
+        completed,
         current: index + 1,
         label: source.label,
         phase: "skipped",
         total: sources.length,
         transferLamports: 0n
       });
+      return result;
     };
 
     try {
       if (source.address !== address) throw new SafeSolCollectionError("来源钱包信息不一致，已停止处理该项");
-      if (seenAddresses.has(address)) {
-        finishSkipped("duplicate-source");
-        continue;
-      }
-      seenAddresses.add(address);
+      if (duplicateIndexes.has(index)) return finishSkipped("duplicate-source");
 
       if (address === destinationAddress) {
-        finishSkipped("same-as-destination");
-        continue;
+        return finishSkipped("same-as-destination");
       }
+
+      await waitForCollectionDelay(executionSettings);
 
       balanceLamports = toSafeLamports(await connection.getBalance(source.keypair.publicKey, commitment), "balance");
       if (balanceLamports === 0n) {
-        finishSkipped("zero-balance");
-        continue;
+        return finishSkipped("zero-balance");
       }
 
       const latestBlockhash = await connection.getLatestBlockhash(commitment);
@@ -675,14 +709,14 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         : toSafeLamports(feeResponse.value, "fee");
 
       const plan = planSolCollection({
+        amountPolicy,
         balanceLamports,
         feeLamports,
         minCollectionLamports,
         reserveLamports
       });
       if (plan.status === "skipped") {
-        finishSkipped(plan.reason);
-        continue;
+        return finishSkipped(plan.reason);
       }
       transferLamports = plan.transferLamports;
 
@@ -704,7 +738,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
       broadcastAcknowledged = true;
       emitProgress(onProgress, {
         address,
-        completed: results.length,
+        completed,
         current: index + 1,
         label: source.label,
         phase: "submitted",
@@ -717,7 +751,10 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         ...latestBlockhash,
         signature: submittedSignature
       }, commitment);
-      if (confirmation.value.err) throw new SafeSolCollectionError("交易已提交但链上执行失败");
+      if (confirmation.value.err) {
+        chainExecutionFailed = true;
+        throw new SafeSolCollectionError("交易已提交但链上执行失败");
+      }
 
       const result: SolCollectionItemResult = {
         address,
@@ -727,14 +764,15 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         line: source.line,
         message: "归集成功",
         reserveLamports,
+        retryable: false,
         signature: submittedSignature,
         status: "success",
         transferLamports
       };
-      results.push(result);
+      completed += 1;
       emitProgress(onProgress, {
         address,
-        completed: results.length,
+        completed,
         current: index + 1,
         label: source.label,
         phase: "success",
@@ -742,6 +780,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         total: sources.length,
         transferLamports
       });
+      return result;
     } catch (error) {
       const result: SolCollectionItemResult = {
         address,
@@ -750,19 +789,22 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         label: source.label,
         line: source.line,
         message: submittedSignature
-          ? broadcastAcknowledged
-            ? "交易已提交但确认失败，请先查链上状态，勿盲目重发"
-            : "交易已签名且提交状态不确定，请先用交易签名查链上状态，勿盲目重发"
+          ? chainExecutionFailed
+            ? "交易已确认执行失败，可直接重试该钱包"
+            : broadcastAcknowledged
+              ? "交易已提交但确认失败，请先查链上状态，勿盲目重发"
+              : "交易已签名且提交状态不确定，请先用交易签名查链上状态，勿盲目重发"
           : getSafeSolCollectionErrorMessage(error),
         reserveLamports,
+        retryable: chainExecutionFailed || !submittedSignature,
         signature: submittedSignature,
         status: "error",
         transferLamports
       };
-      results.push(result);
+      completed += 1;
       emitProgress(onProgress, {
         address,
-        completed: results.length,
+        completed,
         current: index + 1,
         label: source.label,
         phase: "error",
@@ -770,8 +812,9 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         total: sources.length,
         transferLamports
       });
+      return result;
     }
-  }
+  });
 
   return results;
 }

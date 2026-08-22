@@ -7,8 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const solMocks = vi.hoisted(() => ({
   assertNetwork: vi.fn(),
   collect: vi.fn(),
-  parseSources: vi.fn(),
-  preflight: vi.fn()
+  parseSources: vi.fn()
 }));
 
 vi.mock("../lib/solana", async (importOriginal) => {
@@ -21,8 +20,7 @@ vi.mock("../lib/sol-collection", async (importOriginal) => {
   return {
     ...actual,
     collectSolFromSources: solMocks.collect,
-    parseSolanaSourceKeys: solMocks.parseSources,
-    preflightSolCollectionSources: solMocks.preflight
+    parseSolanaSourceKeys: solMocks.parseSources
   };
 });
 
@@ -31,25 +29,38 @@ import { getSolCollectionWorkbenchStatus, SolCollectionPage } from "./SolCollect
 const targetAddress = "11111111111111111111111111111111";
 const firstSourceAddress = "So11111111111111111111111111111111111111112";
 const secondSourceAddress = "Vote111111111111111111111111111111111111111";
-const preflightResult = {
-  errorSources: 0,
-  estimatedNetworkFeeLamports: 5_000n,
-  executableSources: 1,
-  items: [{
-    address: firstSourceAddress,
+
+function source(address = firstSourceAddress, label = "来源一", line = 1) {
+  return { address, keypair: {}, label, line };
+}
+
+function result({
+  address = firstSourceAddress,
+  label = "来源一",
+  retryable = false,
+  signature = "success-signature",
+  status = "success"
+}: {
+  address?: string;
+  label?: string;
+  retryable?: boolean;
+  signature?: string;
+  status?: "error" | "success";
+}) {
+  return {
+    address,
     balanceLamports: 1_000_000_000n,
     feeLamports: 5_000n,
-    label: "来源一",
+    label,
     line: 1,
-    message: "可归集",
-    reserveLamports: 2_000_000n,
-    status: "ready" as const,
-    transferLamports: 997_995_000n
-  }],
-  skippedSources: 0,
-  totalBalanceLamports: 1_000_000_000n,
-  totalTransferLamports: 997_995_000n
-};
+    message: status === "success" ? "归集成功" : "RPC 请求失败，可重试",
+    reserveLamports: 0n,
+    retryable,
+    ...(signature ? { signature } : {}),
+    status,
+    transferLamports: 999_995_000n
+  };
+}
 
 afterEach(() => {
   cleanup();
@@ -57,201 +68,107 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  window.localStorage.clear();
   solMocks.assertNetwork.mockResolvedValue(undefined);
-  solMocks.parseSources.mockReturnValue({
-    duplicates: [],
-    errors: [],
-    sources: [{
-      address: firstSourceAddress,
-      keypair: {},
-      label: "来源一",
-      line: 1
-    }]
-  });
-  solMocks.preflight.mockResolvedValue(preflightResult);
+  solMocks.parseSources.mockReturnValue({ duplicates: [], errors: [], sources: [source()] });
   solMocks.collect.mockResolvedValue([]);
 });
 
-async function prepareReadySolPage() {
-  const user = userEvent.setup();
-  render(<SolCollectionPage />);
-  await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-  await importSolSecret(user, "local-secret");
-  await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
-  await screen.findByRole("button", { name: "确认并开始归集" });
-  return user;
-}
-
-async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret: string) {
+async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret = "local-secret") {
   await user.click(screen.getByRole("button", { name: /导入钱包/ }));
   const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
   await user.type(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), secret);
   await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 
-async function confirmSolExecution(user: ReturnType<typeof userEvent.setup>) {
+async function prepareSolPage() {
+  const user = userEvent.setup();
+  render(<SolCollectionPage />);
+  await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+  await importSolSecret(user);
+  expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+  return user;
+}
+
+async function confirmExecution(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
   const dialog = screen.getByRole("alertdialog", { name: "确认 SOL 归集？" });
   await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
 }
 
 describe("SolCollectionPage workbench", () => {
-  it("orders target, source and network fields without legacy steps", () => {
+  it("shows selection, four amount modes and direct confirmation without a preflight section", () => {
     render(<SolCollectionPage />);
     const target = screen.getByRole("textbox", { name: "目标钱包" });
-    const source = screen.getByRole("button", { name: "导入钱包" });
+    const sourceImport = screen.getByRole("button", { name: "导入钱包" });
     const network = screen.getByRole("combobox", { name: "选择 Solana 网络" });
 
-    expect(target.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(source.compareDocumentPosition(network) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("编辑中")).toBeInTheDocument();
-    expect(screen.queryByText(/下一步|预检准备项|密钥仅在本地内存/)).not.toBeInTheDocument();
+    expect(target.compareDocumentPosition(sourceImport) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sourceImport.compareDocumentPosition(network) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    ["全部数量", "百分比数量", "随机数量", "固定数量"].forEach((name) => (
+      expect(screen.getByRole("tab", { name })).toBeInTheDocument()
+    ));
+    expect(screen.queryByText(/预检与结果|等待预检/)).not.toBeInTheDocument();
   });
 
-  it("keeps the empty result panel collapsed for input-only errors", async () => {
-    const user = userEvent.setup();
-    render(<SolCollectionPage />);
+  it("passes percentage, concurrency and random delay settings to direct execution", async () => {
+    const user = await prepareSolPage();
+    await user.click(screen.getByRole("tab", { name: "百分比数量" }));
+    const percentage = screen.getByRole("spinbutton", { name: "归集百分比" });
+    await user.clear(percentage);
+    await user.type(percentage, "25");
+    await confirmExecution(user);
 
-    await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
-
-    expect(await screen.findByText("请修正输入后重新检查")).toBeVisible();
-    expect(screen.getByRole("button", { name: "展开预检与结果" })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("预检后显示钱包与金额。")).not.toBeInTheDocument();
+    await waitFor(() => expect(solMocks.collect).toHaveBeenCalledTimes(1));
+    expect(solMocks.collect).toHaveBeenCalledWith(expect.objectContaining({
+      amountPolicy: { mode: "percentage", percentageBps: 2_500n },
+      executionSettings: { concurrency: 3, maximumDelayMs: 0, minimumDelayMs: 0 }
+    }));
   });
 
-  it("shows a blocking error when read-only preflight fails", async () => {
-    solMocks.preflight.mockResolvedValueOnce({
-      ...preflightResult,
-      errorSources: 1,
-      executableSources: 0,
-      items: [{
-        ...preflightResult.items[0],
-        message: "无法读取来源余额",
-        status: "error"
-      }]
-    });
-    const user = userEvent.setup();
-    render(<SolCollectionPage />);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-    await importSolSecret(user, "local-secret");
-    await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
+  it("keeps the wallet and renders success status inside its imported row", async () => {
+    solMocks.collect.mockResolvedValueOnce([result({})]);
+    const user = await prepareSolPage();
+    await confirmExecution(user);
 
-    expect(await screen.findByText(/1 个来源预检失败/)).toBeInTheDocument();
-    expect(screen.getAllByText("需要处理").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
-    expect(solMocks.collect).not.toHaveBeenCalled();
+    expect(await screen.findByText(/执行结束：1 笔成功/)).toBeVisible();
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(within(walletList).getByText("已完成")).toBeVisible();
+    expect(within(walletList).getByText("SOL · 0.999995")).toBeVisible();
+    expect(within(walletList).getByRole("link", { name: "查看交易" })).toBeVisible();
+    expect(screen.queryByRole("table", { name: "归集结果" })).not.toBeInTheDocument();
   });
 
-  it("renders a successful execution in place and clears the source key", async () => {
-    solMocks.collect.mockResolvedValueOnce([{
-      address: firstSourceAddress,
-      balanceLamports: 1_000_000_000n,
-      feeLamports: 5_000n,
-      label: "来源一",
-      line: 1,
-      message: "归集成功",
-      reserveLamports: 2_000_000n,
-      signature: "success-signature",
-      status: "success",
-      transferLamports: 997_995_000n
-    }]);
-    const user = await prepareReadySolPage();
-    await confirmSolExecution(user);
-
-    expect(await screen.findByText(/执行结束：1 笔成功/)).toBeInTheDocument();
-    expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
-    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看来源一的交易" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "目标钱包" })).toBeDisabled();
-  });
-
-  it("keeps mixed success and failure results visible and blocks blind retry", async () => {
+  it("offers retry for safe failures and retries only those wallets", async () => {
     solMocks.parseSources.mockReturnValue({
       duplicates: [],
       errors: [],
-      sources: [
-        { address: firstSourceAddress, keypair: {}, label: "来源一", line: 1 },
-        { address: secondSourceAddress, keypair: {}, label: "来源二", line: 2 }
-      ]
+      sources: [source(), source(secondSourceAddress, "来源二", 2)]
     });
-    solMocks.preflight.mockResolvedValueOnce({
-      ...preflightResult,
-      executableSources: 2,
-      items: [
-        preflightResult.items[0],
-        { ...preflightResult.items[0], address: secondSourceAddress, label: "来源二", line: 2 }
-      ],
-      totalBalanceLamports: 2_000_000_000n,
-      totalTransferLamports: 1_995_990_000n
-    });
-    solMocks.collect.mockResolvedValueOnce([
-      {
-        address: firstSourceAddress,
-        balanceLamports: 1_000_000_000n,
-        feeLamports: 5_000n,
-        label: "来源一",
-        line: 1,
-        message: "归集成功",
-        reserveLamports: 2_000_000n,
-        signature: "success-signature",
-        status: "success",
-        transferLamports: 997_995_000n
-      },
-      {
-        address: secondSourceAddress,
-        balanceLamports: 1_000_000_000n,
-        feeLamports: 5_000n,
-        label: "来源二",
-        line: 2,
-        message: "提交失败",
-        reserveLamports: 2_000_000n,
-        status: "error",
-        transferLamports: 997_995_000n
-      }
+    solMocks.collect
+      .mockResolvedValueOnce([
+        result({}),
+        result({ address: secondSourceAddress, label: "来源二", retryable: true, signature: "", status: "error" })
+      ])
+      .mockResolvedValueOnce([
+        result({ address: secondSourceAddress, label: "来源二" })
+      ]);
+    const user = await prepareSolPage();
+    await confirmExecution(user);
+
+    const retryTrigger = await screen.findByRole("button", { name: "重试失败项 (1)" });
+    expect(screen.getByLabelText(new RegExp(`来源二.*${secondSourceAddress}.*归集状态`))).toHaveTextContent("失败");
+    await user.click(retryTrigger);
+    const retryDialog = screen.getByRole("alertdialog", { name: "确认重试失败项？" });
+    await user.click(within(retryDialog).getByRole("button", { name: "重试 1 个失败钱包" }));
+
+    await waitFor(() => expect(solMocks.collect).toHaveBeenCalledTimes(2));
+    expect(solMocks.collect.mock.calls[1][0].sources).toEqual([
+      expect.objectContaining({ address: secondSourceAddress })
     ]);
-    const user = await prepareReadySolPage();
-    await confirmSolExecution(user);
-
-    expect(await screen.findByText(/执行结束：1 笔成功，0 笔跳过，1 笔失败/)).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: /来源一.*已完成/ })).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: /来源二.*失败/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "请先核对链上结果" })).toBeDisabled();
   });
 
-  it("cancels execution, invalidates a ready preflight on edit, and confirms clearing", async () => {
-    const user = await prepareReadySolPage();
-    const executeTrigger = screen.getByRole("button", { name: "确认并开始归集" });
-
-    await user.click(executeTrigger);
-    const executeDialog = screen.getByRole("alertdialog", { name: "确认 SOL 归集？" });
-    await user.click(within(executeDialog).getByRole("button", { name: "取消" }));
-    expect(solMocks.collect).not.toHaveBeenCalled();
-
-    const target = screen.getByRole("textbox", { name: "目标钱包" });
-    await user.clear(target);
-    await user.type(target, targetAddress);
-    expect(screen.getByText("编辑中")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
-
-    const clearTrigger = screen.getByRole("button", { name: "清空任务" });
-    await user.click(clearTrigger);
-    let clearDialog = screen.getByRole("alertdialog", { name: "清空当前 SOL 归集任务？" });
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
-    expect(target).toHaveValue(targetAddress);
-
-    await user.click(clearTrigger);
-    clearDialog = screen.getByRole("alertdialog", { name: "清空当前 SOL 归集任务？" });
-    await user.click(within(clearDialog).getByRole("button", { name: "清空任务" }));
-    expect(target).toHaveValue("");
-    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
-
-    await user.type(target, targetAddress);
-    await importSolSecret(user, "new-local-secret");
-    await user.click(screen.getByRole("button", { name: "预检余额与费用" }));
-    expect(await screen.findByRole("button", { name: "确认并开始归集" })).toBeEnabled();
-  });
-
-  it("maps a submitted hash followed by interruption to uncertain and locks retry", async () => {
+  it("does not offer automatic retry after a submitted transaction becomes uncertain", async () => {
     solMocks.collect.mockImplementationOnce(async ({ onProgress }) => {
       onProgress?.({
         address: firstSourceAddress,
@@ -261,24 +178,31 @@ describe("SolCollectionPage workbench", () => {
         phase: "submitted",
         signature: "submitted-signature",
         total: 1,
-        transferLamports: 997_995_000n
+        transferLamports: 999_995_000n
       });
       throw new Error("interrupted");
     });
-    const user = await prepareReadySolPage();
-    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
-    const dialog = screen.getByRole("alertdialog", { name: "确认 SOL 归集？" });
-    await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
+    const user = await prepareSolPage();
+    await confirmExecution(user);
 
-    await waitFor(() => expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0));
-    expect(screen.getByRole("button", { name: "请先核对链上结果" })).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "目标钱包" })).toBeDisabled();
+    expect(await screen.findByText(/已显示签名的项目请先核对链上状态/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /重试失败项/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本次任务已结束" })).toBeDisabled();
+  });
 
-    await user.click(screen.getByRole("button", { name: "清空任务" }));
-    const clearDialog = screen.getByRole("alertdialog", { name: "清空当前 SOL 归集任务？" });
-    expect(within(clearDialog).getByText(/包含已提交的交易哈希/)).toBeInTheDocument();
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
-    expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0);
+  it("persists a replacement RPC and uses it on the next mount", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<SolCollectionPage />);
+    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
+    const rpc = screen.getByRole("textbox", { name: "RPC 地址" });
+    await user.clear(rpc);
+    await user.type(rpc, "https://custom.sol.example/rpc");
+    await user.tab();
+    firstRender.unmount();
+
+    render(<SolCollectionPage />);
+    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
+    expect(screen.getByRole("textbox", { name: "RPC 地址" })).toHaveValue("https://custom.sol.example/rpc");
   });
 
   it("exposes the complete status mapping, including hash uncertainty", () => {

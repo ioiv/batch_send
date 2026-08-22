@@ -1534,13 +1534,66 @@
 .imported-wallet-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) minmax(12rem, 0.8fr) auto;
   align-items: center;
   gap: 0.7rem;
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: color-mix(in oklab, var(--card) 94%, var(--muted));
+}
+
+.imported-wallet-statuses {
+  min-width: min(28rem, 42vw);
+  display: grid;
+  gap: 0.3rem;
+}
+
+.imported-wallet-status {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 38%, transparent);
+}
+
+.imported-wallet-status[data-status="error"] {
+  border-color: color-mix(in oklab, var(--destructive) 38%, var(--border));
+}
+
+.imported-wallet-status__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.imported-wallet-status__heading strong,
+.imported-wallet-status > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imported-wallet-status__heading strong {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+
+.imported-wallet-status__heading a,
+.imported-wallet-status > span {
+  color: var(--muted-foreground);
+  font-size: 0.6rem;
+}
+
+.imported-wallet-status__heading a {
+  flex: 0 0 auto;
+  text-decoration: underline;
+  text-underline-offset: 0.15rem;
 }
 
 .imported-wallet-identity {
@@ -2066,6 +2119,12 @@
     grid-column: 2 / 4;
     grid-row: 2;
     justify-content: flex-start;
+  }
+
+  .imported-wallet-statuses {
+    min-width: 0;
+    grid-column: 2 / 4;
+    grid-row: 3;
   }
 
   .address-only-input {

@@ -26,6 +26,7 @@ import {
   type EvmFeeQuote,
   type EvmGasSettings
 } from "./evm-gas";
+import { resolveCollectionAmount, type CollectionAmountPolicy } from "./collection-amount";
 
 export type EvmCollectionStandard = "native" | "erc20" | "erc721" | "erc1155";
 
@@ -117,6 +118,8 @@ export type EvmCollectionPlanItem = {
   label: string;
   message: string;
   metadata?: Erc20CollectionMetadata;
+  /** For native transfers this is resolved only after the live network fee is known. */
+  amountPolicy?: CollectionAmountPolicy;
   status: EvmCollectionPlanStatus;
 };
 
@@ -130,6 +133,7 @@ export type EvmCollectionResult = {
   id: string;
   label: string;
   message: string;
+  retryable: boolean;
   status: EvmCollectionResultStatus;
 };
 
@@ -851,7 +855,8 @@ function resultFromPlanItem(
   item: EvmCollectionPlanItem,
   status: EvmCollectionResultStatus,
   message: string,
-  hash: Hash | null = null
+  hash: Hash | null = null,
+  retryable = false
 ): EvmCollectionResult {
   return {
     address: item.address,
@@ -861,6 +866,7 @@ function resultFromPlanItem(
     id: redactSecrets(item.id),
     label: safeLabel(item.label, "来源钱包"),
     message: redactSecrets(message),
+    retryable,
     status
   };
 }
@@ -1107,6 +1113,7 @@ async function simulateCollectionTransfer(
 
 async function estimateNativeCollectionTransfer({
   account,
+  amountPolicy = { mode: "all" },
   balance,
   feeQuote,
   maxFeePerTransactionWei,
@@ -1114,6 +1121,7 @@ async function estimateNativeCollectionTransfer({
   targetAddress
 }: {
   account: PrivateKeyAccount;
+  amountPolicy?: CollectionAmountPolicy;
   balance: bigint;
   feeQuote: EvmFeeQuote;
   maxFeePerTransactionWei: bigint;
@@ -1145,10 +1153,20 @@ async function estimateNativeCollectionTransfer({
     if (nextMaximumNetworkFee > maxFeePerTransactionWei) {
       throw new EvmCollectionCoreError("fee-check-failed", "预计单笔网络费超过已确认上限，已阻止提交");
     }
-    if (balance <= nextMaximumNetworkFee) {
-      throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以支付最大网络费");
+    // A second maximum-fee allowance is deliberately left behind. Some L2
+    // nodes account for data fees or pending balance changes outside the plain
+    // gasLimit * feeCap calculation; spending to the exact boundary can then
+    // be rejected as total-cost-exceeds-balance.
+    const safetyReserve = nextMaximumNetworkFee;
+    if (balance <= nextMaximumNetworkFee + safetyReserve) {
+      throw new EvmCollectionCoreError("fee-check-failed", "来源钱包原生币余额不足以支付网络费与安全余量");
     }
-    const nextValue = balance - nextMaximumNetworkFee;
+    const spendableBalance = balance - nextMaximumNetworkFee - safetyReserve;
+    const resolvedAmount = resolveCollectionAmount(spendableBalance, amountPolicy);
+    if (resolvedAmount.status === "skipped") {
+      throw new EvmCollectionCoreError("fee-check-failed", "扣除网络费与安全余量后，可归集余额不足以满足数量设置");
+    }
+    const nextValue = resolvedAmount.amount;
     if (nextGasLimit === gasLimit && nextValue === value) {
       return { gasLimit: nextGasLimit, maximumNetworkFee: nextMaximumNetworkFee, value: nextValue };
     }
@@ -1223,14 +1241,16 @@ function storeOperationResults(
   status: EvmCollectionResultStatus,
   message: string,
   hash: Hash | null = null,
-  amount?: bigint
+  amount?: bigint,
+  retryable = false
 ) {
   operation.entries.forEach(({ index, item }) => {
     results[index] = resultFromPlanItem(
       amount === undefined ? item : { ...item, amount },
       status,
       message,
-      hash
+      hash,
+      retryable
     );
   });
 }
@@ -1346,6 +1366,7 @@ export async function preflightEvmCollectionPlan({
         }
         const nativeEstimate = await estimateNativeCollectionTransfer({
           account: signer.account,
+          amountPolicy: signer.amountPolicy,
           balance: nativeBalance - reservedFee,
           feeQuote,
           maxFeePerTransactionWei,
@@ -1374,7 +1395,7 @@ export async function preflightEvmCollectionPlan({
       estimatedNetworkFee += maximumNetworkFee;
       executableTransactions += 1;
       const message = signer.asset.standard === "native"
-        ? "已预留最大网络费并完成原生币归集预检"
+        ? "已预留最大网络费与安全余量并完成原生币检查"
         : operation.kind === "erc1155-batch"
         ? `已完成批量交易模拟与网络费预检（${operation.entries.length} 个 Token ID）`
         : "已完成交易模拟与网络费预检";
@@ -1420,7 +1441,7 @@ export async function executeEvmCollectionPlan({
     if (primary.status !== "ready") {
       const status = primary.status === "skipped" ? "skipped" : "failed";
       emitOperationProgress(onProgress, operation, status, plan.length, primary.message);
-      storeOperationResults(results, operation, status, primary.message);
+      storeOperationResults(results, operation, status, primary.message, null, undefined, status === "failed");
       continue;
     }
 
@@ -1431,7 +1452,7 @@ export async function executeEvmCollectionPlan({
       const detail = normalizeEvmCollectionError(error, "归集计划无效", "invalid-input");
       const message = `归集失败：${detail.message}`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message);
+      storeOperationResults(results, operation, "failed", message, null, undefined, true);
       continue;
     }
     if (!signer.account || !signer.address) continue;
@@ -1463,7 +1484,7 @@ export async function executeEvmCollectionPlan({
       const detail = normalizeEvmCollectionError(error, "交易模拟失败", "simulation-failed");
       const message = `模拟失败：${detail.message}`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message);
+      storeOperationResults(results, operation, "failed", message, null, undefined, true);
       continue;
     }
 
@@ -1479,11 +1500,13 @@ export async function executeEvmCollectionPlan({
       );
       const [feeQuote, nativeBalance] = await Promise.all([
         resolveEvmFeeQuote(publicClient, gasSettings),
-        publicClient.getBalance({ address: signer.address }).then((value) => assertBigIntResult(value, "原生币余额"))
+        publicClient.getBalance({ address: signer.address, blockTag: "pending" })
+          .then((value) => assertBigIntResult(value, "原生币余额"))
       ]);
       if (signer.asset.standard === "native") {
         const nativeEstimate = await estimateNativeCollectionTransfer({
           account: signer.account,
+          amountPolicy: signer.amountPolicy,
           balance: nativeBalance,
           feeQuote,
           maxFeePerTransactionWei,
@@ -1522,7 +1545,7 @@ export async function executeEvmCollectionPlan({
       const detail = normalizeEvmCollectionError(error, "网络费检查失败", "fee-check-failed");
       const message = `网络费检查失败：${detail.message}`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message);
+      storeOperationResults(results, operation, "failed", message, null, undefined, true);
       continue;
     }
 
@@ -1544,7 +1567,7 @@ export async function executeEvmCollectionPlan({
         if (receipt.status !== "success") {
           const message = "交易已上链，但执行状态为失败";
           emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
-          storeOperationResults(results, operation, "failed", message, hash, submittedAmount);
+          storeOperationResults(results, operation, "failed", message, hash, submittedAmount, true);
           continue;
         }
         const message = signer.asset.standard === "native"
@@ -1571,6 +1594,6 @@ export async function executeEvmCollectionPlan({
   }
 
   return plan.map((item, index) => (
-    results[index] || resultFromPlanItem(item, "failed", "归集结果未能生成，请重新扫描后再试")
+    results[index] || resultFromPlanItem(item, "failed", "归集结果未能生成，请重新执行", null, true)
   ));
 }

@@ -16,17 +16,19 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { CollectionResults } from "../components/CollectionResults";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { NftAssetInput } from "../components/NftAssetInput";
 import { NftInventoryReview } from "../components/NftInventoryReview";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
-import { SecretKeyInput, type SecretKeyInputHandle } from "../components/SecretKeyInput";
+import {
+  SecretKeyInput,
+  type SecretKeyInputHandle,
+  type WalletExecutionItem
+} from "../components/SecretKeyInput";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
   ConfirmActionDialog,
   ExecutionProgress,
-  ReviewPanel,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
@@ -36,16 +38,19 @@ import {
   parseEvmCollectionAssets,
   parseEvmPrivateKeyInput,
   planEvmCollection,
-  preflightEvmCollectionPlan,
   readErc20Metadata,
   type EvmCollectionAccount,
   type EvmCollectionAsset,
-  type EvmCollectionPreflightResult,
   type EvmCollectionPlanItem,
   type EvmCollectionProgress,
   type EvmCollectionResult,
   type EvmCollectionStandard
 } from "../lib/evm-collection";
+import { resolveCollectionAmount, type CollectionAmountPolicy } from "../lib/collection-amount";
+import {
+  mapWithCollectionConcurrency,
+  waitForCollectionDelay
+} from "../lib/collection-execution";
 import {
   assertEvmRpcNetwork,
   createEvmPublicClient,
@@ -74,6 +79,7 @@ import {
 } from "../lib/erc721-transfer-discovery";
 import { mergeNftAssetInput } from "../lib/nft-asset-input";
 import { inspectNftContract, type NftContractInspection } from "../lib/nft-contract-inspection";
+import { getPreferredRpcEndpoint, isRpcEndpoint, rememberRpcEndpoint } from "../lib/rpc-preferences";
 
 type CollectionStage = "editing" | "scanning" | "ready" | "running" | "complete" | "error";
 type NftSourceInputMode = "keys" | "readonly";
@@ -86,10 +92,7 @@ type PendingNftDiscovery = {
   scope?: Erc721TransferDiscoveryScope;
 };
 
-type CollectionPreflightSummary = Pick<
-  EvmCollectionPreflightResult,
-  "estimatedNetworkFee" | "executableTransactions"
->;
+type AmountMode = CollectionAmountPolicy["mode"];
 
 type Erc20TokenPreview = {
   address: Address;
@@ -176,11 +179,18 @@ export function getEvmCollectionWorkbenchStatus(
 const evmStatusLabels: Record<WorkbenchStatus, string> = {
   editing: "编辑中",
   error: "需要处理",
-  preflight: "预检中",
+  preflight: "检查中",
   ready: "等待确认",
   running: "执行中",
   success: "已完成",
   uncertain: "需核对链上状态"
+};
+
+const amountModeLabels: Record<AmountMode, string> = {
+  all: "全部数量",
+  fixed: "固定数量",
+  percentage: "百分比数量",
+  random: "随机数量"
 };
 
 function shorten(value: string, edge = 6) {
@@ -250,6 +260,91 @@ function formatBalanceForDisplay(value: bigint, decimals: number) {
   const [whole, fraction = ""] = formatted.split(".");
   const compactFraction = fraction.slice(0, 8).replace(/0+$/u, "");
   return compactFraction ? `${whole}.${compactFraction}` : whole;
+}
+
+function parsePercentageBps(value: string) {
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const bps = BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0"));
+  return bps > 0n && bps <= 10_000n ? bps : null;
+}
+
+function parseEvmAmountPolicy({
+  decimals,
+  fixedAmount,
+  mode,
+  percentageAmount,
+  randomMaximum,
+  randomMinimum
+}: {
+  decimals: number;
+  fixedAmount: string;
+  mode: AmountMode;
+  percentageAmount: string;
+  randomMaximum: string;
+  randomMinimum: string;
+}): CollectionAmountPolicy | null {
+  if (mode === "all") return { mode: "all" };
+  if (mode === "percentage") {
+    const percentageBps = parsePercentageBps(percentageAmount);
+    return percentageBps === null ? null : { mode, percentageBps };
+  }
+  try {
+    if (mode === "fixed") {
+      const amount = parseUnits(fixedAmount.trim(), decimals);
+      return amount > 0n ? { amount, mode } : null;
+    }
+    const minAmount = parseUnits(randomMinimum.trim(), decimals);
+    const maxAmount = parseUnits(randomMaximum.trim(), decimals);
+    return minAmount > 0n && maxAmount >= minAmount ? { maxAmount, minAmount, mode } : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyEvmAmountPolicy(
+  plan: readonly EvmCollectionPlanItem[],
+  nativeDecimals: number,
+  settings: Omit<Parameters<typeof parseEvmAmountPolicy>[0], "decimals">
+) {
+  return plan.map((item) => {
+    if (item.status !== "ready" || (item.asset.standard !== "native" && item.asset.standard !== "erc20")) {
+      return item;
+    }
+    const decimals = item.asset.standard === "native" ? nativeDecimals : item.metadata?.decimals;
+    if (decimals === undefined) {
+      return { ...item, message: "无法确定资产精度，已跳过", status: "failed" as const };
+    }
+    const amountPolicy = parseEvmAmountPolicy({ ...settings, decimals });
+    if (!amountPolicy) {
+      return { ...item, message: "归集数量设置无效", status: "failed" as const };
+    }
+    if (item.asset.standard === "native") {
+      return { ...item, amountPolicy, message: "等待执行时扣除网络费并计算归集数量" };
+    }
+    const resolved = resolveCollectionAmount(item.amount, amountPolicy);
+    if (resolved.status === "skipped") {
+      return { ...item, amount: 0n, message: "代币余额不足以满足归集数量设置，已跳过", status: "skipped" as const };
+    }
+    return { ...item, amount: resolved.amount, amountPolicy, message: "已按数量设置计算归集金额" };
+  });
+}
+
+function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
+  const grouped: Record<string, WalletExecutionItem[]> = {};
+  results.forEach((result) => {
+    const key = result.address.toLowerCase();
+    if (!key || key === "—") return;
+    (grouped[key] ||= []).push({
+      amount: result.amount,
+      asset: result.asset,
+      explorerUrl: result.explorerUrl,
+      hash: result.hash,
+      message: result.message,
+      status: result.status
+    });
+  });
+  return grouped;
 }
 
 function planItemToDisplay(
@@ -347,7 +442,11 @@ export function EvmCollectionPage({
   const networks = useMemo(() => getEvmDistributionNetworks(), []);
   const initialNetwork = useMemo(() => getPreferredEvmDistributionNetwork(networks), [networks]);
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(initialNetwork.id);
-  const [rpcEndpoint, setRpcEndpoint] = useState(initialNetwork.rpcEndpoint);
+  const [rpcEndpoint, setRpcEndpoint] = useState(() => getPreferredRpcEndpoint(
+    "evm",
+    initialNetwork.id,
+    initialNetwork.rpcEndpoint
+  ));
   const [targetAddress, setTargetAddress] = useState("");
   const [erc20AssetInput, setErc20AssetInput] = useState("");
   const [nftAssetInputs, setNftAssetInputs] = useState({ erc721: "", erc1155: "" });
@@ -362,7 +461,14 @@ export function EvmCollectionPage({
   const [discoveryRunning, setDiscoveryRunning] = useState(false);
   const [assetImporting, setAssetImporting] = useState(false);
   const [keyImporting, setKeyImporting] = useState(false);
-  const [keysCleared, setKeysCleared] = useState(false);
+  const [amountMode, setAmountMode] = useState<AmountMode>("all");
+  const [percentageAmount, setPercentageAmount] = useState("100");
+  const [fixedAmount, setFixedAmount] = useState("0.1");
+  const [randomMinimum, setRandomMinimum] = useState("0.01");
+  const [randomMaximum, setRandomMaximum] = useState("0.1");
+  const [concurrency, setConcurrency] = useState("3");
+  const [minimumDelay, setMinimumDelay] = useState("0");
+  const [maximumDelay, setMaximumDelay] = useState("0");
   const [maxFeeAmount, setMaxFeeAmount] = useState("0.01");
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
   const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
@@ -370,7 +476,6 @@ export function EvmCollectionPage({
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
-  const [preflightSummary, setPreflightSummary] = useState<CollectionPreflightSummary | null>(null);
   const [tokenRecognition, setTokenRecognition] = useState<TokenRecognitionState>(emptyTokenRecognitionState);
   const [addressBalances, setAddressBalances] = useState<AddressBalanceState>(emptyAddressBalanceState);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
@@ -379,6 +484,7 @@ export function EvmCollectionPage({
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
   const planRef = useRef<EvmCollectionPlanItem[]>([]);
+  const retryPlanRef = useRef<EvmCollectionPlanItem[]>([]);
   const tokenMetadataCacheRef = useRef(new Map<string, Erc20TokenPreview>());
   const tokenRecognitionRequestRef = useRef(0);
   const selectedNetwork = getEvmNetworkConfig(networkId, networks);
@@ -399,7 +505,6 @@ export function EvmCollectionPage({
     }
     setNftAssetInputs((current) => ({ ...current, [nftStandard]: value }));
   };
-  const readyCount = planRef.current.filter((item) => item.status === "ready").length;
   const parsedAssetCount = useMemo(
     () => parseEvmCollectionAssets(assetInput, standard).validAssets.length,
     [assetInput, standard]
@@ -433,8 +538,7 @@ export function EvmCollectionPage({
   const discoverySourceReady = sourceInputMode === "readonly" ? readonlySourcesReady : sourceKeysReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
-  const readyTransactionCount = preflightSummary?.executableTransactions ?? readyCount;
-  const transactionRunning = stage === "scanning" || stage === "running";
+  const transactionRunning = stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
   const running = operationRunning || assetImporting || keyImporting;
   const hasSubmittedHash = results.some((result) => Boolean(result.hash));
@@ -443,18 +547,8 @@ export function EvmCollectionPage({
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
-  const reviewErrorCount = results.filter((result) => result.status === "error").length;
-  const reviewHasRisk = workbenchStatus === "error" || workbenchStatus === "uncertain" || reviewErrorCount > 0;
-  const reviewShouldOpen = hasSubmittedHash || (reviewHasRisk && results.length > 0);
-  const reviewSummaryLabel = workbenchStatus === "ready" && reviewErrorCount > 0
-    ? `部分通过 · ${reviewErrorCount} 项需处理`
-    : workbenchStatus === "ready"
-      ? `预检通过 · ${readyTransactionCount} 笔`
-      : workbenchStatus === "editing"
-        ? results.length ? `${results.length} 项待查看` : "尚未预检"
-        : workbenchStatus === "success"
-          ? `已完成 · ${results.length} 项`
-          : `${evmStatusLabels[workbenchStatus]}${results.length ? ` · ${results.length} 项` : ""}`;
+  const retryableCount = retryPlanRef.current.length;
+  const walletStatuses = useMemo(() => groupWalletStatuses(results), [results]);
   const networkOptions = useMemo<SearchableSelectOption<EvmDistributionNetworkId>[]>(() => (
     networks.map((network) => ({
       keywords: [String(network.chainId), network.nativeCurrency.symbol],
@@ -477,6 +571,7 @@ export function EvmCollectionPage({
   useEffect(() => {
     const discardSigningPlan = () => {
       planRef.current = [];
+      retryPlanRef.current = [];
     };
     const resetRestoredPage = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
@@ -485,8 +580,8 @@ export function EvmCollectionPage({
       setIssues([]);
       setDiscoveryIssues([]);
       setPendingDiscovery(null);
-      setPreflightSummary(null);
-      setMessage("页面从历史记录恢复，签名材料已清除；请重新扫描");
+      retryPlanRef.current = [];
+      setMessage("页面从历史记录恢复，签名材料已清除；请重新导入来源钱包");
       setStage("editing");
     };
     window.addEventListener("pagehide", discardSigningPlan);
@@ -539,7 +634,7 @@ export function EvmCollectionPage({
       setTokenRecognition({
         items: cachedItems,
         message: truncated
-          ? `已识别前 ${limitedAssets.length} 个 Token；其余将在预检时读取`
+          ? `已识别前 ${limitedAssets.length} 个 Token；其余将在执行时读取`
           : failed ? `${cachedItems.length - failed} 个已识别，${failed} 个读取失败` : `${cachedItems.length} 个 Token 已识别`,
         status: failed === cachedItems.length ? "error" : "ready"
       });
@@ -590,7 +685,7 @@ export function EvmCollectionPage({
           setTokenRecognition({
             items,
             message: truncated
-              ? `已识别前 ${limitedAssets.length} 个 Token；其余将在预检时读取`
+              ? `已识别前 ${limitedAssets.length} 个 Token；其余将在执行时读取`
               : failed ? `${items.length - failed} 个已识别，${failed} 个读取失败` : `${items.length} 个 Token 已识别`,
             status: failed === items.length ? "error" : "ready"
           });
@@ -620,7 +715,7 @@ export function EvmCollectionPage({
   ) => {
     if (operationRef.current || transactionRunning) return;
     planRef.current = [];
-    setPreflightSummary(null);
+    retryPlanRef.current = [];
     if (clearAddressBalances) {
       balanceRequestRef.current += 1;
       setAddressBalances(emptyAddressBalanceState);
@@ -643,7 +738,7 @@ export function EvmCollectionPage({
   const selectNetwork = (value: EvmDistributionNetworkId) => {
     const nextNetwork = getEvmNetworkConfig(value, networks);
     setNetworkId(value);
-    setRpcEndpoint(nextNetwork.rpcEndpoint);
+    setRpcEndpoint(getPreferredRpcEndpoint("evm", value, nextNetwork.rpcEndpoint));
     setPendingDiscovery(null);
     setContractInspection(null);
     rememberPreferredEvmDistributionNetwork(value);
@@ -781,32 +876,38 @@ export function EvmCollectionPage({
     }
   };
 
-  const scanAssets = async (assetInputOverride?: string) => {
-    if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running) return;
-    const gasSettings = gas.gasSettings;
-    operationRef.current = true;
-    setIssues([]);
-    setMessage("");
-    setPreflightSummary(null);
-    planRef.current = [];
-    setResults([]);
-    const inputToScan = assetInputOverride ?? assetInput;
+  const getExecutionSettings = () => {
+    const parsedConcurrency = Number(concurrency);
+    const parsedMinimumDelay = Number(minimumDelay);
+    const parsedMaximumDelay = Number(maximumDelay);
+    if (!Number.isInteger(parsedConcurrency) || parsedConcurrency < 1 || parsedConcurrency > 20
+      || !Number.isFinite(parsedMinimumDelay) || !Number.isFinite(parsedMaximumDelay)
+      || parsedMinimumDelay < 0 || parsedMaximumDelay < parsedMinimumDelay || parsedMaximumDelay > 300) {
+      return null;
+    }
+    return {
+      concurrency: parsedConcurrency,
+      maximumDelayMs: Math.round(parsedMaximumDelay * 1_000),
+      minimumDelayMs: Math.round(parsedMinimumDelay * 1_000)
+    };
+  };
 
+  const validateCollectionInputs = () => {
     const nextIssues: string[] = [];
     if (!isAddress(targetAddress.trim())) nextIssues.push("目标地址不是有效的 EVM 地址");
     else if (getAddress(targetAddress.trim()) === zeroAddress) nextIssues.push("目标地址不能是零地址，以免资产被销毁");
-    if (!effectiveRpcEndpoint) nextIssues.push("请输入可用的 RPC 地址");
-    if (!gasSettings) nextIssues.push("请输入有效的自定义 Gas Price");
+    if (!isRpcEndpoint(effectiveRpcEndpoint)) nextIssues.push("请输入以 http:// 或 https:// 开头的有效 RPC 地址");
+    if (!gas.gasSettings) nextIssues.push("请输入有效的自定义 Gas Price");
     if (parseMaximumFee() === null) nextIssues.push("单笔最大网络费需要是大于 0 的有效金额");
     if (standard === "native" && !nativeCurrencyEnabled) {
       nextIssues.push("当前网络的原生币元数据尚未确认，请填写 Token 合约地址或先确认网络信息");
     }
 
     const parsedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "");
-    if (!parsedAccounts.accounts.length) nextIssues.push("至少需要一个有效的来源钱包私钥");
+    if (!parsedAccounts.accounts.length) nextIssues.push("请勾选至少一个有效的来源钱包");
     parsedAccounts.issues.forEach((issue) => nextIssues.push(`密钥第 ${issue.line} 行：${issue.message}`));
 
-    const parsedAssets = parseEvmCollectionAssets(inputToScan, standard);
+    const parsedAssets = parseEvmCollectionAssets(assetInput, standard);
     if (!parsedAssets.validAssets.length) nextIssues.push("至少需要一个有效的资产条目");
     parsedAssets.rows.forEach((row) => {
       if (row.status !== "valid") nextIssues.push(`资产第 ${row.line} 行：${row.problems.join("；")}`);
@@ -816,88 +917,17 @@ export function EvmCollectionPage({
       assetCount: parsedAssets.validAssets.length,
       standard
     }));
-
-    if (nextIssues.length) {
-      operationRef.current = false;
-      setIssues(nextIssues);
-      setStage("error");
-      setMessage("请修正输入后重新扫描");
-      return;
-    }
-    if (!gasSettings) {
-      operationRef.current = false;
-      return;
-    }
-
-    setStage("scanning");
-    setMessage(`正在通过 ${selectedNetwork.label} RPC 读取资产、模拟交易并预检网络费`);
-
-    try {
-      const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
-      await assertEvmRpcNetwork(publicClient, selectedNetwork);
-      const ownershipPlan = await planEvmCollection({
-        accounts: parsedAccounts.accounts,
-        assets: parsedAssets.validAssets,
-        publicClient
-      });
-      setResults(ownershipPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
-      const target = getAddress(targetAddress.trim());
-      const maxFeePerTransactionWei = parseMaximumFee();
-      if (maxFeePerTransactionWei === null) {
-        throw new Error("单笔最大网络费格式已变化");
-      }
-      const preflight = await preflightEvmCollectionPlan({
-        gasSettings,
-        maxFeePerTransactionWei,
-        onProgress: (progress) => {
-          if (progress.stage === "simulating" || progress.stage === "estimating") {
-            setMessage(
-              "正在预检 " + (progress.index + 1) + "/" + progress.total
-                + " 笔归集交易：" + progress.message
-            );
-          }
-        },
-        plan: ownershipPlan,
-        publicClient,
-        targetAddress: target
-      });
-      const plan = preflight.plan;
-      planRef.current = plan;
-      setPreflightSummary({
-        estimatedNetworkFee: preflight.estimatedNetworkFee,
-        executableTransactions: preflight.executableTransactions
-      });
-      setResults(plan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
-
-      const executable = plan.filter((item) => item.status === "ready").length;
-      const failed = plan.filter((item) => item.status === "failed").length;
-      if (!executable) {
-        planRef.current = [];
-        setPreflightSummary(null);
-        setStage("error");
-        setMessage(failed
-          ? "资产与交易预检完成，但没有可执行项；请查看失败原因"
-          : "所有资产余额为 0 或不属于已导入钱包");
-        return;
-      }
-
-      keyInputRef.current?.clear();
-      setKeysCleared(true);
-      setStage("ready");
-      setMessage(
-        "预检完成：" + executable + " 项可归集，将发送 "
-          + preflight.executableTransactions + " 笔交易"
-          + (plan.length - executable ? "，" + (plan.length - executable) + " 项将跳过或需要修正" : "")
-      );
-    } catch (error) {
-      planRef.current = [];
-      setPreflightSummary(null);
-      setStage("error");
-      const detail = error instanceof Error ? error.message : "RPC 请求失败";
-      setMessage(detail.includes("RPC 网络不匹配") ? detail : "资产扫描或交易预检失败，请检查网络、RPC 与合约地址");
-    } finally {
-      operationRef.current = false;
-    }
+    if (fixedStandard === "erc20" && !parseEvmAmountPolicy({
+      decimals: selectedNetwork.nativeCurrency.decimals,
+      fixedAmount,
+      mode: amountMode,
+      percentageAmount,
+      randomMaximum,
+      randomMinimum
+    })) nextIssues.push("归集数量设置无效，请检查当前数量模式");
+    const executionSettings = getExecutionSettings();
+    if (!executionSettings) nextIssues.push("并发需要为 1–20，随机延迟需要为 0–300 秒且最大值不小于最小值");
+    return { executionSettings, nextIssues, parsedAccounts, parsedAssets };
   };
 
   const addDiscoveredAssets = (discovery: PendingNftDiscovery, allowPartial = false) => {
@@ -918,7 +948,7 @@ export function EvmCollectionPage({
     }
 
     planRef.current = [];
-    setPreflightSummary(null);
+    retryPlanRef.current = [];
     setIssues([]);
     setMessage("");
     setStage("editing");
@@ -1237,36 +1267,53 @@ export function EvmCollectionPage({
     addDiscoveredAssets(pendingDiscovery, allowPartial);
   };
 
-  const executeCollection = async () => {
-    const plan = planRef.current;
-    if (operationRef.current || assetImportingRef.current || keyImportingRef.current
-      || stage !== "ready" || !plan.length || !isAddress(targetAddress.trim())) return;
-
+  const executeCollection = async (retryOnly = false) => {
+    if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running) return;
+    const prepared = validateCollectionInputs();
     const gasSettings = gas.gasSettings;
-    if (!gasSettings) {
-      invalidatePlan(false);
-      setStage("error");
-      setMessage("Gas 设置已变化，请填写有效值后重新扫描");
-      return;
-    }
-    const target = getAddress(targetAddress.trim());
     const maxFeePerTransactionWei = parseMaximumFee();
-    if (maxFeePerTransactionWei === null) {
-      invalidatePlan(false);
+    if (prepared.nextIssues.length || !gasSettings || maxFeePerTransactionWei === null
+      || !prepared.executionSettings || (retryOnly && !retryPlanRef.current.length)) {
+      setIssues(prepared.nextIssues.length ? prepared.nextIssues : ["没有可重试的失败项"]);
       setStage("error");
-      setMessage("单笔最大网络费已变化，请重新扫描");
+      setMessage("请修正设置后再执行，当前钱包与配置均已保留");
       return;
     }
+    const retryPlan = retryPlanRef.current;
+    const target = getAddress(targetAddress.trim());
     operationRef.current = true;
+    retryPlanRef.current = [];
+    setIssues([]);
     setStage("running");
-    setMessage("签名前正在重新检查网络、资产余额、所有权、模拟与 Gas");
-    let executionPlan = plan;
-    let signingStarted = false;
+    setMessage(retryOnly
+      ? "正在重试可安全重试的失败项"
+      : `已确认，正在按并发 ${prepared.executionSettings.concurrency} 执行；余额与网络费会在每笔发送前即时读取`);
+    let executionPlan = retryOnly ? retryPlan : [];
+    const submittedIds = new Set<string>();
+    if (retryOnly) {
+      const retryIds = new Set(retryPlan.map((item) => item.id));
+      setResults((current) => current.map((result, index) => retryIds.has(planRef.current[index]?.id)
+        ? { ...result, hash: undefined, explorerUrl: undefined, message: "等待重试", status: "pending" }
+        : result));
+    } else {
+      setResults(prepared.parsedAccounts.accounts.map((account) => ({
+        address: account.address,
+        amount: "—",
+        asset: fixedStandard === "nft" ? nftStandard.toUpperCase() : standard === "native"
+          ? selectedNetwork.nativeCurrency.symbol
+          : "ERC20",
+        label: account.label,
+        message: "正在读取资产余额",
+        status: "scanning"
+      })));
+    }
 
     const updateProgress = (progress: EvmCollectionProgress) => {
+      if (progress.hash) submittedIds.add(progress.id);
+      const resultIndex = planRef.current.findIndex((item) => item.id === progress.id);
+      if (resultIndex < 0) return;
       setResults((current) => current.map((result, index) => {
-        const planItem = executionPlan[index];
-        if (!planItem || planItem.id !== progress.id) return result;
+        if (index !== resultIndex) return result;
         return {
           ...result,
           ...(progress.hash ? {
@@ -1282,74 +1329,81 @@ export function EvmCollectionPage({
     try {
       const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
       await assertEvmRpcNetwork(publicClient, selectedNetwork);
-      const freshInputs = getCollectionPlanInputs(plan);
-      const freshOwnershipPlan = await planEvmCollection({
-        accounts: freshInputs.accounts,
-        assets: freshInputs.assets,
-        publicClient
-      });
-      const freshPreflight = await preflightEvmCollectionPlan({
-        gasSettings,
-        maxFeePerTransactionWei,
-        plan: freshOwnershipPlan,
-        publicClient,
-        targetAddress: target
-      });
-      executionPlan = freshPreflight.plan;
-      setPreflightSummary({
-        estimatedNetworkFee: freshPreflight.estimatedNetworkFee,
-        executableTransactions: freshPreflight.executableTransactions
-      });
-      setResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
-
-      if (hasEvmCollectionPlanDrift(plan, executionPlan)) {
-        setStage("error");
-        setMessage("签名前检查发现资产余额、所有权或可执行交易已变化，已阻止签名；请重新导入密钥并预检");
-        return;
+      if (!retryOnly) {
+        const ownershipPlan = await planEvmCollection({
+          accounts: prepared.parsedAccounts.accounts,
+          assets: prepared.parsedAssets.validAssets,
+          publicClient
+        });
+        executionPlan = fixedStandard === "erc20"
+          ? applyEvmAmountPolicy(ownershipPlan, selectedNetwork.nativeCurrency.decimals, {
+              fixedAmount,
+              mode: amountMode,
+              percentageAmount,
+              randomMaximum,
+              randomMinimum
+            })
+          : ownershipPlan;
+        planRef.current = executionPlan;
+        setResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
       }
-
       const chain = toEvmChain(selectedNetwork, effectiveRpcEndpoint);
-      signingStarted = true;
-      const executionResults = await executeEvmCollectionPlan({
-        gasSettings,
-        getWalletClient: (account) => createWalletClient({
-          account,
-          chain,
-          transport: http(effectiveRpcEndpoint)
-        }),
-        maxFeePerTransactionWei,
-        onProgress: updateProgress,
-        plan: executionPlan,
-        publicClient,
-        targetAddress: target
-      });
-      setResults(executionResults.map((result, index) => (
-        resultToDisplay(
-          executionPlan[index],
-          result,
-          selectedNetwork.nativeCurrency,
-          (hash) => getEvmExplorerUrl(hash, selectedNetwork)
-        )
-      )));
+      const groups = Array.from(executionPlan.reduce((grouped, item) => {
+        const key = item.address?.toLowerCase() || item.id;
+        const group = grouped.get(key) || [];
+        group.push(item);
+        grouped.set(key, group);
+        return grouped;
+      }, new Map<string, EvmCollectionPlanItem[]>()).values());
+      const groupedResults = await mapWithCollectionConcurrency(
+        groups,
+        prepared.executionSettings.concurrency,
+        async (group) => {
+          await waitForCollectionDelay(prepared.executionSettings!);
+          return executeEvmCollectionPlan({
+            gasSettings,
+            getWalletClient: (account) => createWalletClient({
+              account,
+              chain,
+              transport: http(effectiveRpcEndpoint)
+            }),
+            maxFeePerTransactionWei,
+            onProgress: updateProgress,
+            plan: group,
+            publicClient,
+            targetAddress: target
+          });
+        }
+      );
+      const executionResults = groupedResults.flat();
+      const resultById = new Map(executionResults.map((result) => [result.id, result] as const));
+      setResults((current) => planRef.current.map((item, index) => {
+        const result = resultById.get(item.id);
+        return result
+          ? resultToDisplay(
+              item,
+              result,
+              selectedNetwork.nativeCurrency,
+              (hash) => getEvmExplorerUrl(hash, selectedNetwork)
+            )
+          : current[index] || planItemToDisplay(item, selectedNetwork.nativeCurrency);
+      }));
+      retryPlanRef.current = executionPlan.filter((item) => resultById.get(item.id)?.retryable);
       const success = executionResults.filter((result) => result.status === "success").length;
       const failed = executionResults.filter((result) => result.status === "failed").length;
       setStage("complete");
-      setMessage(`执行结束：${success} 笔确认成功${failed ? `，${failed} 笔失败` : ""}。来源密钥已从页面清除。`);
-    } catch {
+      setMessage(`执行结束：${success} 项确认成功${failed ? `，${failed} 项失败` : ""}`
+        + (retryPlanRef.current.length ? `；${retryPlanRef.current.length} 项可直接重试` : ""));
+    } catch (error) {
+      retryPlanRef.current = executionPlan.filter((item) => item.status === "ready" && !submittedIds.has(item.id));
       setStage("error");
-      setMessage(signingStarted
-        ? "归集流程意外中断；来源密钥已清除，请先按已显示的交易哈希核对链上状态，再决定是否创建新任务"
-        : "签名前复检失败，未请求任何签名；请检查网络、余额、所有权与 Gas 后重新预检");
+      const detail = error instanceof Error ? error.message : "RPC 请求失败";
+      setMessage(detail.includes("RPC 网络不匹配")
+        ? detail
+        : "归集流程中断，钱包与设置均已保留，可直接重试；已显示哈希的项目请先核对链上状态");
     } finally {
       operationRef.current = false;
-      planRef.current = [];
-      setPreflightSummary(null);
     }
-  };
-
-  const focusKeyInput = () => {
-    if (fixedStandard === "nft") setSourceInputMode("keys");
-    window.requestAnimationFrame(() => keyInputRef.current?.focus());
   };
 
   const resetTask = () => {
@@ -1357,6 +1411,7 @@ export function EvmCollectionPage({
     balanceRequestRef.current += 1;
     tokenRecognitionRequestRef.current += 1;
     planRef.current = [];
+    retryPlanRef.current = [];
     setErc20AssetInput("");
     setNftAssetInputs({ erc721: "", erc1155: "" });
     setDiscoveryContract("");
@@ -1370,15 +1425,35 @@ export function EvmCollectionPage({
     setNftInputResetNonce((current) => current + 1);
     setTargetAddress("");
     setMaxFeeAmount("0.01");
+    setAmountMode("all");
+    setPercentageAmount("100");
+    setFixedAmount("0.1");
+    setRandomMinimum("0.01");
+    setRandomMaximum("0.1");
+    setConcurrency("3");
+    setMinimumDelay("0");
+    setMaximumDelay("0");
     setResults([]);
     setAddressBalances(emptyAddressBalanceState);
     setTokenRecognition(emptyTokenRecognitionState);
-    setKeysCleared(false);
-    setPreflightSummary(null);
     setIssues([]);
     setMessage("");
     setStage("editing");
   };
+
+  const amountPolicyValid = fixedStandard === "nft" || Boolean(parseEvmAmountPolicy({
+    decimals: selectedNetwork.nativeCurrency.decimals,
+    fixedAmount,
+    mode: amountMode,
+    percentageAmount,
+    randomMaximum,
+    randomMinimum
+  }));
+  const executionSettingsValid = getExecutionSettings() !== null;
+  const rpcEndpointValid = isRpcEndpoint(effectiveRpcEndpoint);
+  const canStart = targetIsValid && sourceKeyLineCount > 0 && parsedAssetCount > 0
+    && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
+    && executionSettingsValid && rpcEndpointValid && !running;
 
   return (
     <ToolPageLayout
@@ -1390,7 +1465,7 @@ export function EvmCollectionPage({
             confirmLabel="清空任务"
             description={hasSubmittedHash
               ? "当前结果包含已提交的交易哈希。清空前请先核对链上状态；清空后本页记录无法恢复。"
-              : "来源密钥、资产清单和当前预检结果将从页面清除。"}
+              : "来源密钥、资产清单和当前执行状态将从页面清除。"}
             disabled={running}
             onConfirm={resetTask}
             title="清空当前归集任务？"
@@ -1411,45 +1486,40 @@ export function EvmCollectionPage({
           className="collection-workbench-panel"
           footer={(
             <div className="actions collection-actions">
-              {stage === "ready" ? (
+              {stage === "running" ? (
+                <Button disabled type="button">归集中</Button>
+              ) : retryableCount ? (
+                <ConfirmActionDialog
+                  confirmLabel={`重试 ${retryableCount} 个失败项`}
+                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                  disabled={running}
+                  onConfirm={() => executeCollection(true)}
+                  title="确认重试失败项？"
+                  triggerLabel={`重试失败项 (${retryableCount})`}
+                  triggerVariant="outline"
+                />
+              ) : hasSubmittedHash ? (
+                <Button disabled type="button">本次任务已结束</Button>
+              ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
                   description={(
                     <div className="summary-list">
                       <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                      <div><span>目标地址</span><strong className="mono">{targetAddress}</strong></div>
-                      <div><span>归集资产</span><strong>{readyCount} 项</strong></div>
-                      <div><span>预计交易</span><strong>{readyTransactionCount} 笔</strong></div>
-                      {preflightSummary ? (
-                        <div>
-                          <span>预检网络费</span>
-                          <strong>
-                            {formatUnits(
-                              preflightSummary.estimatedNetworkFee,
-                              selectedNetwork.nativeCurrency.decimals
-                            )} {selectedNetwork.nativeCurrency.symbol}
-                          </strong>
-                        </div>
-                      ) : null}
-                      <div>
-                        <span>单笔网络费预算上限</span>
-                        <strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong>
-                      </div>
+                      <div><span>目标地址</span><strong className="mono">{targetAddress || "—"}</strong></div>
+                      <div><span>来源钱包</span><strong>{sourceKeyLineCount} 个已选择</strong></div>
+                      <div><span>资产项</span><strong>{parsedAssetCount}</strong></div>
+                      {fixedStandard === "erc20" ? <div><span>归集数量</span><strong>{amountModeLabels[amountMode]}</strong></div> : null}
+                      <div><span>并发</span><strong>{concurrency}</strong></div>
+                      <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
+                      <div><span>单笔网络费预算上限</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
                     </div>
                   )}
-                  disabled={running}
-                  onConfirm={executeCollection}
+                  disabled={!canStart}
+                  onConfirm={() => executeCollection(false)}
                   title="确认 EVM 归集？"
                   triggerLabel="确认并开始归集"
                 />
-              ) : stage === "scanning" || stage === "running" ? (
-                <Button disabled type="button">{stage === "scanning" ? "预检中" : "归集中"}</Button>
-              ) : hasSubmittedHash ? (
-                <Button disabled type="button">请先核对链上结果</Button>
-              ) : keysCleared ? (
-                <Button onClick={focusKeyInput} type="button">重新导入来源密钥</Button>
-              ) : (
-                <Button disabled={running || !gas.gasSettings} onClick={() => void scanAssets()} type="button">预检资产与费用</Button>
               )}
             </div>
           )}
@@ -1461,7 +1531,6 @@ export function EvmCollectionPage({
                 disabled={controlsLocked || assetImporting}
                 mode="evm"
                 onDirty={(reason, address) => {
-                  setKeysCleared(false);
                   if (reason === "remove" && address) {
                     setAddressBalances((current) => ({
                       ...current,
@@ -1474,7 +1543,59 @@ export function EvmCollectionPage({
                 onLineCountChange={setSourceKeyLineCount}
                 ref={keyInputRef}
                 walletBalances={walletBalances}
+                walletStatuses={walletStatuses}
               />
+            ) : null}
+
+            {fixedStandard === "erc20" ? (
+              <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                <FieldLabel>归集数量</FieldLabel>
+                <Tabs
+                  onValueChange={(value) => {
+                    setAmountMode(value as AmountMode);
+                    invalidatePlan();
+                  }}
+                  value={amountMode}
+                >
+                  <TabsList aria-label="EVM 归集数量模式">
+                    {Object.entries(amountModeLabels).map(([value, label]) => (
+                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                {amountMode === "percentage" ? (
+                  <Input
+                    aria-label="归集百分比"
+                    disabled={controlsLocked}
+                    inputMode="decimal"
+                    max="100"
+                    min="0.01"
+                    onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
+                    step="0.01"
+                    type="number"
+                    value={percentageAmount}
+                  />
+                ) : amountMode === "fixed" ? (
+                  <Input
+                    aria-label="每钱包每资产固定归集数量"
+                    disabled={controlsLocked}
+                    inputMode="decimal"
+                    min="0"
+                    onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
+                    step="0.000001"
+                    type="number"
+                    value={fixedAmount}
+                  />
+                ) : amountMode === "random" ? (
+                  <div className="amount-grid">
+                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
+                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
+                  </div>
+                ) : (
+                  <FieldDescription>Token 归集全部余额；原生币会自动扣除网络费并保留安全余量。</FieldDescription>
+                )}
+                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+              </Field>
             ) : null}
 
             {fixedStandard === "nft" ? (
@@ -1523,12 +1644,12 @@ export function EvmCollectionPage({
                       disabled={controlsLocked || assetImporting}
                       mode="evm"
                       onDirty={() => {
-                        setKeysCleared(false);
                         invalidatePlan();
                       }}
                       onImportingChange={handleKeyImportingChange}
                       onLineCountChange={setSourceKeyLineCount}
                       ref={keyInputRef}
+                      walletStatuses={walletStatuses}
                     />
                   </TabsContent>
                 </Tabs>
@@ -1870,11 +1991,13 @@ export function EvmCollectionPage({
                   value={networkId}
                 />
               </Field>
-              <Field>
+              <Field data-invalid={!rpcEndpointValid ? true : undefined}>
                 <FieldLabel htmlFor="evm-collection-rpc">RPC</FieldLabel>
                 <Input
+                  aria-invalid={!rpcEndpointValid ? true : undefined}
                   disabled={controlsLocked}
                   id="evm-collection-rpc"
+                  onBlur={() => rememberRpcEndpoint("evm", networkId, rpcEndpoint)}
                   onChange={(event) => {
                     setRpcEndpoint(event.target.value);
                     setPendingDiscovery(null);
@@ -1885,7 +2008,8 @@ export function EvmCollectionPage({
                   type="url"
                   value={rpcEndpoint}
                 />
-                <FieldDescription className="sr-only">读写均使用此 RPC</FieldDescription>
+                <FieldDescription>修改后自动保存在当前浏览器，并优先用于此网络。</FieldDescription>
+                {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
               </Field>
             </div>
 
@@ -1909,6 +2033,31 @@ export function EvmCollectionPage({
               />
               {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
             </Field>
+
+            <div className="field-row">
+              <Field>
+                <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
+                <Input
+                  disabled={controlsLocked}
+                  id="evm-collection-concurrency"
+                  inputMode="numeric"
+                  max="20"
+                  min="1"
+                  onChange={(event) => { setConcurrency(event.target.value); invalidatePlan(); }}
+                  step="1"
+                  type="number"
+                  value={concurrency}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>随机延迟（秒）</FieldLabel>
+                <div className="amount-grid">
+                  <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
+                  <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
+                </div>
+              </Field>
+            </div>
+            {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
             <EvmGasSettings
               disabled={controlsLocked}
@@ -1941,32 +2090,11 @@ export function EvmCollectionPage({
               <ExecutionProgress
                 current={completedResultCount}
                 label="EVM 归集进度"
-                total={readyTransactionCount || results.length}
+                total={results.length}
               />
             ) : null}
           </div>
         </WorkbenchPanel>
-
-        <ReviewPanel
-          autoOpen={reviewShouldOpen}
-          className="collection-results-panel"
-          stateKey={`${stage}:${reviewHasRisk ? "risk" : "safe"}:${hasSubmittedHash ? "submitted" : "local"}`}
-          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
-          title="预检与结果"
-        >
-          <CollectionResults
-            embedded
-            emptyMessage="预检后显示资产与交易。"
-            emptyTitle="等待预检"
-            exportFilename={currentToolId + "-results.csv"}
-            results={results}
-            title={fixedStandard === "nft"
-              ? "NFT 归集结果"
-              : standard === "native"
-                ? `${selectedNetwork.nativeCurrency.symbol} 归集结果`
-                : "ERC20 归集结果"}
-          />
-        </ReviewPanel>
       </div>
     </ToolPageLayout>
   );

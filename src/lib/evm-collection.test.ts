@@ -482,9 +482,9 @@ describe("executeEvmCollectionPlan", () => {
       expect(preflight).toMatchObject({
         estimatedNetworkFee: 1_200n,
         executableTransactions: 1,
-        plan: [{ amount: 998_800n, status: "ready" }]
+        plan: [{ amount: 997_600n, status: "ready" }]
       });
-      expect(preflight.plan[0].message).toContain("原生币归集预检");
+      expect(preflight.plan[0].message).toContain("安全余量");
       expect(estimateGas).toHaveBeenCalledTimes(2);
       expect(simulateContract).not.toHaveBeenCalled();
     });
@@ -579,14 +579,14 @@ describe("executeEvmCollectionPlan", () => {
     const item = {
       account: account.account,
       address: account.address,
-      amount: 998_800n,
+      amount: 997_600n,
       asset,
       id: "native-plan",
       label: account.label,
       message: "ready",
       status: "ready"
     } satisfies EvmCollectionPlanItem;
-    const { client: publicClient, estimateGas, simulateContract } = makePublicClient();
+    const { client: publicClient, estimateGas, getBalance, simulateContract } = makePublicClient();
     const { client: walletClient, sendTransaction, writeContract } = makeWalletClient();
 
     const [result] = await executeEvmCollectionPlan({
@@ -598,7 +598,7 @@ describe("executeEvmCollectionPlan", () => {
     });
 
     expect(result).toMatchObject({
-      amount: 998_800n,
+      amount: 997_600n,
       hash: transactionHash,
       status: "success"
     });
@@ -606,8 +606,10 @@ describe("executeEvmCollectionPlan", () => {
       gas: 120n,
       gasPrice: 10n,
       to: getAddress(targetAddress),
-      value: 998_800n
+      value: 997_600n
     }));
+    expect(997_600n + 120n * 10n).toBeLessThan(1_000_000n);
+    expect(getBalance).toHaveBeenCalledWith({ address: account.address, blockTag: "pending" });
     expect(estimateGas).toHaveBeenCalledTimes(2);
     expect(simulateContract).not.toHaveBeenCalled();
     expect(writeContract).not.toHaveBeenCalled();

@@ -361,7 +361,8 @@ describe("collectSolFromSources", () => {
     });
 
     expect(results).toMatchObject([{
-      message: "交易已提交但确认失败，请先查链上状态，勿盲目重发",
+      message: "交易已确认执行失败，可直接重试该钱包",
+      retryable: true,
       signature: expect.any(String),
       status: "error",
       transferLamports: 85_000n
