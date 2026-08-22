@@ -851,6 +851,27 @@
   gap: 0.65rem;
 }
 
+.collection-config-heading {
+  margin: 0.15rem 0 -0.15rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+  color: color-mix(in oklab, var(--foreground) 88%, var(--muted-foreground));
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.execution-settings-row {
+  grid-template-columns: minmax(7.5rem, 0.65fr) minmax(15rem, 1.35fr);
+  align-items: end;
+}
+
+.compact-range {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
 .generator-amount-grid[data-mode="fixed"] {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -2062,6 +2083,14 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .execution-settings-row {
+    grid-template-columns: minmax(6.5rem, 0.65fr) minmax(0, 1.35fr);
+  }
+
+  .compact-range {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .generator-heading,
   .collection-result-toolbar,
   .actions {
@@ -2133,6 +2162,10 @@
 }
 
 @media (max-width: 30rem) {
+  .execution-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .secret-import-textarea {
     min-height: 12rem;
     max-height: 42vh;

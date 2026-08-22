@@ -3,7 +3,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -484,29 +484,7 @@ export function SolCollectionPage() {
               walletStatuses={walletStatuses}
             />
 
-            <Field data-invalid={!amountPolicyValid ? true : undefined}>
-              <FieldLabel>归集数量</FieldLabel>
-              <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
-                <TabsList aria-label="SOL 归集数量模式">
-                  {Object.entries(amountModeLabels).map(([value, label]) => (
-                    <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              {amountMode === "percentage" ? (
-                <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
-              ) : amountMode === "fixed" ? (
-                <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
-              ) : amountMode === "random" ? (
-                <div className="amount-grid">
-                  <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
-                  <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
-                </div>
-              ) : (
-                <FieldDescription>归集可用余额，并自动扣除网络费与保留金额。</FieldDescription>
-              )}
-              {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
-            </Field>
+            <h3 className="collection-config-heading">归集配置</h3>
 
             <Field>
               <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
@@ -527,6 +505,28 @@ export function SolCollectionPage() {
               />
             </Field>
 
+            <Field data-invalid={!amountPolicyValid ? true : undefined}>
+              <FieldLabel>归集数量</FieldLabel>
+              <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
+                <TabsList aria-label="SOL 归集数量模式">
+                  {Object.entries(amountModeLabels).map(([value, label]) => (
+                    <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+              {amountMode === "percentage" ? (
+                <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
+              ) : amountMode === "fixed" ? (
+                <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
+              ) : amountMode === "random" ? (
+                <div className="amount-grid">
+                  <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
+                  <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                </div>
+              ) : null}
+              {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+            </Field>
+
             <AdvancedSettings disabled={controlsLocked} label="RPC、保留金额与执行设置">
               <Field data-invalid={!rpcEndpointValid ? true : undefined}>
                 <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
@@ -540,7 +540,6 @@ export function SolCollectionPage() {
                   type="url"
                   value={rpcEndpoint}
                 />
-                <FieldDescription>修改后自动保存在当前浏览器，并优先用于此网络。</FieldDescription>
                 {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
               </Field>
               <div className="field-row">
@@ -553,14 +552,14 @@ export function SolCollectionPage() {
                   <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
                 </Field>
               </div>
-              <div className="field-row">
+              <div className="field-row execution-settings-row">
                 <Field>
                   <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
                   <Input disabled={controlsLocked} id="sol-collection-concurrency" inputMode="numeric" max="20" min="1" onChange={(event) => { setConcurrency(event.target.value); invalidateTask(); }} step="1" type="number" value={concurrency} />
                 </Field>
                 <Field>
                   <FieldLabel>随机延迟（秒）</FieldLabel>
-                  <div className="amount-grid">
+                  <div className="amount-grid compact-range">
                     <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
                     <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
                   </div>

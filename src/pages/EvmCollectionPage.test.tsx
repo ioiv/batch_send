@@ -63,6 +63,7 @@ vi.mock("../lib/erc721-discovery", async (importOriginal) => {
 
 import {
   EvmCollectionPage,
+  getDefaultEvmCollectionFeeCap,
   getEvmCollectionWorkbenchStatus,
   hasEvmCollectionPlanDrift
 } from "./EvmCollectionPage";
@@ -227,6 +228,22 @@ async function discoverNft() {
   return user;
 }
 
+describe("EVM collection fee protection defaults", () => {
+  const network = (chainId: number, symbol: string) => ({
+    chainId,
+    nativeCurrency: { decimals: 18, name: symbol, symbol }
+  });
+
+  it("uses chain-aware caps and safe symbol fallbacks", () => {
+    expect(getDefaultEvmCollectionFeeCap(network(1, "ETH"))).toBe("0.01");
+    expect(getDefaultEvmCollectionFeeCap(network(8453, "ETH"))).toBe("0.003");
+    expect(getDefaultEvmCollectionFeeCap(network(137, "POL"))).toBe("0.1");
+    expect(getDefaultEvmCollectionFeeCap(network(999_001, "POL"))).toBe("0.1");
+    expect(getDefaultEvmCollectionFeeCap(network(999_002, "xDAI"))).toBe("0.05");
+    expect(getDefaultEvmCollectionFeeCap(network(999_003, "NEW"))).toBe("0.01");
+  });
+});
+
 describe("EvmCollectionPage workbench", () => {
   it("keeps the optional Token list compact and defaults a blank list to the native asset", async () => {
     const user = userEvent.setup();
@@ -248,7 +265,8 @@ describe("EvmCollectionPage workbench", () => {
     }));
   });
 
-  it("orders wallet import, Token recognition, balances and the moved target before network settings", () => {
+  it("orders wallet import, Token recognition and balances before compact network settings", async () => {
+    const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     const walletImport = screen.getByRole("button", { name: "导入钱包" });
@@ -256,8 +274,8 @@ describe("EvmCollectionPage workbench", () => {
     const assets = screen.getByRole("textbox", { name: "Token 清单" });
     const addressBalanceControl = screen.getByLabelText("地址余额查询");
     const networkAndRpc = screen.getByLabelText("网络与 RPC");
-    const maximumFee = screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ });
     const gasSettings = screen.getByLabelText("Gas 设置");
+    const feeProtection = screen.getByRole("button", { name: /高级网络费保护/ });
 
     expect(within(networkAndRpc).getByRole("combobox")).toBeVisible();
     expect(within(networkAndRpc).getByRole("textbox", { name: "RPC" }))
@@ -269,8 +287,12 @@ describe("EvmCollectionPage workbench", () => {
     expect(addressBalanceControl.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(target.compareDocumentPosition(networkAndRpc) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(assets.compareDocumentPosition(networkAndRpc) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(networkAndRpc.compareDocumentPosition(maximumFee) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(maximumFee.compareDocumentPosition(gasSettings) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(networkAndRpc.compareDocumentPosition(gasSettings) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(gasSettings.compareDocumentPosition(feeProtection) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByRole("spinbutton", { name: /单笔最高网络费/ })).not.toBeInTheDocument();
+
+    await user.click(feeProtection);
+    expect(screen.getByRole("spinbutton", { name: /单笔最高网络费/ })).toHaveValue(0.01);
   });
 
   it("automatically resolves Token symbols and queries balances for selected source addresses", async () => {
@@ -372,7 +394,8 @@ describe("EvmCollectionPage workbench", () => {
         mode: "custom"
       }
     }));
-    expect(screen.getByRole("spinbutton", { name: /单笔网络费预算上限/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /高级网络费保护/ }));
+    expect(screen.getByRole("spinbutton", { name: /单笔最高网络费/ })).toBeInTheDocument();
   });
 
   it("blocks direct confirmation while the custom Gas Price is invalid", async () => {

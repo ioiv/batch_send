@@ -27,6 +27,7 @@ import {
 } from "../components/SecretKeyInput";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
+  AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
   WorkbenchPanel
@@ -61,6 +62,7 @@ import {
   isEvmNativeCurrencyEnabled,
   rememberPreferredEvmDistributionNetwork,
   toEvmChain,
+  type EvmChainConfig,
   type EvmDistributionNetworkId,
   type EvmNativeCurrency
 } from "../lib/evm";
@@ -223,6 +225,39 @@ function parsePositiveFeeAmount(value: string, decimals: number) {
   } catch {
     return null;
   }
+}
+
+const defaultCollectionFeeCapByChainId: Readonly<Record<number, string>> = {
+  1: "0.01",
+  10: "0.003",
+  56: "0.01",
+  100: "0.05",
+  137: "0.1",
+  143: "0.01",
+  999: "0.01",
+  4663: "0.003",
+  8453: "0.003",
+  10143: "0.05",
+  42161: "0.003",
+  43113: "0.05",
+  43114: "0.01",
+  80002: "0.5",
+  84532: "0.01",
+  421614: "0.01",
+  560048: "0.05",
+  11155111: "0.05",
+  11155420: "0.01"
+};
+
+export function getDefaultEvmCollectionFeeCap(
+  network: Pick<EvmChainConfig, "chainId" | "nativeCurrency">
+) {
+  const configured = defaultCollectionFeeCapByChainId[network.chainId];
+  if (configured) return configured;
+  const symbol = network.nativeCurrency.symbol.toUpperCase();
+  if (symbol === "POL") return "0.1";
+  if (symbol === "XDAI") return "0.05";
+  return "0.01";
 }
 
 function getAssetName(item: EvmCollectionPlanItem, nativeCurrency: EvmNativeCurrency) {
@@ -469,7 +504,7 @@ export function EvmCollectionPage({
   const [concurrency, setConcurrency] = useState("3");
   const [minimumDelay, setMinimumDelay] = useState("0");
   const [maximumDelay, setMaximumDelay] = useState("0");
-  const [maxFeeAmount, setMaxFeeAmount] = useState("0.01");
+  const [maxFeeAmount, setMaxFeeAmount] = useState(() => getDefaultEvmCollectionFeeCap(initialNetwork));
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
   const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
@@ -537,6 +572,7 @@ export function EvmCollectionPage({
   const readonlySourcesReady = readonlySourceCount > 0 && readonlySourceIssueCount === 0;
   const discoverySourceReady = sourceInputMode === "readonly" ? readonlySourcesReady : sourceKeysReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
+  const defaultMaximumFeeAmount = getDefaultEvmCollectionFeeCap(selectedNetwork);
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const transactionRunning = stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
@@ -739,6 +775,7 @@ export function EvmCollectionPage({
     const nextNetwork = getEvmNetworkConfig(value, networks);
     setNetworkId(value);
     setRpcEndpoint(getPreferredRpcEndpoint("evm", value, nextNetwork.rpcEndpoint));
+    setMaxFeeAmount(getDefaultEvmCollectionFeeCap(nextNetwork));
     setPendingDiscovery(null);
     setContractInspection(null);
     rememberPreferredEvmDistributionNetwork(value);
@@ -1424,7 +1461,7 @@ export function EvmCollectionPage({
     setNftStandard("erc721");
     setNftInputResetNonce((current) => current + 1);
     setTargetAddress("");
-    setMaxFeeAmount("0.01");
+    setMaxFeeAmount(defaultMaximumFeeAmount);
     setAmountMode("all");
     setPercentageAmount("100");
     setFixedAmount("0.1");
@@ -1512,7 +1549,7 @@ export function EvmCollectionPage({
                       {fixedStandard === "erc20" ? <div><span>归集数量</span><strong>{amountModeLabels[amountMode]}</strong></div> : null}
                       <div><span>并发</span><strong>{concurrency}</strong></div>
                       <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
-                      <div><span>单笔网络费预算上限</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                      <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
                     </div>
                   )}
                   disabled={!canStart}
@@ -1545,57 +1582,6 @@ export function EvmCollectionPage({
                 walletBalances={walletBalances}
                 walletStatuses={walletStatuses}
               />
-            ) : null}
-
-            {fixedStandard === "erc20" ? (
-              <Field data-invalid={!amountPolicyValid ? true : undefined}>
-                <FieldLabel>归集数量</FieldLabel>
-                <Tabs
-                  onValueChange={(value) => {
-                    setAmountMode(value as AmountMode);
-                    invalidatePlan();
-                  }}
-                  value={amountMode}
-                >
-                  <TabsList aria-label="EVM 归集数量模式">
-                    {Object.entries(amountModeLabels).map(([value, label]) => (
-                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
-                    ))}
-                  </TabsList>
-                </Tabs>
-                {amountMode === "percentage" ? (
-                  <Input
-                    aria-label="归集百分比"
-                    disabled={controlsLocked}
-                    inputMode="decimal"
-                    max="100"
-                    min="0.01"
-                    onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
-                    step="0.01"
-                    type="number"
-                    value={percentageAmount}
-                  />
-                ) : amountMode === "fixed" ? (
-                  <Input
-                    aria-label="每钱包每资产固定归集数量"
-                    disabled={controlsLocked}
-                    inputMode="decimal"
-                    min="0"
-                    onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
-                    step="0.000001"
-                    type="number"
-                    value={fixedAmount}
-                  />
-                ) : amountMode === "random" ? (
-                  <div className="amount-grid">
-                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
-                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
-                  </div>
-                ) : (
-                  <FieldDescription>Token 归集全部余额；原生币会自动扣除网络费并保留安全余量。</FieldDescription>
-                )}
-                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
-              </Field>
             ) : null}
 
             {fixedStandard === "nft" ? (
@@ -1973,6 +1959,8 @@ export function EvmCollectionPage({
               </>
             )}
 
+            <h3 className="collection-config-heading">归集配置</h3>
+
             <div className="evm-network-row" aria-label="网络与 RPC">
               <Field>
                 <div className="evm-network-label-row">
@@ -2008,33 +1996,60 @@ export function EvmCollectionPage({
                   type="url"
                   value={rpcEndpoint}
                 />
-                <FieldDescription>修改后自动保存在当前浏览器，并优先用于此网络。</FieldDescription>
                 {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
               </Field>
             </div>
 
-            <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
-              <FieldLabel htmlFor="evm-collection-max-fee">
-                单笔网络费预算上限（{selectedNetwork.nativeCurrency.symbol}）
-              </FieldLabel>
-              <Input
-                aria-invalid={maximumFeeAmount === null ? true : undefined}
-                disabled={controlsLocked}
-                id="evm-collection-max-fee"
-                inputMode="decimal"
-                min="0"
-                onChange={(event) => {
-                  setMaxFeeAmount(event.target.value);
-                  invalidatePlan();
-                }}
-                step="0.000001"
-                type="number"
-                value={maxFeeAmount}
-              />
-              {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
-            </Field>
+            {fixedStandard === "erc20" ? (
+              <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                <FieldLabel>归集数量</FieldLabel>
+                <Tabs
+                  onValueChange={(value) => {
+                    setAmountMode(value as AmountMode);
+                    invalidatePlan();
+                  }}
+                  value={amountMode}
+                >
+                  <TabsList aria-label="EVM 归集数量模式">
+                    {Object.entries(amountModeLabels).map(([value, label]) => (
+                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                {amountMode === "percentage" ? (
+                  <Input
+                    aria-label="归集百分比"
+                    disabled={controlsLocked}
+                    inputMode="decimal"
+                    max="100"
+                    min="0.01"
+                    onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
+                    step="0.01"
+                    type="number"
+                    value={percentageAmount}
+                  />
+                ) : amountMode === "fixed" ? (
+                  <Input
+                    aria-label="每钱包每资产固定归集数量"
+                    disabled={controlsLocked}
+                    inputMode="decimal"
+                    min="0"
+                    onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
+                    step="0.000001"
+                    type="number"
+                    value={fixedAmount}
+                  />
+                ) : amountMode === "random" ? (
+                  <div className="amount-grid">
+                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
+                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
+                  </div>
+                ) : null}
+                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+              </Field>
+            ) : null}
 
-            <div className="field-row">
+            <div className="field-row execution-settings-row">
               <Field>
                 <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
                 <Input
@@ -2051,7 +2066,7 @@ export function EvmCollectionPage({
               </Field>
               <Field>
                 <FieldLabel>随机延迟（秒）</FieldLabel>
-                <div className="amount-grid">
+                <div className="amount-grid compact-range">
                   <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
                   <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
                 </div>
@@ -2064,6 +2079,32 @@ export function EvmCollectionPage({
               gas={gas}
               onSettingsChange={() => invalidatePlan()}
             />
+
+            <AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
+              <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
+                <FieldLabel htmlFor="evm-collection-max-fee">
+                  单笔最高网络费（{selectedNetwork.nativeCurrency.symbol}）
+                </FieldLabel>
+                <Input
+                  aria-invalid={maximumFeeAmount === null ? true : undefined}
+                  disabled={controlsLocked}
+                  id="evm-collection-max-fee"
+                  inputMode="decimal"
+                  min="0"
+                  onChange={(event) => {
+                    setMaxFeeAmount(event.target.value);
+                    invalidatePlan();
+                  }}
+                  step="0.000001"
+                  type="number"
+                  value={maxFeeAmount}
+                />
+                <FieldDescription>
+                  预计单笔网络费超过此值时停止提交；当前网络默认 {defaultMaximumFeeAmount} {selectedNetwork.nativeCurrency.symbol}。
+                </FieldDescription>
+                {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
+              </Field>
+            </AdvancedSettings>
 
             {issues.length ? (
               <Alert variant="destructive">
