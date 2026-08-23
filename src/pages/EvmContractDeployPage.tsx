@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
 import { useEvmGas } from "../hooks/useEvmGas";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { shortenAddress } from "../lib/address";
+import { sanitizeRoundArchiveText } from "../lib/collection-results";
 import {
   createXContractAddress,
   deployDisperseContract,
@@ -90,6 +91,17 @@ type DeploymentPageState = {
   network: EvmChainConfig | null;
   preflight: DisperseDeploymentPreflight | null;
   status: DeploymentPageStatus;
+};
+
+type ArchivedDeploymentRound = {
+  checks: DisperseDeploymentCheck[];
+  explorerUrl: string;
+  hash: string;
+  message: string;
+  networkLabel: string;
+  requiresAcknowledgement: boolean;
+  sequence: number;
+  status: "already-deployed" | "error" | "success";
 };
 
 type DistributionRegistrationState = {
@@ -163,6 +175,8 @@ export function EvmContractDeployPage() {
   const [selectedMetadataCandidateKey, setSelectedMetadataCandidateKey] = useState("");
   const [customNetworkMetadata, setCustomNetworkMetadata] = useState<CustomNetworkMetadataState>(initialCustomNetworkMetadataState);
   const [deploymentState, setDeploymentState] = useState<DeploymentPageState>(initialDeploymentState);
+  const [archivedRound, setArchivedRound] = useState<ArchivedDeploymentRound | null>(null);
+  const [roundSequence, setRoundSequence] = useState(1);
   const [distributionChainName, setDistributionChainName] = useState("");
   const [distributionRegistration, setDistributionRegistration] = useState<DistributionRegistrationState>(initialDistributionRegistrationState);
   const wallet = useEvmWallet();
@@ -206,6 +220,8 @@ export function EvmContractDeployPage() {
   const contextKey = `${wallet.address.toLowerCase()}|${effectiveRpcEndpoint}|${effectiveBlockExplorerUrl}|${manualMetadataOverride}|${nativeMetadataConfirmed}|${selectedMetadataCandidateKey}|${metadataContextKey}|${gasContextKey}`;
   const latestContextKeyRef = useRef(contextKey);
   const operationIdRef = useRef(0);
+  const previousWalletRef = useRef("");
+  const terminalArchivedRef = useRef(false);
   useLayoutEffect(() => {
     latestContextKeyRef.current = contextKey;
   }, [contextKey]);
@@ -238,9 +254,9 @@ export function EvmContractDeployPage() {
     && blockExplorerUrlIsValid
     && Boolean(gas.gasSettings)
     && !busy;
-  const canDeploy = canValidate && status === "ready";
+  const canDeploy = canValidate && status === "ready" && !archivedRound?.requiresAcknowledgement;
   const deploymentComplete = safetyState.deploymentComplete;
-  const configurationLocked = busy || deploymentComplete || submittedButUncertain;
+  const configurationLocked = busy;
   const explorerUrl = hash && network ? getDisperseDeploymentExplorerUrl(hash, network) : "";
   const nativeCurrencyEnabled = network ? isEvmNativeCurrencyEnabled(network) : false;
   const nativeCurrencyMetadata = network ? getEvmNativeCurrencyMetadata(network) : null;
@@ -283,11 +299,50 @@ export function EvmContractDeployPage() {
     operationIdRef.current === operationId && latestContextKeyRef.current === expectedContextKey
   );
 
-  const resetDeploymentState = () => {
+  const clearDeploymentState = () => {
     operationIdRef.current += 1;
     setDeploymentState(initialDeploymentState);
     setDistributionChainName("");
     setDistributionRegistration(initialDistributionRegistrationState);
+  };
+
+  const archiveTerminalRound = () => {
+    const terminalStatus = deploymentState.status;
+    if (terminalArchivedRef.current || (
+      terminalStatus !== "success" && terminalStatus !== "already-deployed" && terminalStatus !== "error"
+    )) return false;
+    terminalArchivedRef.current = true;
+    const archivedNetwork = deploymentState.network;
+    setArchivedRound({
+      checks: deploymentState.checks.map((check) => ({
+        ...check,
+        detail: sanitizeRoundArchiveText(check.detail)
+      })),
+      explorerUrl: deploymentState.hash && archivedNetwork
+        ? getDisperseDeploymentExplorerUrl(deploymentState.hash, archivedNetwork)
+        : "",
+      hash: deploymentState.hash,
+      message: sanitizeRoundArchiveText(deploymentState.message),
+      networkLabel: archivedNetwork ? `${archivedNetwork.label} · ${archivedNetwork.chainId}` : "网络未确认",
+      requiresAcknowledgement: terminalStatus === "error" && Boolean(deploymentState.hash),
+      sequence: roundSequence,
+      status: terminalStatus
+    });
+    setRoundSequence((current) => current + 1);
+    return true;
+  };
+
+  const resetForEdit = () => {
+    if (busy) return;
+    archiveTerminalRound();
+    clearDeploymentState();
+  };
+
+  const clearWorkbench = () => {
+    terminalArchivedRef.current = false;
+    setArchivedRound(null);
+    setRoundSequence(1);
+    clearDeploymentState();
   };
 
   const resetDiscoveredNetwork = () => {
@@ -296,7 +351,7 @@ export function EvmContractDeployPage() {
     setNativeMetadataConfirmed(false);
     setSelectedMetadataCandidateKey("");
     setCustomNetworkMetadata(initialCustomNetworkMetadataState);
-    resetDeploymentState();
+    resetForEdit();
   };
 
   const selectKnownNetwork = (nextNetworkId: EvmDistributionNetworkId) => {
@@ -332,7 +387,7 @@ export function EvmContractDeployPage() {
     setManualMetadataOverride(true);
     setNativeMetadataConfirmed(false);
     setSelectedMetadataCandidateKey("");
-    resetDeploymentState();
+    resetForEdit();
   };
 
   const restoreAutomaticMetadata = () => {
@@ -340,13 +395,13 @@ export function EvmContractDeployPage() {
     setNativeMetadataConfirmed(false);
     setSelectedMetadataCandidateKey("");
     setCustomNetworkMetadata(initialCustomNetworkMetadataState);
-    resetDeploymentState();
+    resetForEdit();
   };
 
   const confirmManualMetadata = () => {
     if (!customMetadataReady) return;
     setNativeMetadataConfirmed(true);
-    resetDeploymentState();
+    resetForEdit();
   };
 
   const selectMetadataCandidate = (candidate: DisperseDeploymentNetworkMetadataCandidate) => {
@@ -359,8 +414,21 @@ export function EvmContractDeployPage() {
     setManualMetadataOverride(true);
     setNativeMetadataConfirmed(true);
     setSelectedMetadataCandidateKey(candidate.key);
-    resetDeploymentState();
+    resetForEdit();
   };
+
+  useEffect(() => {
+    const walletIdentity = `${wallet.connected ? "connected" : "disconnected"}:${wallet.address || ""}`;
+    if (!previousWalletRef.current) {
+      previousWalletRef.current = walletIdentity;
+      return;
+    }
+    if (previousWalletRef.current === walletIdentity) return;
+    previousWalletRef.current = walletIdentity;
+    resetForEdit();
+    // Only wallet identity changes should trigger this effect. Execution-state changes must retain their result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.address, wallet.connected]);
 
   const updateCurrentOperation = (
     operationId: number,
@@ -388,6 +456,8 @@ export function EvmContractDeployPage() {
     const gasSettings = gas.gasSettings;
     if (!wallet.connected || !wallet.address || !walletProvider || !gasSettings) return;
 
+    archiveTerminalRound();
+    terminalArchivedRef.current = false;
     const expectedContextKey = contextKey;
     const operationId = operationIdRef.current + 1;
     operationIdRef.current = operationId;
@@ -583,19 +653,17 @@ export function EvmContractDeployPage() {
         <>
           <EvmGasBadge gas={gas} />
           <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
-          {status !== "idle" ? (
-            <ConfirmActionDialog
-              confirmLabel="新建部署任务"
-              description={hash
-                ? "当前任务已产生交易哈希。请先核验链上状态；清空只会删除本地任务记录，不会撤销交易，也不代表可以安全重试。"
-                : "当前部署校验与本地结果将被清除，网络选择将保留。"}
-              disabled={busy}
-              onConfirm={resetDeploymentState}
-              title="清空并新建部署任务？"
-              triggerLabel="新建部署任务"
-              triggerVariant="destructive"
-            />
-          ) : null}
+          <ConfirmActionDialog
+            confirmLabel="确认清空"
+            description={hash || archivedRound?.hash
+              ? "当前或上一轮包含已提交的交易哈希。清空只会删除本页记录，无法撤销链上交易，且清空后无法恢复。"
+              : "当前部署校验、网络识别结果和上一轮结果将被清除，网络选择会保留。"}
+            disabled={busy}
+            onConfirm={clearWorkbench}
+            title="清空 CreateX 部署工作台？"
+            triggerLabel="清空工作台"
+            triggerVariant="destructive"
+          />
         </>
       )}
       className="page-deploy"
@@ -612,9 +680,9 @@ export function EvmContractDeployPage() {
             <div className="actions">
               <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : status === "ready" ? "部署参数已就绪" : ""}</span>
               <div className="action-group">
-                {safetyState.canRetryValidation ? (
-                  <Button disabled={!canValidate || deploymentComplete} onClick={() => void runValidation()} type="button">
-                    {status === "error" ? "重新校验" : "校验部署条件"}
+                {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
+                  <Button disabled={!canValidate} onClick={() => void runValidation()} type="button">
+                    {status === "idle" ? "校验部署条件" : "重新校验"}
                   </Button>
                 ) : null}
                 {busy ? <Button disabled type="button">{status === "validating" ? "校验中" : status === "awaiting-wallet" ? "等待钱包签名" : "链上验证中"}</Button> : null}
@@ -641,6 +709,13 @@ export function EvmContractDeployPage() {
                     />
                     <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
                   </>
+                ) : null}
+                {deploymentComplete || submittedButUncertain ? (
+                  <span className="collection-terminal-hint">
+                    {submittedButUncertain
+                      ? "可直接编辑或重新校验；首次操作会归档本轮。核对交易状态后才可再次部署。"
+                      : "本轮已结束，直接编辑任一配置即可自动归档并进入下一轮。"}
+                  </span>
                 ) : null}
               </div>
             </div>
@@ -701,7 +776,7 @@ export function EvmContractDeployPage() {
             <EvmGasSettings
               disabled={configurationLocked}
               gas={gas}
-              onSettingsChange={resetDeploymentState}
+              onSettingsChange={resetForEdit}
             />
             {networkSource === "known" ? (
               <Field>
@@ -728,7 +803,7 @@ export function EvmContractDeployPage() {
                 inputMode="url"
                 onChange={(event) => {
                   setBlockExplorerUrl(event.target.value);
-                  resetDeploymentState();
+                  resetForEdit();
                 }}
                 placeholder="https://scan.example.com"
                 spellCheck={false}
@@ -805,7 +880,7 @@ export function EvmContractDeployPage() {
                         setCustomNetworkMetadata((current) => ({ ...current, chainName: event.target.value }));
                         setNativeMetadataConfirmed(false);
                         setSelectedMetadataCandidateKey("");
-                        resetDeploymentState();
+                        resetForEdit();
                       }}
                       placeholder={`EVM Chain ${networkDiscovery.chainId}`}
                       type="text"
@@ -822,7 +897,7 @@ export function EvmContractDeployPage() {
                         setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyName: event.target.value }));
                         setNativeMetadataConfirmed(false);
                         setSelectedMetadataCandidateKey("");
-                        resetDeploymentState();
+                        resetForEdit();
                       }}
                       type="text"
                       value={customNetworkMetadata.nativeCurrencyName}
@@ -840,7 +915,7 @@ export function EvmContractDeployPage() {
                         setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencySymbol: event.target.value }));
                         setNativeMetadataConfirmed(false);
                         setSelectedMetadataCandidateKey("");
-                        resetDeploymentState();
+                        resetForEdit();
                       }}
                       type="text"
                       value={customNetworkMetadata.nativeCurrencySymbol}
@@ -858,7 +933,7 @@ export function EvmContractDeployPage() {
                         setCustomNetworkMetadata((current) => ({ ...current, nativeCurrencyDecimals: event.target.value }));
                         setNativeMetadataConfirmed(false);
                         setSelectedMetadataCandidateKey("");
-                        resetDeploymentState();
+                        resetForEdit();
                       }}
                       step="1"
                       type="number"
@@ -991,6 +1066,54 @@ export function EvmContractDeployPage() {
             })}
           />
         </ReviewPanel>
+        {archivedRound ? (
+          <ReviewPanel
+            actions={archivedRound.requiresAcknowledgement ? (
+              <ConfirmActionDialog
+                confirmLabel="确认已核对"
+                description="仅确认你已根据交易哈希和目标地址核对上一轮链上状态；这不会重试或撤销原部署。"
+                onConfirm={() => setArchivedRound((current) => current ? {
+                  ...current,
+                  requiresAcknowledgement: false
+                } : current)}
+                title="已核对上一轮链上状态？"
+                triggerLabel="已核对，开始新任务"
+                triggerVariant="outline"
+              />
+            ) : null}
+            className="deployment-review collection-round-archive"
+            stateKey={archivedRound.sequence}
+            summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "部署完成" : archivedRound.status === "already-deployed" ? "合约已存在" : "需处理"}</Badge>}
+            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+          >
+            <div className="flex min-w-0 flex-col gap-3">
+              <p>{archivedRound.message}</p>
+              <Badge className="w-fit" variant="outline">{archivedRound.networkLabel}</Badge>
+              {archivedRound.hash ? (
+                <div className="summary-list" aria-label="上一轮部署交易">
+                  <div>
+                    <span>交易哈希</span>
+                    <strong title={archivedRound.hash}>{archivedRound.explorerUrl
+                      ? <a href={archivedRound.explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(archivedRound.hash)}</a>
+                      : shortenAddress(archivedRound.hash)}</strong>
+                  </div>
+                </div>
+              ) : null}
+              {archivedRound.checks.length ? (
+                <ResultTable<DisperseDeploymentCheck>
+                  caption="上一轮 CreateX 部署校验"
+                  columns={[
+                    { header: "检查项", key: "label", render: (check) => check.label },
+                    { header: "状态", key: "status", render: (check) => <Badge variant={check.status === "fail" ? "destructive" : "outline"}>{check.status === "pass" ? "通过" : check.status === "fail" ? "失败" : "跳过"}</Badge> },
+                    { header: "详情", key: "detail", render: (check) => check.detail }
+                  ]}
+                  getRowKey={(check) => check.id}
+                  rows={archivedRound.checks}
+                />
+              ) : null}
+            </div>
+          </ReviewPanel>
+        ) : null}
       </div>
     </ToolPageLayout>
   );

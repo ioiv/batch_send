@@ -20,6 +20,7 @@ import { shortenAddress } from "../lib/address";
 import { formatLamports, formatLamportsForDisplay } from "../lib/amount";
 import { getInitialDistributionInput, parseDistribution } from "../lib/distribution";
 import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
+import { sanitizeRoundArchiveText } from "../lib/collection-results";
 import {
   Connection,
   assertSolanaRpcNetwork,
@@ -53,6 +54,16 @@ type DistributionPreflightState = {
   requiredLamports: bigint | null;
   status: "idle" | "loading" | "success" | "error";
   transactionCount: number;
+};
+
+type ArchivedDistributionRound = {
+  message: string;
+  networkId: SolanaNetworkId;
+  networkLabel: string;
+  requiresAcknowledgement: boolean;
+  sequence: number;
+  signatures: TransactionSignature[];
+  status: "error" | "success";
 };
 
 const initialBalanceLookupState: BalanceLookupState = {
@@ -115,6 +126,8 @@ export function BatchDistributorPage() {
   const [networkId, setNetworkId] = useState<SolanaNetworkId>("mainnet-beta");
   const [rpcEndpoint, setRpcEndpoint] = useState(getNetworkConfig("mainnet-beta").endpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [archivedRound, setArchivedRound] = useState<ArchivedDistributionRound | null>(null);
+  const [roundSequence, setRoundSequence] = useState(1);
   const [preflightState, setPreflightState] = useState<DistributionPreflightState>(initialDistributionPreflightState);
   const [balanceLookup, setBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
@@ -123,6 +136,9 @@ export function BatchDistributorPage() {
   const listImportingRef = useRef(false);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
+  const previousWalletRef = useRef("");
+  const terminalArchivedRef = useRef(false);
+  const resetForEditRef = useRef<() => void>(() => {});
   const wallet = useSolanaWallet();
 
   const handleListImportingChange = useCallback((importing: boolean) => {
@@ -137,17 +153,6 @@ export function BatchDistributorPage() {
     setSendState(initialSendState);
   }, []);
 
-  const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
-    setGeneratedList(result);
-    setGeneratedInput(result.output);
-    resetConfirmation();
-  }, [resetConfirmation]);
-
-  const handleGeneratorDirty = useCallback(() => {
-    setMixedAmountWarningVisible(false);
-    resetConfirmation();
-  }, [resetConfirmation]);
-
   const parsed = useMemo(() => parseDistribution(generatedInput), [generatedInput]);
   const selectedNetwork = useMemo(() => getNetworkConfig(networkId), [networkId]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.endpoint;
@@ -160,10 +165,10 @@ export function BatchDistributorPage() {
   const sendComplete = sendState.status === "success";
   const sendFailed = sendState.status === "error";
   const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
-  const controlsLocked = preflighting || sending || sendComplete || sendFailed;
+  const controlsLocked = preflighting || sending;
   const pageControlsLocked = controlsLocked || listImporting;
   const generatedListReady = generatedList.invalid === 0 && generatedList.duplicates === 0;
-  const readyToSend = wallet.connected && Boolean(wallet.provider) && rpcEndpointValid && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !preflighting && !sending && !sendComplete && !sendFailed && !listImporting;
+  const readyToSend = wallet.connected && Boolean(wallet.provider) && rpcEndpointValid && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !preflighting && !sending && !sendComplete && !sendFailed && !listImporting && !archivedRound?.requiresAcknowledgement;
   const invalidCount = parsed.invalid + generatedList.invalid;
   const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const walletBalance = balanceLookup.status === "success" && balanceLookup.valueLamports !== null
@@ -188,12 +193,52 @@ export function BatchDistributorPage() {
               ? "请先添加至少 1 个有效收款地址"
               : "清单可预检";
 
-  useEffect(() => {
-    if (sending || sendComplete || sendFailed) return;
+  const archiveTerminalRound = useCallback(() => {
+    if (terminalArchivedRef.current || (!sendComplete && !sendFailed)) return false;
+    terminalArchivedRef.current = true;
+    setArchivedRound({
+      message: sanitizeRoundArchiveText(sendState.message),
+      networkId,
+      networkLabel: selectedNetwork.label,
+      requiresAcknowledgement: unresolvedSubmission,
+      sequence: roundSequence,
+      signatures: [...sendState.signatures],
+      status: sendComplete ? "success" : "error"
+    });
+    setRoundSequence((current) => current + 1);
+    return true;
+  }, [networkId, roundSequence, selectedNetwork.label, sendComplete, sendFailed, sendState.message, sendState.signatures, unresolvedSubmission]);
+
+  const resetForEdit = useCallback(() => {
+    if (sending || preflighting) return;
+    archiveTerminalRound();
     resetConfirmation();
-    // Keep an in-flight transaction locked even if the wallet changes accounts.
-    // eslint/react-hooks deliberately omits `sending`: completion must not clear its result.
-  }, [resetConfirmation, sendComplete, sendFailed, sending, wallet.address, wallet.connected]);
+  }, [archiveTerminalRound, preflighting, resetConfirmation, sending]);
+  resetForEditRef.current = resetForEdit;
+
+  const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
+    setGeneratedList(result);
+    setGeneratedInput(result.output);
+    resetForEditRef.current();
+  }, []);
+
+  const handleGeneratorDirty = useCallback(() => {
+    setMixedAmountWarningVisible(false);
+    resetForEditRef.current();
+  }, []);
+
+  useEffect(() => {
+    const walletIdentity = `${wallet.connected ? "connected" : "disconnected"}:${wallet.address || ""}`;
+    if (!previousWalletRef.current) {
+      previousWalletRef.current = walletIdentity;
+      return;
+    }
+    if (previousWalletRef.current === walletIdentity) return;
+    previousWalletRef.current = walletIdentity;
+    resetForEdit();
+    // Only wallet identity changes should trigger this effect. Execution-state changes must retain their result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.address, wallet.connected]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -249,6 +294,7 @@ export function BatchDistributorPage() {
 
   const prepareDistribution = async () => {
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address) return;
+    terminalArchivedRef.current = false;
     sendOperationRef.current = true;
     const preflightEpoch = ++preflightEpochRef.current;
     setConfirmVisible(true);
@@ -505,10 +551,13 @@ export function BatchDistributorPage() {
   };
 
   const startNewDistribution = () => {
+    terminalArchivedRef.current = false;
     setGeneratorRevision((value) => value + 1);
     setGeneratedInput("");
     setGeneratedList(initialGeneratedList);
     setMixedAmountWarningVisible(false);
+    setArchivedRound(null);
+    setRoundSequence(1);
     resetConfirmation();
   };
 
@@ -657,33 +706,24 @@ export function BatchDistributorPage() {
                     />
                   </>
                 ) : null}
-                {sendFailed && !unresolvedSubmission ? (
-                  <Button onClick={resetConfirmation} type="button" variant="outline">返回修改并重新预检</Button>
+                {sendComplete || sendFailed ? (
+                  <span className="collection-terminal-hint">
+                    {unresolvedSubmission
+                      ? "可直接编辑；首次修改会归档本轮。核对链上状态后才可开始新的写入任务。"
+                      : "本轮已结束，直接编辑任一设置即可自动归档并进入下一轮。"}
+                  </span>
                 ) : null}
-                {sendComplete ? (
-                  <ConfirmActionDialog
-                    confirmLabel="继续编辑"
-                    description="本轮交易记录会从结果区收起，收款清单与金额继续保留。再次分发前请先修改或核对清单，避免重复发送。"
-                    onConfirm={resetConfirmation}
-                    title="继续使用当前清单？"
-                    triggerLabel="继续编辑清单"
-                    triggerVariant="outline"
-                  />
-                ) : null}
-                {sendComplete || unresolvedSubmission ? (
-                  <ConfirmActionDialog
-                    confirmLabel="确认清空"
-                    description={(
-                      <span>
-                        本轮包含已提交的交易哈希。清空会从当前视图移除这些记录；请先核对链上状态，且不要直接重复发送。
-                      </span>
-                    )}
-                    onConfirm={startNewDistribution}
-                    title="清空 SOL 分发工作台？"
-                    triggerLabel="清空清单"
-                    triggerVariant="destructive"
-                  />
-                ) : null}
+                <ConfirmActionDialog
+                  confirmLabel="确认清空"
+                  description={sendState.signatures.length > 0 || Boolean(archivedRound?.signatures.length)
+                    ? "当前或上一轮包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
+                    : "收款清单、当前执行状态和上一轮结果将从页面清除。"}
+                  disabled={sending || preflighting || listImporting}
+                  onConfirm={startNewDistribution}
+                  title="清空 SOL 分发工作台？"
+                  triggerLabel="清空清单"
+                  triggerVariant="destructive"
+                />
               </div>
             </div>
           )}
@@ -708,9 +748,9 @@ export function BatchDistributorPage() {
                   metaLabel="网络标识"
                   metaPrefix="Cluster "
                   onChange={(nextNetworkId) => {
+                    resetForEdit();
                     setNetworkId(nextNetworkId);
                     setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
-                    resetConfirmation();
                   }}
                   options={solanaNetworkOptions}
                   searchable={false}
@@ -724,8 +764,8 @@ export function BatchDistributorPage() {
                   disabled={pageControlsLocked}
                   id="rpcEndpoint"
                   onChange={(event) => {
+                    resetForEdit();
                     setRpcEndpoint(event.target.value);
-                    resetConfirmation();
                   }}
                   type="url"
                   value={rpcEndpoint}
@@ -847,6 +887,45 @@ export function BatchDistributorPage() {
             ) : null}
           </div>
         </ReviewPanel>
+        {archivedRound ? (
+          <ReviewPanel
+            actions={archivedRound.requiresAcknowledgement ? (
+              <ConfirmActionDialog
+                confirmLabel="确认已核对"
+                description="仅确认你已根据交易签名核对上一轮链上状态；这不会重试或撤销原交易。"
+                onConfirm={() => setArchivedRound((current) => current ? {
+                  ...current,
+                  requiresAcknowledgement: false
+                } : current)}
+                title="已核对上一轮链上状态？"
+                triggerLabel="已核对，开始新任务"
+                triggerVariant="outline"
+              />
+            ) : null}
+            className="min-w-0 collection-round-archive"
+            stateKey={archivedRound.sequence}
+            summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "已完成" : "需处理"} · {archivedRound.signatures.length} 笔</Badge>}
+            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+          >
+            <div className="flex min-w-0 flex-col gap-3">
+              <p>{archivedRound.message}</p>
+              <Badge className="w-fit" variant="outline">{archivedRound.networkLabel}</Badge>
+              {archivedRound.signatures.length ? (
+                <div className="flex flex-wrap gap-2" aria-label="上一轮交易哈希">
+                  {archivedRound.signatures.map((signature, index) => (
+                    <a
+                      className={buttonVariants({ variant: "outline" })}
+                      href={getExplorerUrl(signature, archivedRound.networkId)}
+                      key={signature}
+                      rel="noreferrer"
+                      target="_blank"
+                    >交易 {index + 1}: {shortenAddress(signature)}</a>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </ReviewPanel>
+        ) : null}
       </div>
     </ToolPageLayout>
   );

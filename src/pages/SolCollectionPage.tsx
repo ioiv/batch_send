@@ -13,15 +13,21 @@ import {
 } from "../components/SecretKeyInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
+import { CollectionResults } from "../components/CollectionResults";
 import {
   AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
+  ReviewPanel,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
 import { formatLamports, parseSolToLamports } from "../lib/amount";
 import type { CollectionAmountPolicy } from "../lib/collection-amount";
-import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
+import {
+  sanitizeRoundArchiveText,
+  type CollectionDisplayResult,
+  type CollectionResultStatus
+} from "../lib/collection-results";
 import { validateSolCollectionWorkload } from "../lib/collection-workload";
 import { getPreferredRpcEndpoint, isRpcEndpoint, rememberRpcEndpoint } from "../lib/rpc-preferences";
 import {
@@ -42,18 +48,27 @@ import {
 type CollectionStage = "checking" | "complete" | "editing" | "error" | "ready" | "running";
 type AmountMode = CollectionAmountPolicy["mode"];
 
+type ArchivedSolCollectionRound = {
+  message: string;
+  requiresAcknowledgement: boolean;
+  results: CollectionDisplayResult[];
+  sequence: number;
+};
+
 export function getSolCollectionWorkbenchStatus(
   stage: CollectionStage,
   results: readonly CollectionDisplayResult[]
 ): WorkbenchStatus {
-  const hasHash = results.some((result) => Boolean(result.hash));
   const hasFailure = results.some((result) => result.status === "error");
+  const hasUncertain = results.some((result) => (
+    result.uncertain || (result.status === "error" && Boolean(result.hash) && result.retryable !== true)
+  ));
   if (stage === "checking") return "preflight";
   if (stage === "ready") return "ready";
   if (stage === "running") return "running";
-  if (stage === "error") return hasHash ? "uncertain" : "error";
+  if (stage === "error") return hasUncertain ? "uncertain" : "error";
   if (stage === "complete") {
-    if (hasFailure && hasHash) return "uncertain";
+    if (hasUncertain) return "uncertain";
     return hasFailure ? "error" : "success";
   }
   return "editing";
@@ -102,7 +117,9 @@ function itemToDisplay(item: SolCollectionItemResult, networkId: SolanaNetworkId
     } : {}),
     label: item.label,
     message: item.message,
-    status: item.status === "success" ? "success" : item.status === "skipped" ? "skipped" : "error"
+    retryable: item.status === "error" && item.retryable,
+    status: item.status === "success" ? "success" : item.status === "skipped" ? "skipped" : "error",
+    uncertain: item.status === "error" && Boolean(item.signature) && !item.retryable
   };
 }
 
@@ -155,6 +172,8 @@ export function SolCollectionPage() {
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
+  const [archivedRound, setArchivedRound] = useState<ArchivedSolCollectionRound | null>(null);
+  const [roundSequence, setRoundSequence] = useState(1);
   const [keyImporting, setKeyImporting] = useState(false);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const keyImportingRef = useRef(false);
@@ -165,7 +184,8 @@ export function SolCollectionPage() {
   const taskRunning = stage === "running";
   const running = taskRunning || keyImporting;
   const hasSubmittedHash = results.some((result) => Boolean(result.hash));
-  const controlsLocked = running || hasSubmittedHash;
+  const hasRecordedHash = hasSubmittedHash || Boolean(archivedRound?.results.some((result) => result.hash));
+  const controlsLocked = running;
   const workbenchStatus = getSolCollectionWorkbenchStatus(stage, results);
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
@@ -200,13 +220,34 @@ export function SolCollectionPage() {
     return () => window.removeEventListener("pageshow", resetRestoredPage);
   }, []);
 
+  const archiveCurrentRound = () => {
+    if (!results.length || (stage !== "complete" && stage !== "error")) return false;
+    const requiresAcknowledgement = workbenchStatus === "uncertain"
+      || results.some((result) => result.uncertain);
+    setArchivedRound({
+      message: sanitizeRoundArchiveText(message || `第 ${roundSequence} 轮已结束`),
+      requiresAcknowledgement,
+      results: results.map((result) => ({
+        ...result,
+        message: sanitizeRoundArchiveText(result.message)
+      })),
+      sequence: roundSequence
+    });
+    retrySourcesRef.current = [];
+    setResults([]);
+    setRoundSequence((current) => current + 1);
+    setStage("editing");
+    return true;
+  };
+
   const invalidateTask = (clearResults = true) => {
     if (operationRef.current || taskRunning) return;
+    const archived = archiveCurrentRound();
     retrySourcesRef.current = [];
     setStage("editing");
     setMessage("");
     setIssues([]);
-    if (clearResults) setResults([]);
+    if (clearResults && !archived) setResults([]);
   };
 
   const getAmountPolicy = (): CollectionAmountPolicy | null => {
@@ -356,6 +397,20 @@ export function SolCollectionPage() {
         + (retrySourcesRef.current.length ? `；${retrySourcesRef.current.length} 笔可直接重试` : ""));
     } catch (error) {
       retrySourcesRef.current = sources.filter((source) => !submittedAddresses.has(source.address));
+      const sourceAddresses = new Set(sources.map((source) => source.address));
+      setResults((current) => current.map((result) => {
+        if (!sourceAddresses.has(result.address)) return result;
+        const uncertain = submittedAddresses.has(result.address) || Boolean(result.hash);
+        return {
+          ...result,
+          message: uncertain
+            ? "交易已提交但确认状态不确定，请根据签名核对链上状态"
+            : "执行在提交前中断，可安全重试",
+          retryable: !uncertain,
+          status: "error",
+          uncertain
+        };
+      }));
       setStage("error");
       setMessage(error instanceof Error && error.message.includes("RPC 网络不匹配")
         ? error.message
@@ -380,17 +435,10 @@ export function SolCollectionPage() {
     setMinimumDelay("0");
     setMaximumDelay("0");
     setResults([]);
+    setArchivedRound(null);
+    setRoundSequence(1);
     setIssues([]);
     setMessage("");
-    setStage("editing");
-  };
-
-  const beginNextRoundWithCurrentSettings = () => {
-    if (running) return;
-    retrySourcesRef.current = [];
-    setResults([]);
-    setIssues([]);
-    setMessage("已保留来源钱包与归集配置；可按需修改后直接开始下一轮");
     setStage("editing");
   };
 
@@ -398,7 +446,8 @@ export function SolCollectionPage() {
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(rpcEndpoint);
   const canStart = Boolean(normalizedTarget && sourceCount && rpcEndpointValid
-    && amountPolicyValid && executionSettingsValid && !running);
+    && amountPolicyValid && executionSettingsValid && !running
+    && !archivedRound?.requiresAcknowledgement);
 
   return (
     <ToolPageLayout
@@ -407,9 +456,9 @@ export function SolCollectionPage() {
           <Badge variant="outline">{selectedNetwork.label}</Badge>
           <ConfirmActionDialog
             confirmLabel="确认清空"
-            description={hasSubmittedHash
+            description={hasRecordedHash
               ? "当前钱包行包含已提交的交易。清空前请先核对链上状态；清空后本页记录无法恢复。"
-              : "来源密钥、目标地址和当前执行状态将从页面清除。"}
+              : "来源密钥、目标地址、当前执行状态和上一轮结果将从页面清除。"}
             disabled={running}
             onConfirm={resetTask}
             title="清空 SOL 归集工作台？"
@@ -441,15 +490,12 @@ export function SolCollectionPage() {
                   triggerLabel={`重试失败项 (${retryableCount})`}
                   triggerVariant="outline"
                 />
-              ) : hasSubmittedHash ? (
-                stage === "complete" ? (
-                  <Button
-                    disabled={running}
-                    onClick={beginNextRoundWithCurrentSettings}
-                    type="button"
-                    variant="outline"
-                  >继续使用当前设置</Button>
-                ) : <Button disabled type="button">需先核对链上交易</Button>
+              ) : results.length && (stage === "complete" || stage === "error") ? (
+                <p className="collection-terminal-hint">
+                  {workbenchStatus === "uncertain"
+                    ? "可直接编辑设置；首次修改会归档本轮。核对上一轮链上状态后才可开始新的写入任务。"
+                    : "本轮已结束。直接修改任一设置即可自动归档并进入下一轮。"}
+                </p>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -595,6 +641,42 @@ export function SolCollectionPage() {
             {stage === "running" ? <ExecutionProgress current={completedResultCount} label="SOL 归集进度" total={results.length} /> : null}
           </div>
         </WorkbenchPanel>
+        {archivedRound ? (
+          <ReviewPanel
+            actions={archivedRound.requiresAcknowledgement ? (
+              <ConfirmActionDialog
+                confirmLabel="确认已核对"
+                description="仅确认你已根据交易签名核对上一轮链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
+                onConfirm={() => setArchivedRound((current) => current ? {
+                  ...current,
+                  requiresAcknowledgement: false
+                } : current)}
+                title="已核对上一轮链上状态？"
+                triggerLabel="已核对，开始新任务"
+                triggerVariant="outline"
+              />
+            ) : null}
+            className="collection-round-archive"
+            stateKey={archivedRound.sequence}
+            summary={(
+              <span>
+                成功 {archivedRound.results.filter((result) => result.status === "success").length}
+                {" · "}需处理 {archivedRound.results.filter((result) => (
+                  result.status === "error" || result.status === "skipped"
+                )).length}
+              </span>
+            )}
+            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+          >
+            <p className="collection-round-archive__message">{archivedRound.message}</p>
+            <CollectionResults
+              embedded
+              exportFilename={`sol-collection-round-${archivedRound.sequence}.csv`}
+              results={archivedRound.results}
+              title="交易明细"
+            />
+          </ReviewPanel>
+        ) : null}
       </div>
     </ToolPageLayout>
   );

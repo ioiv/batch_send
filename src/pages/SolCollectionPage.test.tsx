@@ -138,11 +138,13 @@ describe("SolCollectionPage workbench", () => {
     expect(within(walletList).getByRole("link", { name: "查看交易" })).toBeVisible();
     expect(screen.queryByRole("table", { name: "归集结果" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "继续使用当前设置" }));
-    expect(screen.getByRole("textbox", { name: "目标钱包" })).toHaveValue(targetAddress);
+    const target = screen.getByRole("textbox", { name: "目标钱包" });
+    expect(target).toBeEnabled();
+    await user.clear(target);
+    await user.type(target, targetAddress);
+    expect(target).toHaveValue(targetAddress);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
-    expect(screen.queryByRole("link", { name: "查看交易" })).not.toBeInTheDocument();
-    expect(screen.getByText(/直接开始下一轮/)).toBeVisible();
+    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
   });
 
   it("offers retry for safe failures and retries only those wallets", async () => {
@@ -193,7 +195,13 @@ describe("SolCollectionPage workbench", () => {
 
     expect(await screen.findByText(/已显示签名的项目请先核对链上状态/)).toBeVisible();
     expect(screen.queryByRole("button", { name: /重试失败项/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "需先核对链上交易" })).toBeDisabled();
+    const target = screen.getByRole("textbox", { name: "目标钱包" });
+    expect(target).toBeEnabled();
+    await user.clear(target);
+    await user.type(target, targetAddress);
+    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
   it("persists a replacement RPC and uses it on the next mount", async () => {

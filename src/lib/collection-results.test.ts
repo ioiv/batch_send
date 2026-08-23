@@ -3,6 +3,7 @@ import {
   createCollectionResultsCsv,
   filterCollectionResults,
   getCollectionResultCounts,
+  sanitizeRoundArchiveText,
   type CollectionDisplayResult
 } from "./collection-results";
 
@@ -79,5 +80,10 @@ describe("collection result helpers", () => {
   it("groups non-terminal states under active", () => {
     const active = { address: "0x4", asset: "USDC", message: "正在确认", status: "confirming" as const };
     expect(filterCollectionResults([...results, active], { status: "active" })).toEqual([active]);
+  });
+
+  it("redacts RPC-style URLs before a round is archived", () => {
+    expect(sanitizeRoundArchiveText("请求 https://rpc.example/key-123 失败，改用 wss://secret.example/ws"))
+      .toBe("请求 [敏感 URL 已隐藏] 失败，改用 [敏感 URL 已隐藏]");
   });
 });

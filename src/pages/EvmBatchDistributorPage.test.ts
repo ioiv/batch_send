@@ -401,7 +401,7 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(pageMocks.sendToken).toHaveBeenCalledTimes(1);
   });
 
-  it("locks in-place retry after a submitted hash becomes uncertain", async () => {
+  it("allows editing after an uncertain submission but blocks a new write until acknowledgement", async () => {
     pageMocks.sendNative.mockImplementationOnce(async ({ onSubmitted }) => {
       onSubmitted(transactionHash);
       throw new Error("等待回执失败");
@@ -413,7 +413,7 @@ describe("EvmBatchDistributorPage safety", () => {
 
     expect(await screen.findByText("不可安全整批重试")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
-    expect(addressInput).toBeDisabled();
+    expect(addressInput).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
     const clearTrigger = screen.getByRole("button", { name: "清空清单" });
@@ -423,11 +423,15 @@ describe("EvmBatchDistributorPage safety", () => {
 
     await user.click(clearTrigger);
     let clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
-    expect(within(clearDialog).getByText(/哈希.*从当前视图移除/)).toBeInTheDocument();
-    expect(within(clearDialog).getByText(/先核验链上记录/)).toBeInTheDocument();
+    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeInTheDocument();
     await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
-    expect(addressInput).toBeDisabled();
+    expect(addressInput).toBeEnabled();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
+
+    await user.type(addressInput, "\n0x00000000000000000000000000000000000000b2");
+    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /运行预检|重新预检/ })).toBeDisabled();
 
     await user.click(clearTrigger);
     clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });

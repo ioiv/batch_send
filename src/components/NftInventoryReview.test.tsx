@@ -92,7 +92,7 @@ describe("NftInventoryReview", () => {
       />
     );
 
-    const link = screen.getByRole("link", { name: new RegExp(`查看 来源一 的成功交易 ${hash}`) });
+    const link = screen.getByRole("link", { name: new RegExp(`查看 来源一 的交易 ${hash}`) });
     expect(screen.getByRole("heading", { name: "本轮资产结果" })).toBeVisible();
     expect(screen.getByText("完成 1")).toBeVisible();
     expect(screen.queryByRole("checkbox", { name: "选择全部" })).not.toBeInTheDocument();
@@ -100,6 +100,63 @@ describe("NftInventoryReview", () => {
     expect(link).toHaveAttribute("href", `https://scan.example/tx/${hash}`);
     expect(link).toHaveTextContent(/^0xabababab…ababab$/);
     expect(link).toHaveClass("nft-inventory-review__hash");
+  });
+
+  it("confirms single and bulk retry while excluding uncertain failures", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    const firstKey = `erc721:${contractOne.toLowerCase()}:42`;
+    const secondKey = `erc721:${contractTwo.toLowerCase()}:7`;
+    render(
+      <NftInventoryReview
+        assetInput={`${contractOne},42\n${contractTwo},7`}
+        onChange={vi.fn()}
+        onRetry={onRetry}
+        results={[
+          {
+            address: contractTwo,
+            asset: "ERC721 #42",
+            assetKey: firstKey,
+            executionId: "retry-42",
+            message: "RPC 请求失败",
+            retryable: true,
+            status: "error"
+          },
+          {
+            address: contractOne,
+            asset: "ERC721 #42",
+            assetKey: firstKey,
+            executionId: "uncertain-42",
+            hash: `0x${"cd".repeat(32)}`,
+            message: "确认状态不确定",
+            retryable: false,
+            status: "error",
+            uncertain: true
+          },
+          {
+            address: contractOne,
+            asset: "ERC721 #7",
+            assetKey: secondKey,
+            executionId: "retry-7",
+            message: "模拟失败",
+            retryable: true,
+            status: "error"
+          }
+        ]}
+        standard="erc721"
+      />
+    );
+
+    expect(screen.getByText("需核对")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /重试 .*Token ID 42/ }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "重试该失败项？" }))
+      .getByRole("button", { name: "确认重试" }));
+    expect(onRetry).toHaveBeenLastCalledWith(["retry-42"]);
+
+    await user.click(screen.getByRole("button", { name: "重试全部失败项 (2)" }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "重试全部可安全重试的失败项？" }))
+      .getByRole("button", { name: "重试 2 个失败项" }));
+    expect(onRetry).toHaveBeenLastCalledWith(["retry-42", "retry-7"]);
   });
 });
 

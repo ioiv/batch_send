@@ -162,7 +162,9 @@ export function ConfirmActionDialog({
   disabled = false,
   onConfirm,
   title,
+  triggerAriaLabel,
   triggerLabel,
+  triggerSize,
   triggerVariant = "default"
 }: {
   cancelLabel?: string;
@@ -171,7 +173,9 @@ export function ConfirmActionDialog({
   disabled?: boolean;
   onConfirm: () => void | Promise<void>;
   title: string;
+  triggerAriaLabel?: string;
   triggerLabel: string;
+  triggerSize?: "default" | "sm" | "lg" | "icon" | "icon-sm" | "icon-lg";
   triggerVariant?: "default" | "outline" | "secondary" | "ghost" | "destructive";
 }) {
   const [open, setOpen] = useState(false);
@@ -180,7 +184,7 @@ export function ConfirmActionDialog({
     <AlertDialog onOpenChange={setOpen} open={open}>
       <AlertDialogTrigger
         disabled={disabled}
-        render={<Button disabled={disabled} type="button" variant={triggerVariant} />}
+        render={<Button aria-label={triggerAriaLabel} disabled={disabled} size={triggerSize} type="button" variant={triggerVariant} />}
       >
         {triggerLabel}
       </AlertDialogTrigger>

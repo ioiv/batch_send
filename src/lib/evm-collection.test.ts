@@ -781,6 +781,7 @@ describe("executeEvmCollectionPlan", () => {
 
     expect(result.status).toBe("failed");
     expect(result.hash).toBeNull();
+    expect(result).toMatchObject({ retryable: true, uncertain: false });
     expect(result.message).not.toContain(privateKeyOne);
     expect(writeContract).not.toHaveBeenCalled();
     expect(waitForTransactionReceipt).not.toHaveBeenCalled();
@@ -803,6 +804,7 @@ describe("executeEvmCollectionPlan", () => {
     });
 
     expect(result.status).toBe("failed");
+    expect(result).toMatchObject({ retryable: true, uncertain: false });
     expect(result.message).toContain("transfer 模拟返回 false");
     expect(writeContract).not.toHaveBeenCalled();
   });
@@ -825,6 +827,7 @@ describe("executeEvmCollectionPlan", () => {
     });
 
     expect(result.status).toBe("failed");
+    expect(result).toMatchObject({ retryable: true, uncertain: false });
     expect(result.message).toContain("超过已确认上限");
     expect(writeContract).not.toHaveBeenCalled();
   });
@@ -864,7 +867,12 @@ describe("executeEvmCollectionPlan", () => {
       targetAddress
     });
 
-    expect(result).toMatchObject({ hash: transactionHash, status: "failed" });
+    expect(result).toMatchObject({
+      hash: transactionHash,
+      retryable: true,
+      status: "failed",
+      uncertain: false
+    });
     expect(result.message).toContain("执行状态为失败");
   });
 
@@ -886,7 +894,12 @@ describe("executeEvmCollectionPlan", () => {
       targetAddress
     });
 
-    expect(result).toMatchObject({ hash: transactionHash, status: "failed" });
+    expect(result).toMatchObject({
+      hash: transactionHash,
+      retryable: false,
+      status: "failed",
+      uncertain: true
+    });
     expect(result.message).toContain("请先查询链上状态，勿盲目重发");
     expect(result.message).not.toContain(privateKeyOne);
   });
@@ -908,6 +921,8 @@ describe("executeEvmCollectionPlan", () => {
     });
 
     expect(results.map((result) => result.status)).toEqual(["failed", "failed"]);
+    expect(results.map((result) => result.uncertain)).toEqual([true, true]);
+    expect(results.map((result) => result.retryable)).toEqual([false, false]);
     expect(results[0].message).toContain("状态不确定");
     expect(results[1].message).toContain("已停止其后续归集项");
     expect(writeContract).toHaveBeenCalledOnce();

@@ -24,7 +24,9 @@ export type NftInventoryReviewProps = {
   contractLabels?: ReadonlyMap<string, string>;
   disabled?: boolean;
   onChange: (value: string) => void;
+  onRetry?: (executionIds: readonly string[]) => void;
   results?: readonly CollectionDisplayResult[];
+  retrying?: boolean;
   standard: NftInventoryStandard;
 };
 
@@ -62,7 +64,9 @@ export function NftInventoryReview({
   contractLabels,
   disabled,
   onChange,
+  onRetry,
   results = [],
+  retrying = false,
   standard
 }: NftInventoryReviewProps) {
   const titleId = useId();
@@ -88,6 +92,11 @@ export function NftInventoryReview({
     return grouped;
   }, [results]);
   const showingRoundResults = results.length > 0;
+  const retryableExecutionIds = useMemo(() => [...new Set(results.flatMap((result) => (
+    result.status === "error" && result.retryable && result.executionId
+      ? [result.executionId]
+      : []
+  )))], [results]);
   const assetOutcomeCounts = useMemo(() => parsed.assets.reduce((counts, asset) => {
     const assetResults = resultsByAssetKey.get(asset.key) || [];
     if (!assetResults.length) {
@@ -153,6 +162,17 @@ export function NftInventoryReview({
               {assetOutcomeCounts.active ? <Badge variant="outline">处理中 {assetOutcomeCounts.active}</Badge> : null}
               {assetOutcomeCounts.review ? <Badge variant="destructive">需处理 {assetOutcomeCounts.review}</Badge> : null}
               {assetOutcomeCounts.pending ? <Badge variant="outline">未发送 {assetOutcomeCounts.pending}</Badge> : null}
+              {retryableExecutionIds.length && onRetry ? (
+                <ConfirmActionDialog
+                  confirmLabel={`重试 ${retryableExecutionIds.length} 个失败项`}
+                  description="只会重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                  disabled={retrying}
+                  onConfirm={() => onRetry(retryableExecutionIds)}
+                  title="重试全部可安全重试的失败项？"
+                  triggerLabel={`重试全部失败项 (${retryableExecutionIds.length})`}
+                  triggerVariant="outline"
+                />
+              ) : null}
             </>
           ) : (
             <Badge variant="outline">
@@ -300,24 +320,34 @@ export function NftInventoryReview({
                                 title={result.message}
                               >
                                 <span>{result.label || shortAddress(result.address)}</span>
-                                {result.status === "success" && result.hash ? (
-                                  result.explorerUrl ? (
-                                    <a
-                                      aria-label={`查看 ${result.label || shortAddress(result.address)} 的成功交易 ${result.hash}`}
-                                      className="nft-inventory-review__hash"
-                                      href={result.explorerUrl}
-                                      rel="noreferrer"
-                                      target="_blank"
-                                      title={result.hash}
-                                    >
-                                      {shortHash(result.hash)}
-                                    </a>
-                                  ) : <code className="is-success" title={result.hash}>{shortHash(result.hash)}</code>
-                                ) : (
-                                  <Badge variant={result.status === "error" ? "destructive" : "outline"}>
-                                    {statusLabels[result.status]}
-                                  </Badge>
-                                )}
+                                <Badge variant={result.status === "error" ? "destructive" : "outline"}>
+                                  {result.uncertain ? "需核对" : statusLabels[result.status]}
+                                </Badge>
+                                {result.hash ? result.explorerUrl ? (
+                                  <a
+                                    aria-label={`查看 ${result.label || shortAddress(result.address)} 的交易 ${result.hash}`}
+                                    className="nft-inventory-review__hash"
+                                    href={result.explorerUrl}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                    title={result.hash}
+                                  >
+                                    {shortHash(result.hash)}
+                                  </a>
+                                ) : <code className={`nft-inventory-review__hash${result.status === "success" ? " is-success" : ""}`} title={result.hash}>{shortHash(result.hash)}</code> : null}
+                                {result.status === "error" && result.retryable && result.executionId && onRetry ? (
+                                  <ConfirmActionDialog
+                                    confirmLabel="确认重试"
+                                    description={`将重新检查 ${result.label || shortAddress(result.address)} 的链上所有权、余额与网络费后，仅重试该 NFT。`}
+                                    disabled={retrying}
+                                    onConfirm={() => onRetry([result.executionId!])}
+                                    title="重试该失败项？"
+                                    triggerAriaLabel={`重试 ${result.label || shortAddress(result.address)} 的 Token ID ${getAssetTokenId(row.asset!)}`}
+                                    triggerLabel="重试"
+                                    triggerSize="sm"
+                                    triggerVariant="outline"
+                                  />
+                                ) : null}
                               </div>
                             ))}
                           </div>

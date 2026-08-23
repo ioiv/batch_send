@@ -42,7 +42,7 @@
 - SOL 与 EVM 分发/部署继续使用现有钱包 Hook；多钱包选择改为 shadcn `Dialog`，必须保留 Esc 关闭、焦点陷阱和关闭后的触发器焦点恢复。
 - EVM 钱包继续支持 EIP-6963 与常见注入式 provider，监听账户、链和断开事件；SOL 钱包继续监听连接、断开和账户变化。
 - 网络是主字段；RPC、Gas 上限、SOL 保留额和发现范围等低频参数进入 `Collapsible` 高级设置。
-- 钱包账户、钱包链、所选网络或 RPC 变化时，未执行的预检必须失效；已经提交的任务不得因账户切换而丢失哈希或解除重试锁。
+- 钱包账户、钱包链、所选网络或 RPC 变化时，未执行的预检必须失效；终态首次变化会把最近一轮公开结果与哈希归档，不得丢失或普通失败化不确定交易。
 
 ### 归集密钥与结果
 
@@ -64,9 +64,9 @@
 | `preflight` | 只读检查进行中 | 取消页面级输入操作；不签名 |
 | `ready` | 当前输入快照通过预检 | 打开确认对话框、返回编辑 |
 | `running` | 等待签名、提交或确认 | 查看进度；锁定会改变任务的输入 |
-| `success` | 所有应执行项已确认 | 导出、查看哈希、整理本轮并继续 |
+| `success` | 所有应执行项已确认 | 导出、查看哈希；直接编辑并自动归档本轮 |
 | `error` | 尚未提交，或某些项确定失败 | 修正后重新预检；保留逐项结果 |
-| `uncertain` | 已签名/已提交但最终状态未知 | 只允许核对哈希或新建空白任务，禁止盲目整批重试 |
+| `uncertain` | 已签名/已提交但最终状态未知 | 允许编辑和只读识别；核对确认前禁止新的写入，且永不自动重发原交易 |
 
 ## 1. SOL 批量分发 `/sol/`
 
@@ -79,7 +79,7 @@
 - 只读预检读取最新 blockhash、估算所有交易手续费并检查 `总金额 + 手续费` 是否小于等于钱包余额。
 - 钱包支持时一次调用 `signAllTransactions`；否则逐批请求签名。提交使用 RPC preflight，并逐笔等待 `confirmed`。
 - 展示签名、已提交和已确认进度及 Solscan 链接。
-- 只要已有签名被提交，失败状态就锁定当前任务，要求先核对链上记录再新建空白任务。
+- 已有签名但确认失败时保留签名并标记不确定；输入仍可编辑，首次编辑自动归档，核对确认前不得开始新的写入任务。
 
 ### 当前流程
 
@@ -150,7 +150,7 @@ flowchart TD
 - 预检固定 Disperse 地址的 runtime hash；原生币检查余额、Gas 和总扣款；Token 检查余额、allowance、授权次数、Gas 和原生币余额。
 - Token allowance 不足时先精确授权本次总额，等待授权回执成功后再提交分发；否则只需一笔分发。
 - 原生币调用 `disperseEther`，Token 调用 `disperseToken`；显示授权/分发哈希和浏览器链接。
-- 已提交哈希的错误任务锁定直接重试；用户只能核对记录并新建空白任务。
+- 已提交哈希且确认未知的任务不进入重试；终态输入可编辑并自动归档，核对确认后才允许新的写入。
 
 ### 当前流程
 
@@ -292,9 +292,9 @@ flowchart TD
 - 选择 EVM 网络、ERC721/ERC1155 标准和 NFT 合约；合约检查会识别标准、名称、符号及 ERC721Enumerable 能力。
 - 手工输入 Token ID 或闭区间（如 `1,3,8-12`）、本地导入 TXT/CSV，或直接编辑 `合约地址,Token ID` 原始清单。
 - NFT 输入默认最多 1,000 个唯一资产；合并时去重，遇到错误或超限不会部分写入。
-- ERC721 自动发现顺序：Enumerable → 可用时 Blockscout 候选 + 同一链上快照复核 → Transfer/ERC-2309 事件历史回溯 + `ownerOf` 复核。
-- 自动事件回溯优先定位合约部署区块；无法定位时允许用户指定起始区块，并把结果标记为有限范围。
-- 完整发现结果仍需用户点击“加入资产清单”；部分结果还必须单独确认“仅归集已验证项目”。
+- ERC721 自动发现顺序：先通过 RPC 调用 Enumerable；普通 ERC721 读取 `totalSupply` 与常见铸造计数器推算 Token ID 范围，再在同一快照直接调用 `ownerOf`。
+- 直接探测会先读取每个来源的 `balanceOf`；找到的数量与余额一致时立即停止并按合约替换旧清单。无法推算或未找全时允许填写 Token ID 起止范围，部分结果只能追加。
+- 完整发现结果自动加入资产清单；部分结果必须单独确认“仅归集已验证项目”。
 - ERC1155 不猜 Token ID；用户明确给出 ID 后，执行时读取每个来源的完整余额。
 - 资产表展示合约、Token ID、数量和有效/重复/错误状态；可单项或批量移除，有错误的原始行不会被静默删除。
 - ERC721 以 `ownerOf` 匹配来源；ERC1155 以 `balanceOf` 读取余额。同来源 + 同合约的 ERC1155 最多 100 个 ID 合并为一次标准批量转账，同时保留逐 ID 结果行。
@@ -312,7 +312,7 @@ flowchart TD
   nft_c_keys --> nft_c_context
   nft_c_context --> nft_c_method{"添加方式？"}
   nft_c_method -->|自动识别 ERC721| nft_c_inspect["识别标准与 Enumerable 能力"]
-  nft_c_inspect --> nft_c_discovery["Enumerable → Blockscout 候选复核 → Transfer 历史复核"]
+  nft_c_inspect --> nft_c_discovery["RPC Enumerable → 总量/计数器 → ownerOf 直接探测"]
   nft_c_discovery --> nft_c_complete{"发现结果完整？"}
   nft_c_complete -->|否| nft_c_partial["[不可删除] 单独确认仅使用已验证的部分结果"]
   nft_c_complete -->|是| nft_c_add["[不可删除] 用户点击加入资产清单"]
@@ -340,11 +340,12 @@ flowchart TD
   nft_o_start --> nft_o_source["来源模式：只读地址 / 私钥"]
   nft_o_source --> nft_o_context["网络、标准与 NFT 合约"]
   nft_o_context --> nft_o_method{"添加资产？"}
-  nft_o_method -->|自动识别| nft_o_discover["[不可删除] Enumerable / 索引候选链上复核"]
-  nft_o_discover --> nft_o_history{"需要 Transfer 历史？"}
-  nft_o_history -->|是| nft_o_range["说明原因与区块范围；完整 / 自定义 / 暂不扫描"]
-  nft_o_range --> nft_o_stop["扫描中展示区间与候选数，并可停止"]
-  nft_o_history -->|否| nft_o_coverage{"完整结果？"}
+  nft_o_method -->|自动识别 ERC721| nft_o_discover["[不可删除] RPC Enumerable / Token ID 直接探测"]
+  nft_o_discover --> nft_o_range{"合约能推算 Token ID 范围？"}
+  nft_o_range -->|否| nft_o_input["填写 Token ID 起止范围"]
+  nft_o_range -->|是| nft_o_stop["并发 ownerOf；balanceOf 找全即停止"]
+  nft_o_input --> nft_o_stop
+  nft_o_method -->|ERC1155| nft_o_combined
   nft_o_stop --> nft_o_coverage
   nft_o_coverage -->|否| nft_o_partial["[不可删除] Alert 确认只追加已验证的部分结果"]
   nft_o_coverage -->|是| nft_o_join["按合约对账当前资产；零结果也清除该合约旧项"]
@@ -362,18 +363,18 @@ flowchart TD
   nft_o_dialog -->|确认| nft_o_recheck["[不可删除] 签名前重查网络、所有权/余额、模拟和费用"]
   nft_o_recheck --> nft_o_run["逐项或 ERC1155 批量签名、提交和确认"]
   nft_o_run --> nft_o_results["资产表切为本轮结果；隐藏选择与移除操作"]
-  nft_o_results --> nft_o_lock["[不可删除] 保留哈希；不确定来源停止后续项"]
-  nft_o_results -->|明确完成| nft_o_next["整理本轮：成功资产移出，失败 / 未执行项保留"]
+  nft_o_results --> nft_o_lock["[不可删除] 保留哈希；不确定项排除重试"]
+  nft_o_results -->|编辑或再次识别| nft_o_next["自动归档最近一轮：成功资产移出，失败 / 未执行项保留"]
   nft_o_next --> nft_o_discover
 ```
 
 ### 保留与变更
 
 - `[合并]` 手工添加和文件导入；所有资产最终只进入一张明确的待归集表。高级原始编辑移动到 `Sheet`。
-- 自动识别由用户主动发起；Enumerable 或完整索引结果可直接按合约对账。历史回溯必须先展示原因、部署区块、快照区块和读取量，再由用户确认开始。
-- `[不可删除]` 完整扫描可替换同合约旧清单（包括零结果清除）；部分扫描只能在单独确认后追加，不能依据“未发现”删除旧项。Blockscout 只提供候选，最终所有权必须由链上快照验证。
-- 使用公开 Blockscout 发现会向第三方暴露来源地址与 NFT 合约，这是只读模式的隐私边界；界面应在发起查询前保留明确提示。
-- ERC1155 不猜测 Token ID，只能在用户确认后从 TransferSingle / TransferBatch 历史恢复候选并按快照余额复核；无对应私钥的 ERC721 必须跳过执行。
+- 自动识别由用户主动发起；Enumerable 或 `balanceOf` 已完全对账的 Token ID 直接探测可按合约替换旧清单。直接探测必须展示快照区块、Token ID 范围、预计调用量并允许停止。
+- `[不可删除]` 只有来源余额全部读取成功且发现数量完全一致时才能替换同合约旧清单（包括零结果清除）；未对账的手工范围只能追加链上快照验证通过的资产，不能依据“未发现”删除旧项。
+- NFT 发现不调用 Blockscout 或其他公开索引器；区块浏览器地址只用于已产生交易的跳转链接。
+- ERC1155 不猜测 Token ID，也不回溯 TransferSingle / TransferBatch；用户需手工或通过 TXT/CSV 提供已知 ID，执行时按快照余额复核。无对应私钥的 ERC721 必须跳过执行。
 - 页面不建立任务实体，只保留“持久设置、当前资产池、本轮结果、上一轮只读结果”。进入下一轮时仅移除所有执行行都已明确结算的 NFT；失败、跳过、未执行和状态不确定项继续保留。
 
 ## 5. SOL 归集 `/sol/collect/`
@@ -536,9 +537,9 @@ flowchart TD
 2. 不改写分发、归集、NFT 发现和 CreateX 的链上执行核心；页面只重排信息并在签名前复用现有只读预检。
 3. 所有输入变化必须使旧预检失效；确认对话框只确认当前输入快照。
 4. 签名前必须复核所选网络/RPC，及该流程适用的账户、余额、费用、allowance、所有权或 runtime。
-5. 任何已产生哈希/签名的异常都进入 `uncertain` 或等价锁定状态；不得提供“一键整批重试”。
+5. 任何已产生哈希/签名且确认未知的异常都进入 `uncertain`；允许编辑和只读识别，但核对确认前禁止新写入，不得进入单项或整批重试。
 6. 私钥不得进入 React state、浏览器持久化、Analytics、日志、URL、CSV 或错误文本；敏感页继续零 Analytics。
-7. NFT 自动发现不得把索引器结果直接视为所有权；完整结果须经链上快照复核后才能按合约对账，部分结果必须额外确认且只能追加。
+7. NFT 自动发现只使用 RPC；完整结果须经固定链上快照复核后才能按合约对账，部分结果必须额外确认且只能追加。
 8. 混合 SOL/EVM 清单不自动拆分；CreateX 成功后不自动注册链。
 9. 原生币元数据未确认时只开放 Token；RPC、钱包链、canonical 合约字节码或部署 runtime 不匹配时阻断签名。
 10. 清空工作台改用 shadcn `AlertDialog`；它会清除持久设置和当前轮次，不能在未解释哈希状态时抹掉已提交记录。
@@ -547,6 +548,6 @@ flowchart TD
 
 - 七个工具分别覆盖：编辑、导入、输入变化使预检失效、预检失败、取消 `AlertDialog`、执行成功、部分失败、状态不确定、清空工作台和继续下一轮。
 - 组件交互覆盖 `Combobox`、`Tabs`、`Dialog`、`AlertDialog`、`Sheet`、`Collapsible`、键盘导航、焦点陷阱/恢复及禁用状态。
-- 安全回归覆盖：私钥 DOM/计划清理、敏感页无 Analytics、CSV 无密钥、错误脱敏、哈希锁定、SOL genesis hash、EVM chain ID/runtime、NFT 部分结果确认。
+- 安全回归覆盖：私钥 DOM/计划清理、敏感页无 Analytics、CSV 与上一轮归档无密钥/敏感 RPC、终态解锁与不确定写入门禁、SOL genesis hash、EVM chain ID/runtime、NFT 部分结果确认与安全重试。
 - 首页和七个工具页在 375、768、1024、1440 px 检查无整页横向溢出、无控制台错误、键盘可操作且可见文案符合本文件规则。
 - 最终保持现有测试基线通过，并运行 `npm test` 与 `npm run build`；预先存在的 `design-system/` 和 `output/` 不属于本次修改范围。

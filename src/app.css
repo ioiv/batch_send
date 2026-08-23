@@ -1869,23 +1869,23 @@
   text-wrap: pretty;
 }
 
-.nft-history-scan {
-  border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
-  background: color-mix(in oklab, var(--warning) 6%, var(--card));
+.nft-token-scan {
+  border-color: color-mix(in oklab, var(--primary) 32%, var(--border));
+  background: color-mix(in oklab, var(--primary) 5%, var(--card));
 }
 
-.nft-history-scan [data-slot="alert-description"] {
+.nft-token-scan [data-slot="alert-description"] {
   display: grid;
   gap: 0.7rem;
 }
 
-.nft-history-scan p {
+.nft-token-scan p {
   margin: 0;
   line-height: 1.55;
   text-wrap: pretty;
 }
 
-.nft-history-scan__range {
+.nft-token-scan__range {
   min-width: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1896,7 +1896,7 @@
   background: var(--border);
 }
 
-.nft-history-scan__range > div {
+.nft-token-scan__range > div {
   min-width: 0;
   display: grid;
   gap: 0.18rem;
@@ -1904,12 +1904,12 @@
   background: color-mix(in oklab, var(--card) 92%, var(--background));
 }
 
-.nft-history-scan__range span {
+.nft-token-scan__range span {
   color: var(--muted-foreground);
   font-size: 0.62rem;
 }
 
-.nft-history-scan__range strong {
+.nft-token-scan__range strong {
   min-width: 0;
   overflow: hidden;
   font-family: var(--font-mono);
@@ -1919,7 +1919,7 @@
   white-space: nowrap;
 }
 
-.nft-history-scan__actions,
+.nft-token-scan__actions,
 .nft-inventory-review__summary {
   min-width: 0;
   display: flex;
@@ -1928,8 +1928,14 @@
   gap: 0.45rem;
 }
 
-.nft-history-scan[data-scanning="true"] {
+.nft-token-scan[data-scanning="true"] {
   border-color: color-mix(in oklab, var(--primary) 42%, var(--border));
+}
+
+.nft-token-scan__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
 }
 
 .nft-mode-tabs {
@@ -1956,6 +1962,10 @@
   justify-content: flex-end;
 }
 
+.nft-inventory-review__summary > button {
+  min-height: 2rem;
+}
+
 .nft-inventory-review__toolbar {
   justify-content: space-between;
   flex-wrap: wrap;
@@ -1979,16 +1989,16 @@
 }
 
 .nft-inventory-review__statuses {
-  min-width: 11rem;
+  min-width: 22rem;
   display: grid;
   gap: 0.28rem;
 }
 
 .nft-inventory-review__status {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(5rem, 1fr) auto auto auto;
   align-items: center;
-  justify-content: space-between;
   gap: 0.45rem;
 }
 
@@ -2001,16 +2011,43 @@
   white-space: nowrap;
 }
 
-.nft-inventory-review__status > a,
-.nft-inventory-review__status > code.is-success {
-  color: var(--success);
+.nft-inventory-review__status > button {
+  min-height: 2rem;
+  padding-inline: 0.55rem;
+}
+
+.nft-inventory-review__table {
+  min-width: 46rem;
+}
+
+.collection-terminal-hint {
+  max-width: 34rem;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.workbench-grid > .collection-round-archive {
+  grid-column: 1 / -1;
+}
+
+.nft-inventory-review__status > .nft-inventory-review__hash {
   font-family: var(--font-mono);
   font-size: 0.62rem;
   font-weight: 650;
   text-decoration: underline;
-  text-decoration-color: color-mix(in oklab, var(--success) 52%, transparent);
   text-underline-offset: 0.16rem;
   white-space: nowrap;
+}
+
+.nft-inventory-review__status[data-status="success"] > .nft-inventory-review__hash {
+  color: var(--success);
+  text-decoration-color: color-mix(in oklab, var(--success) 52%, transparent);
+}
+
+.nft-inventory-review__status[data-status="error"] > .nft-inventory-review__hash {
+  color: var(--warning);
+  text-decoration-color: color-mix(in oklab, var(--warning) 52%, transparent);
 }
 
 .collection-round-archive__message {
@@ -2229,17 +2266,18 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .nft-history-scan__range {
+  .nft-token-scan__range,
+  .nft-token-scan__fields {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .nft-history-scan__actions {
+  .nft-token-scan__actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .nft-history-scan__actions > button,
-  .nft-history-scan__actions > [data-slot="alert-dialog-trigger"] {
+  .nft-token-scan__actions > button,
+  .nft-token-scan__actions > [data-slot="alert-dialog-trigger"] {
     width: 100%;
   }
 

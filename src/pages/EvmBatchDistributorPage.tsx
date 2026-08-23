@@ -22,6 +22,7 @@ import { useEvmGas } from "../hooks/useEvmGas";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
 import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
+import { sanitizeRoundArchiveText } from "../lib/collection-results";
 import {
   assertEvmWalletContext,
   ensureEvmNetwork,
@@ -73,6 +74,16 @@ type EvmDistributionPreflightState = {
   message: string;
   result: EvmDistributionPreflightResult | null;
   status: "idle" | "loading" | "success" | "error";
+};
+
+type ArchivedEvmDistributionRound = {
+  assetLabel: string;
+  message: string;
+  networkLabel: string;
+  requiresAcknowledgement: boolean;
+  sequence: number;
+  status: "error" | "success";
+  transactions: Array<{ explorerUrl?: string; hash: string }>;
 };
 
 export function getEvmDistributionSafetyState({
@@ -166,6 +177,8 @@ export function EvmBatchDistributorPage() {
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(networkState.selected.id);
   const [rpcEndpoint, setRpcEndpoint] = useState(networkState.selected.rpcEndpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [archivedRound, setArchivedRound] = useState<ArchivedEvmDistributionRound | null>(null);
+  const [roundSequence, setRoundSequence] = useState(1);
   const [preflightState, setPreflightState] = useState<EvmDistributionPreflightState>(initialDistributionPreflightState);
   const [tokenAddress, setTokenAddress] = useState("");
   const [tokenLookup, setTokenLookup] = useState<TokenLookupState>(initialTokenLookupState);
@@ -178,6 +191,9 @@ export function EvmBatchDistributorPage() {
   const listImportingRef = useRef(false);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
+  const previousWalletRef = useRef("");
+  const terminalArchivedRef = useRef(false);
+  const resetForEditRef = useRef<() => void>(() => {});
   const wallet = useEvmWallet();
 
   const handleListImportingChange = useCallback((importing: boolean) => {
@@ -191,17 +207,6 @@ export function EvmBatchDistributorPage() {
     setPreflightState(initialDistributionPreflightState);
     setSendState(initialSendState);
   }, []);
-
-  const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
-    setGeneratedList(result);
-    setGeneratedInput(result.output);
-    resetConfirmation();
-  }, [resetConfirmation]);
-
-  const handleGeneratorDirty = useCallback(() => {
-    setMixedAmountWarningVisible(false);
-    resetConfirmation();
-  }, [resetConfirmation]);
 
   const selectedNetwork = useMemo(
     () => getEvmNetworkConfig(networkId, networkState.networks),
@@ -250,7 +255,7 @@ export function EvmBatchDistributorPage() {
     signatureCount: sendState.signatures.length
   });
   const unresolvedSubmission = safetyState.unresolvedSubmission;
-  const controlsLocked = preflighting || sending || sendComplete || sendFailed;
+  const controlsLocked = preflighting || sending;
   const pageControlsLocked = controlsLocked || listImporting;
   const assetReady = assetMode === "native"
     ? nativeCurrencyEnabled
@@ -267,7 +272,8 @@ export function EvmBatchDistributorPage() {
     && !sending
     && !sendComplete
     && !sendFailed
-    && !listImporting;
+    && !listImporting
+    && !archivedRound?.requiresAcknowledgement;
   const invalidCount = parsed.invalid + generatedList.invalid;
   const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const nativeBalance = !nativeCurrencyEnabled
@@ -377,9 +383,47 @@ export function EvmBatchDistributorPage() {
                   ? `清单 ${reviewRows.length} 项`
                   : "尚无清单";
 
+  const archiveTerminalRound = useCallback(() => {
+    if (terminalArchivedRef.current || (!sendComplete && !sendFailed)) return false;
+    terminalArchivedRef.current = true;
+    setArchivedRound({
+      assetLabel: assetSymbol,
+      message: sanitizeRoundArchiveText(sendState.message),
+      networkLabel: selectedNetwork.label,
+      requiresAcknowledgement: unresolvedSubmission,
+      sequence: roundSequence,
+      status: sendComplete ? "success" : "error",
+      transactions: sendState.signatures.map((hash) => ({
+        explorerUrl: getEvmExplorerUrl(hash, selectedNetwork) || undefined,
+        hash
+      }))
+    });
+    setRoundSequence((current) => current + 1);
+    return true;
+  }, [assetSymbol, roundSequence, selectedNetwork, sendComplete, sendFailed, sendState.message, sendState.signatures, unresolvedSubmission]);
+
+  const resetForEdit = useCallback(() => {
+    if (sending || preflighting) return;
+    archiveTerminalRound();
+    resetConfirmation();
+  }, [archiveTerminalRound, preflighting, resetConfirmation, sending]);
+  resetForEditRef.current = resetForEdit;
+
+  const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
+    setGeneratedList(result);
+    setGeneratedInput(result.output);
+    resetForEditRef.current();
+  }, []);
+
+  const handleGeneratorDirty = useCallback(() => {
+    setMixedAmountWarningVisible(false);
+    resetForEditRef.current();
+  }, []);
+
   const removeSelectedVerifiedNetwork = () => {
     if (!removeVerifiedEvmDistributionNetwork(selectedNetwork.chainId)) return;
 
+    resetForEdit();
     const networks = getEvmDistributionNetworks();
     const nextSelected = getPreferredEvmDistributionNetwork(networks);
     setNetworkState({
@@ -391,15 +435,20 @@ export function EvmBatchDistributorPage() {
     setRpcEndpoint(nextSelected.rpcEndpoint);
     setAssetMode(isEvmNativeCurrencyEnabled(nextSelected) ? "native" : "token");
     setTokenLookup(initialTokenLookupState);
-    resetConfirmation();
   };
 
   useEffect(() => {
-    if (sending || sendComplete || sendFailed) return;
-    resetConfirmation();
-    // Keep an in-flight transaction locked even if the wallet changes accounts.
-    // eslint/react-hooks deliberately omits `sending`: completion must not clear its result.
-  }, [resetConfirmation, sendComplete, sendFailed, sending, wallet.address, wallet.connected]);
+    const walletIdentity = `${wallet.connected ? "connected" : "disconnected"}:${wallet.address || ""}`;
+    if (!previousWalletRef.current) {
+      previousWalletRef.current = walletIdentity;
+      return;
+    }
+    if (previousWalletRef.current === walletIdentity) return;
+    previousWalletRef.current = walletIdentity;
+    resetForEdit();
+    // Only wallet identity changes should trigger this effect. Execution-state changes must retain their result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.address, wallet.connected]);
 
   useEffect(() => {
     if (assetMode !== "token") {
@@ -615,6 +664,7 @@ export function EvmBatchDistributorPage() {
   const prepareDistribution = async () => {
     const gasSettings = gas.gasSettings;
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address || !gasSettings) return;
+    terminalArchivedRef.current = false;
     sendOperationRef.current = true;
     const preflightEpoch = ++preflightEpochRef.current;
     setConfirmVisible(true);
@@ -814,10 +864,13 @@ export function EvmBatchDistributorPage() {
   };
 
   const startNewDistribution = () => {
+    terminalArchivedRef.current = false;
     setGeneratorRevision((value) => value + 1);
     setGeneratedInput("");
     setGeneratedList(initialGeneratedList);
     setMixedAmountWarningVisible(false);
+    setArchivedRound(null);
+    setRoundSequence(1);
     resetConfirmation();
   };
 
@@ -879,35 +932,24 @@ export function EvmBatchDistributorPage() {
                     triggerLabel="确认分发"
                   />
                 ) : null}
-                {safetyState.canRetryInPlace ? (
-                  <Button onClick={resetConfirmation} type="button" variant="outline">返回修改并重新预检</Button>
+                {sendComplete || sendFailed ? (
+                  <span className="collection-terminal-hint">
+                    {unresolvedSubmission
+                      ? "可直接编辑；首次修改会归档本轮。核对链上状态后才可开始新的写入任务。"
+                      : "本轮已结束，直接编辑任一设置即可自动归档并进入下一轮。"}
+                  </span>
                 ) : null}
-                {sendComplete ? (
-                  <ConfirmActionDialog
-                    confirmLabel="继续编辑"
-                    description="本轮交易记录会从结果区收起，网络、资产与收款清单继续保留。再次分发前请先修改或核对清单，避免重复发送。"
-                    disabled={sending}
-                    onConfirm={resetConfirmation}
-                    title="继续使用当前清单？"
-                    triggerLabel="继续编辑清单"
-                    triggerVariant="outline"
-                  />
-                ) : null}
-                {sendComplete || unresolvedSubmission ? (
-                  sendState.signatures.length > 0 ? (
-                    <ConfirmActionDialog
-                      confirmLabel="确认清空"
-                      description="本轮已产生交易哈希。清空只会从当前视图移除清单与哈希，不会撤销链上交易；请先核验链上记录，不要直接重复发送。"
-                      disabled={sending}
-                      onConfirm={startNewDistribution}
-                      title="清空 EVM 分发工作台？"
-                      triggerLabel="清空清单"
-                      triggerVariant="destructive"
-                    />
-                  ) : (
-                    <Button onClick={startNewDistribution} type="button" variant="destructive">清空清单</Button>
-                  )
-                ) : null}
+                <ConfirmActionDialog
+                  confirmLabel="确认清空"
+                  description={sendState.signatures.length > 0 || Boolean(archivedRound?.transactions.length)
+                    ? "当前或上一轮包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
+                    : "收款清单、当前执行状态和上一轮结果将从页面清除。"}
+                  disabled={sending || preflighting || listImporting}
+                  onConfirm={startNewDistribution}
+                  title="清空 EVM 分发工作台？"
+                  triggerLabel="清空清单"
+                  triggerVariant="destructive"
+                />
               </div>
             </div>
           )}
@@ -934,13 +976,13 @@ export function EvmBatchDistributorPage() {
                 metaLabel="Chain ID"
                 metaPrefix="ID "
                 onChange={(nextNetworkId) => {
+                  resetForEdit();
                   const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
                   setNetworkId(nextNetworkId);
                   setRpcEndpoint(nextNetwork.rpcEndpoint);
                   if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
                   setTokenLookup(initialTokenLookupState);
                   rememberPreferredEvmDistributionNetwork(nextNetworkId);
-                  resetConfirmation();
                 }}
                 options={networkOptions}
                 placeholder="搜索链名称或 Chain ID"
@@ -955,9 +997,9 @@ export function EvmBatchDistributorPage() {
                 disabled={pageControlsLocked}
                 id="rpcEndpoint"
                 onChange={(event) => {
+                  resetForEdit();
                   setRpcEndpoint(event.target.value);
                   setTokenLookup(initialTokenLookupState);
-                  resetConfirmation();
                 }}
                 spellCheck={false}
                 type="url"
@@ -978,9 +1020,9 @@ export function EvmBatchDistributorPage() {
             onValueChange={(nextMode) => {
               if (nextMode !== "native" && nextMode !== "token") return;
               if (nextMode === "native" && !nativeCurrencyEnabled) return;
+              resetForEdit();
               setAssetMode(nextMode);
               setTokenLookup(initialTokenLookupState);
-              resetConfirmation();
             }}
             value={assetMode}
           >
@@ -1009,9 +1051,9 @@ export function EvmBatchDistributorPage() {
                   disabled={pageControlsLocked}
                   id="tokenAddress"
                   onChange={(event) => {
+                    resetForEdit();
                     setTokenAddress(event.target.value);
                     setTokenLookup(initialTokenLookupState);
-                    resetConfirmation();
                   }}
                   placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
                   spellCheck={false}
@@ -1083,7 +1125,7 @@ export function EvmBatchDistributorPage() {
             disabled={pageControlsLocked}
             feeEstimate={preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "预检后显示"}
             gas={gas}
-            onSettingsChange={resetConfirmation}
+            onSettingsChange={resetForEdit}
           />
         </WorkbenchPanel>
 
@@ -1199,6 +1241,52 @@ export function EvmBatchDistributorPage() {
             </Alert>
           ) : null}
         </ReviewPanel>
+        {archivedRound ? (
+          <ReviewPanel
+            actions={archivedRound.requiresAcknowledgement ? (
+              <ConfirmActionDialog
+                confirmLabel="确认已核对"
+                description="仅确认你已根据交易哈希核对上一轮链上状态；这不会重试或撤销原交易。"
+                onConfirm={() => setArchivedRound((current) => current ? {
+                  ...current,
+                  requiresAcknowledgement: false
+                } : current)}
+                title="已核对上一轮链上状态？"
+                triggerLabel="已核对，开始新任务"
+                triggerVariant="outline"
+              />
+            ) : null}
+            className="review-panel collection-round-archive"
+            stateKey={archivedRound.sequence}
+            summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "已完成" : "需处理"} · {archivedRound.transactions.length} 笔</Badge>}
+            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+          >
+            <div className="flex min-w-0 flex-col gap-3">
+              <p>{archivedRound.message}</p>
+              <div className="action-group">
+                <Badge variant="outline">{archivedRound.networkLabel}</Badge>
+                <Badge variant="outline">{archivedRound.assetLabel}</Badge>
+              </div>
+              {archivedRound.transactions.length ? (
+                <ResultTable<{ explorerUrl?: string; hash: string; index: number }>
+                  caption="上一轮 EVM 分发交易"
+                  columns={[
+                    { header: "交易", key: "index", render: (row) => `交易 ${row.index + 1}` },
+                    {
+                      header: "哈希",
+                      key: "hash",
+                      render: (row) => row.explorerUrl
+                        ? <a className="hash" href={row.explorerUrl} rel="noreferrer" target="_blank" title={row.hash}>{shortenAddress(row.hash)}</a>
+                        : <span className="hash" title={row.hash}>{shortenAddress(row.hash)}</span>
+                    }
+                  ]}
+                  getRowKey={(row) => row.hash}
+                  rows={archivedRound.transactions.map((transaction, index) => ({ ...transaction, index }))}
+                />
+              ) : null}
+            </div>
+          </ReviewPanel>
+        ) : null}
       </div>
     </ToolPageLayout>
   );

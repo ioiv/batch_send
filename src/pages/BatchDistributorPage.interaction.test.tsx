@@ -318,7 +318,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(screen.getByRole("link", { name: /交易 1:/ })).toHaveAttribute("href", expect.stringContaining("solana-signature-1"));
     await user.click(screen.getByRole("button", { name: "清空清单" }));
     const clearDialog = await screen.findByRole("alertdialog", { name: "清空 SOL 分发工作台？" });
-    expect(within(clearDialog).getByText(/请先核对链上状态/)).toBeVisible();
+    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeVisible();
     await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
     expect(editor).toHaveValue("11111111111111111111111111111111");
 
@@ -329,7 +329,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(screen.queryByRole("link", { name: /交易 1:/ })).not.toBeInTheDocument();
   });
 
-  it("locks an interrupted multi-transaction task after a hash and only allows confirmed restart", async () => {
+  it("unlocks an interrupted task for editing but requires acknowledgement before restart", async () => {
     solanaMocks.planChunks.mockImplementation((rows: unknown[]) => {
       const values = rows as unknown[];
       return [[values[0]], [values[1]]];
@@ -353,9 +353,14 @@ describe("BatchDistributorPage network safety", () => {
 
     expect(await screen.findByText(/已提交 1\/2 笔交易/)).toBeVisible();
     expect(screen.getByText("禁止直接重试")).toBeVisible();
-    expect(editor).toBeDisabled();
+    expect(editor).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toBeVisible();
+
+    await user.type(editor, "\nVote111111111111111111111111111111111111111");
+    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
   });
 
   it("refreshes the blockhash and confirms each group before signing the next batch", async () => {

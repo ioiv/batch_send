@@ -135,6 +135,7 @@ export type EvmCollectionResult = {
   message: string;
   retryable: boolean;
   status: EvmCollectionResultStatus;
+  uncertain?: boolean;
 };
 
 export type EvmCollectionProgressStage =
@@ -856,7 +857,8 @@ function resultFromPlanItem(
   status: EvmCollectionResultStatus,
   message: string,
   hash: Hash | null = null,
-  retryable = false
+  retryable = false,
+  uncertain = false
 ): EvmCollectionResult {
   return {
     address: item.address,
@@ -867,7 +869,8 @@ function resultFromPlanItem(
     label: safeLabel(item.label, "来源钱包"),
     message: redactSecrets(message),
     retryable,
-    status
+    status,
+    uncertain
   };
 }
 
@@ -1242,7 +1245,8 @@ function storeOperationResults(
   message: string,
   hash: Hash | null = null,
   amount?: bigint,
-  retryable = false
+  retryable = false,
+  uncertain = false
 ) {
   operation.entries.forEach(({ index, item }) => {
     results[index] = resultFromPlanItem(
@@ -1250,7 +1254,8 @@ function storeOperationResults(
       status,
       message,
       hash,
-      retryable
+      retryable,
+      uncertain
     );
   });
 }
@@ -1460,7 +1465,7 @@ export async function executeEvmCollectionPlan({
     if (uncertainSources.has(sourceKey)) {
       const message = "同一来源钱包此前存在未确认交易，已停止其后续归集项";
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message);
+      storeOperationResults(results, operation, "failed", message, null, undefined, false, true);
       continue;
     }
     if (signer.address.toLowerCase() === target.toLowerCase()) {
@@ -1582,14 +1587,14 @@ export async function executeEvmCollectionPlan({
         const detail = normalizeEvmCollectionError(error, "等待链上确认失败", "confirmation-failed");
         const message = `交易已提交但确认失败：${detail.message}。请先查询链上状态，勿盲目重发`;
         emitOperationProgress(onProgress, operation, "failed", plan.length, message, hash);
-        storeOperationResults(results, operation, "failed", message, hash, submittedAmount);
+        storeOperationResults(results, operation, "failed", message, hash, submittedAmount, false, true);
       }
     } catch (error) {
       uncertainSources.add(sourceKey);
       const detail = normalizeEvmCollectionError(error, "交易提交失败", "submission-failed");
       const message = `提交失败或状态不确定：${detail.message}。已停止该来源后续交易；重试前请检查链上记录`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
-      storeOperationResults(results, operation, "failed", message, null, submittedAmount);
+      storeOperationResults(results, operation, "failed", message, null, submittedAmount, false, true);
     }
   }
 

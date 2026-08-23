@@ -21,14 +21,16 @@ npm run build
 | 功能 | 路由 | 输入格式 |
 | --- | --- | --- |
 | ERC20 代币归集 | `/evm/collect/` | 资产每行一个合约地址；密钥每行 `0x私钥` 或 `标签,0x私钥` |
-| EVM NFT 归集 | `/evm/nft-collect/` | 支持 `1,3,8-12` 批量 ID、TXT / CSV 与 ERC721Enumerable 自动发现，也可直接编辑 `合约地址,Token ID` |
+| EVM NFT 归集 | `/evm/nft-collect/` | 支持 `1,3,8-12` 批量 ID、TXT / CSV，以及纯 RPC 的 Enumerable/Token ID 直接探测，也可直接编辑 `合约地址,Token ID` |
 | SOL 归集 | `/sol/collect/` | 每行 Base58、JSON 数组密钥，或 `标签,密钥` |
 
 三类归集都使用“解析 / 扫描 → 无密钥预览 → 明确确认 → 本地签名 → 逐项提交与确认”的流程。失败不会中断整批任务，提交后确认异常会保留交易哈希，并提示先核对链上状态，避免盲目重发。
 
 所有工具页统一采用“准备 → 确认 → 执行”的三阶段工作台。SOL / EVM 分发支持 TXT / CSV 导入；归集密钥支持本地 TXT / CSV / JSON 导入，文件读取后立即清空选择控件。归集结果可按状态筛选并搜索地址、备注或资产，大批量结果会展开为全宽工作区。
 
-NFT 自动发现只适用于明确实现 ERC721Enumerable 的合约。普通 ERC721 没有通用的 owner Token ID 枚举接口，工具会要求改用手工 ID 或文件导入，不会猜测或依赖不完整的第三方索引。
+NFT Token ID 识别只使用当前 RPC，且不读取历史事件：ERC721Enumerable 调用 `balanceOf` / `tokenOfOwnerByIndex`；普通 ERC721 优先读取 `totalSupply` 与常见铸造计数器推算 Token ID 范围，再在固定快照并发调用 `ownerOf`，并用来源钱包的 `balanceOf` 判断是否找全。无法推算范围时可填写 Token ID 起止值。ERC1155 标准没有全量 Token ID 枚举接口，需手工或通过 TXT/CSV 提供已知 ID，执行前再调用 `balanceOf` 复核余额。
+
+六个交易入口只在预检、导入、签名、提交、确认或扫描进行中锁定相关输入。终态可直接编辑或再次识别，首次新动作会自动归档最近一轮公开结果；不确定交易仍需确认已核对链上状态后，才允许提交新的写入任务。NFT 失败行支持单项重试和“重试全部失败项”，已提交但状态不确定的交易不会进入重试集合。
 
 ## 扩展新工具
 

@@ -12,12 +12,19 @@ export type CollectionDisplayResult = {
   amount?: string;
   asset: string;
   assetKey?: string;
+  executionId?: string;
   explorerUrl?: string;
   hash?: string;
   label?: string;
   message: string;
+  retryable?: boolean;
   status: CollectionResultStatus;
+  uncertain?: boolean;
 };
+
+export function sanitizeRoundArchiveText(value: string) {
+  return value.replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, "[敏感 URL 已隐藏]");
+}
 
 export type CollectionResultCounts = {
   active: number;

@@ -202,7 +202,7 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
   });
 
-  it("completes deployment, keeps registration explicit, and starts a clean task on confirmation", async () => {
+  it("completes deployment, keeps registration explicit, and auto-archives on the first edit", async () => {
     deployMocks.deploy.mockImplementationOnce(async ({ onStage }) => {
       const receipt = { status: "success" };
       onStage?.({ preflight: deploymentPreflight, type: "awaiting-wallet" });
@@ -231,13 +231,15 @@ describe("EvmContractDeployPage safety", () => {
       gasSettings: { mode: "auto" }
     }));
 
-    await user.click(screen.getByRole("button", { name: "新建部署任务" }));
-    const newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建部署任务？" });
-    expect(within(newTaskDialog).getByText(/已产生交易哈希/)).toBeInTheDocument();
-    await user.click(within(newTaskDialog).getByRole("button", { name: "新建部署任务" }));
-
+    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    const explorerInput = screen.getByRole("textbox", { name: "区块浏览器地址" });
+    expect(explorerInput).toBeEnabled();
+    await user.clear(explorerInput);
+    await user.type(explorerInput, "https://explorer.example");
     await waitFor(() => expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "editing"));
-    expect(screen.queryByTitle(transactionHash)).not.toBeInTheDocument();
+    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "展开上一轮结果 · 第 1 轮" }));
+    expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "EVM 分发链名称" })).not.toBeInTheDocument();
     const validateButton = screen.getByRole("button", { name: "校验部署条件" });
     expect(validateButton).toBeEnabled();
@@ -245,7 +247,7 @@ describe("EvmContractDeployPage safety", () => {
     expect(await screen.findByRole("button", { name: "确认部署" })).toBeEnabled();
   });
 
-  it("removes every deploy retry action after a submitted hash becomes uncertain", async () => {
+  it("allows read-only revalidation after an uncertain hash but gates a new deployment", async () => {
     deployMocks.deploy.mockImplementationOnce(async ({ onStage }) => {
       onStage?.({ preflight: deploymentPreflight, type: "awaiting-wallet" });
       onStage?.({ hash: transactionHash, type: "submitted" });
@@ -259,23 +261,22 @@ describe("EvmContractDeployPage safety", () => {
     expect(await screen.findByText("禁止直接重试部署")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "重新校验" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新校验" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "校验部署条件" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "false");
 
-    const newTaskTrigger = screen.getByRole("button", { name: "新建部署任务" });
-    await user.click(newTaskTrigger);
-    let newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建部署任务？" });
-    expect(within(newTaskDialog).getByText(/先核验链上状态/)).toBeInTheDocument();
-    expect(within(newTaskDialog).getByText(/不代表可以安全重试/)).toBeInTheDocument();
-    await user.click(within(newTaskDialog).getByRole("button", { name: "取消" }));
-    expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
-    expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重新校验" }));
+    expect(await screen.findByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    const deployButton = await screen.findByRole("button", { name: "确认部署" });
+    expect(deployButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
 
-    await user.click(newTaskTrigger);
-    newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建部署任务？" });
-    await user.click(within(newTaskDialog).getByRole("button", { name: "新建部署任务" }));
+    const clearTrigger = screen.getByRole("button", { name: "清空工作台" });
+    await user.click(clearTrigger);
+    const clearDialog = screen.getByRole("alertdialog", { name: "清空 CreateX 部署工作台？" });
+    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeVisible();
+    await user.click(within(clearDialog).getByRole("button", { name: "确认清空" }));
     await waitFor(() => expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "editing"));
     expect(screen.queryByTitle(transactionHash)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "校验部署条件" })).toBeEnabled();
