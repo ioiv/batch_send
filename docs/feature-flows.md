@@ -64,7 +64,7 @@
 | `preflight` | 只读检查进行中 | 取消页面级输入操作；不签名 |
 | `ready` | 当前输入快照通过预检 | 打开确认对话框、返回编辑 |
 | `running` | 等待签名、提交或确认 | 查看进度；锁定会改变任务的输入 |
-| `success` | 所有应执行项已确认 | 导出、查看哈希、开始新任务 |
+| `success` | 所有应执行项已确认 | 导出、查看哈希、整理本轮并继续 |
 | `error` | 尚未提交，或某些项确定失败 | 修正后重新预检；保留逐项结果 |
 | `uncertain` | 已签名/已提交但最终状态未知 | 只允许核对哈希或新建空白任务，禁止盲目整批重试 |
 
@@ -340,10 +340,14 @@ flowchart TD
   nft_o_start --> nft_o_source["来源模式：只读地址 / 私钥"]
   nft_o_source --> nft_o_context["网络、标准与 NFT 合约"]
   nft_o_context --> nft_o_method{"添加资产？"}
-  nft_o_method -->|自动识别 ERC721| nft_o_discover["[不可删除] Enumerable / 索引候选链上复核 / 事件回溯"]
-  nft_o_discover --> nft_o_coverage{"完整结果？"}
-  nft_o_coverage -->|否| nft_o_partial["[不可删除] Alert 确认只加入已验证的部分结果"]
-  nft_o_coverage -->|是| nft_o_join["[不可删除] 用户明确点击加入资产表"]
+  nft_o_method -->|自动识别| nft_o_discover["[不可删除] Enumerable / 索引候选链上复核"]
+  nft_o_discover --> nft_o_history{"需要 Transfer 历史？"}
+  nft_o_history -->|是| nft_o_range["说明原因与区块范围；完整 / 自定义 / 暂不扫描"]
+  nft_o_range --> nft_o_stop["扫描中展示区间与候选数，并可停止"]
+  nft_o_history -->|否| nft_o_coverage{"完整结果？"}
+  nft_o_stop --> nft_o_coverage
+  nft_o_coverage -->|否| nft_o_partial["[不可删除] Alert 确认只追加已验证的部分结果"]
+  nft_o_coverage -->|是| nft_o_join["按合约对账当前资产；零结果也清除该合约旧项"]
   nft_o_partial --> nft_o_join
   nft_o_method -->|手工或文件| nft_o_combined["[合并] Token ID/区间输入与 TXT/CSV 导入"]
   nft_o_method -->|原始编辑| nft_o_sheet["Sheet：高级原始清单编辑"]
@@ -351,22 +355,26 @@ flowchart TD
   nft_o_combined --> nft_o_table
   nft_o_sheet --> nft_o_table
   nft_o_table --> nft_o_target["目标地址与执行密钥"]
-  nft_o_target --> nft_o_advanced["高级设置：RPC、Gas、发现范围"]
+  nft_o_target --> nft_o_advanced["高级设置：RPC、Gas 与费用保护"]
   nft_o_target --> nft_o_preflight["[不可删除] 网络、所有权/余额、模拟、费用和任务上限预检"]
   nft_o_preflight --> nft_o_dialog["AlertDialog：标准、完整目标、资产/交易数、费用和部分发现警告"]
   nft_o_dialog -->|取消| nft_o_table
   nft_o_dialog -->|确认| nft_o_recheck["[不可删除] 签名前重查网络、所有权/余额、模拟和费用"]
   nft_o_recheck --> nft_o_run["逐项或 ERC1155 批量签名、提交和确认"]
-  nft_o_run --> nft_o_results["[合并] 预检资产表原位转为执行结果表"]
+  nft_o_run --> nft_o_results["资产表切为本轮结果；隐藏选择与移除操作"]
   nft_o_results --> nft_o_lock["[不可删除] 保留哈希；不确定来源停止后续项"]
+  nft_o_results -->|明确完成| nft_o_next["整理本轮：成功资产移出，失败 / 未执行项保留"]
+  nft_o_next --> nft_o_discover
 ```
 
 ### 保留与变更
 
 - `[合并]` 手工添加和文件导入；所有资产最终只进入一张明确的待归集表。高级原始编辑移动到 `Sheet`。
-- `[不可删除]` 完整扫描也必须点击加入；部分扫描必须先单独确认；Blockscout 只提供候选，最终所有权必须由链上快照验证。
+- 自动识别由用户主动发起；Enumerable 或完整索引结果可直接按合约对账。历史回溯必须先展示原因、部署区块、快照区块和读取量，再由用户确认开始。
+- `[不可删除]` 完整扫描可替换同合约旧清单（包括零结果清除）；部分扫描只能在单独确认后追加，不能依据“未发现”删除旧项。Blockscout 只提供候选，最终所有权必须由链上快照验证。
 - 使用公开 Blockscout 发现会向第三方暴露来源地址与 NFT 合约，这是只读模式的隐私边界；界面应在发起查询前保留明确提示。
-- ERC1155 自动识别只切换标准，不自动猜测 Token ID；无对应私钥的 ERC721 必须跳过。
+- ERC1155 不猜测 Token ID，只能在用户确认后从 TransferSingle / TransferBatch 历史恢复候选并按快照余额复核；无对应私钥的 ERC721 必须跳过执行。
+- 页面不建立任务实体，只保留“持久设置、当前资产池、本轮结果、上一轮只读结果”。进入下一轮时仅移除所有执行行都已明确结算的 NFT；失败、跳过、未执行和状态不确定项继续保留。
 
 ## 5. SOL 归集 `/sol/collect/`
 
@@ -530,14 +538,14 @@ flowchart TD
 4. 签名前必须复核所选网络/RPC，及该流程适用的账户、余额、费用、allowance、所有权或 runtime。
 5. 任何已产生哈希/签名的异常都进入 `uncertain` 或等价锁定状态；不得提供“一键整批重试”。
 6. 私钥不得进入 React state、浏览器持久化、Analytics、日志、URL、CSV 或错误文本；敏感页继续零 Analytics。
-7. NFT 自动发现不得把索引器结果直接视为所有权；完整与部分发现都必须由用户明确加入，部分发现多一次确认。
+7. NFT 自动发现不得把索引器结果直接视为所有权；完整结果须经链上快照复核后才能按合约对账，部分结果必须额外确认且只能追加。
 8. 混合 SOL/EVM 清单不自动拆分；CreateX 成功后不自动注册链。
 9. 原生币元数据未确认时只开放 Token；RPC、钱包链、canonical 合约字节码或部署 runtime 不匹配时阻断签名。
-10. 清空任务改用 shadcn `AlertDialog`；它只清除当前任务，不能在未解释哈希状态时抹掉已提交记录。
+10. 清空工作台改用 shadcn `AlertDialog`；它会清除持久设置和当前轮次，不能在未解释哈希状态时抹掉已提交记录。
 
 ## 验收覆盖
 
-- 七个工具分别覆盖：编辑、导入、输入变化使预检失效、预检失败、取消 `AlertDialog`、执行成功、部分失败、状态不确定、清空任务和重新开始。
+- 七个工具分别覆盖：编辑、导入、输入变化使预检失效、预检失败、取消 `AlertDialog`、执行成功、部分失败、状态不确定、清空工作台和继续下一轮。
 - 组件交互覆盖 `Combobox`、`Tabs`、`Dialog`、`AlertDialog`、`Sheet`、`Collapsible`、键盘导航、焦点陷阱/恢复及禁用状态。
 - 安全回归覆盖：私钥 DOM/计划清理、敏感页无 Analytics、CSV 无密钥、错误脱敏、哈希锁定、SOL genesis hash、EVM chain ID/runtime、NFT 部分结果确认。
 - 首页和七个工具页在 375、768、1024、1440 px 检查无整页横向溢出、无控制台错误、键盘可操作且可见文案符合本文件规则。

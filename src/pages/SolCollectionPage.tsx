@@ -65,7 +65,7 @@ const solStatusLabels: Record<WorkbenchStatus, string> = {
   preflight: "检查中",
   ready: "等待确认",
   running: "执行中",
-  success: "已完成",
+  success: "本轮完成",
   uncertain: "部分交易需核对"
 };
 
@@ -352,7 +352,7 @@ export function SolCollectionPage() {
       const skipped = collectionResults.filter((item) => item.status === "skipped").length;
       const failed = collectionResults.filter((item) => item.status === "error").length;
       setStage("complete");
-      setMessage(`执行结束：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`
+      setMessage(`本轮完成：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`
         + (retrySourcesRef.current.length ? `；${retrySourcesRef.current.length} 笔可直接重试` : ""));
     } catch (error) {
       retrySourcesRef.current = sources.filter((source) => !submittedAddresses.has(source.address));
@@ -385,12 +385,12 @@ export function SolCollectionPage() {
     setStage("editing");
   };
 
-  const beginNextTaskWithCurrentSettings = () => {
+  const beginNextRoundWithCurrentSettings = () => {
     if (running) return;
     retrySourcesRef.current = [];
     setResults([]);
     setIssues([]);
-    setMessage("已保留来源钱包与归集配置；请按需修改后开始新任务");
+    setMessage("已保留来源钱包与归集配置；可按需修改后直接开始下一轮");
     setStage("editing");
   };
 
@@ -406,14 +406,14 @@ export function SolCollectionPage() {
         <>
           <Badge variant="outline">{selectedNetwork.label}</Badge>
           <ConfirmActionDialog
-            confirmLabel="清空任务"
+            confirmLabel="确认清空"
             description={hasSubmittedHash
               ? "当前钱包行包含已提交的交易。清空前请先核对链上状态；清空后本页记录无法恢复。"
               : "来源密钥、目标地址和当前执行状态将从页面清除。"}
             disabled={running}
             onConfirm={resetTask}
-            title="清空当前 SOL 归集任务？"
-            triggerLabel="清空任务"
+            title="清空 SOL 归集工作台？"
+            triggerLabel="清空工作台"
             triggerVariant="destructive"
           />
         </>
@@ -443,16 +443,13 @@ export function SolCollectionPage() {
                 />
               ) : hasSubmittedHash ? (
                 stage === "complete" ? (
-                  <ConfirmActionDialog
-                    confirmLabel="保留设置并新建任务"
-                    description="当前交易记录会从本页结果中移除，但链上交易不会撤销。来源钱包和归集配置会保留；再次执行前请确认不会重复归集。"
+                  <Button
                     disabled={running}
-                    onConfirm={beginNextTaskWithCurrentSettings}
-                    title="使用当前设置新建归集任务？"
-                    triggerLabel="保留设置，新建任务"
-                    triggerVariant="outline"
-                  />
-                ) : <Button disabled type="button">本次任务已结束</Button>
+                    onClick={beginNextRoundWithCurrentSettings}
+                    type="button"
+                    variant="outline"
+                  >继续使用当前设置</Button>
+                ) : <Button disabled type="button">需先核对链上交易</Button>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"

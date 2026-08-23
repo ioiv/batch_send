@@ -9,12 +9,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmActionDialog } from "@/components/WorkbenchPrimitives";
 import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
 import {
+  removeValidNftInventoryAssets,
+  type NftInventoryStandard
+} from "../lib/nft-inventory";
+import {
   parseEvmCollectionAssets,
-  type EvmCollectionAsset,
-  type EvmCollectionStandard
+  type EvmCollectionAsset
 } from "../lib/evm-collection";
 
-export type NftInventoryStandard = Extract<EvmCollectionStandard, "erc721" | "erc1155">;
+export { removeValidNftInventoryAssets } from "../lib/nft-inventory";
 
 export type NftInventoryReviewProps = {
   assetInput: string;
@@ -54,33 +57,6 @@ function shortHash(hash: string) {
   return hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
 
-/**
- * Removes only parsed NFT assets. Invalid source rows are deliberately retained so
- * a review action can never silently discard input that the parser could not read.
- */
-export function removeValidNftInventoryAssets(
-  assetInput: string,
-  standard: NftInventoryStandard,
-  assetKeys: Iterable<string>
-) {
-  const selectedKeys = new Set(assetKeys);
-  if (!selectedKeys.size) return assetInput;
-
-  const parsed = parseEvmCollectionAssets(assetInput, standard);
-  const removableLines = new Set(
-    parsed.rows
-      .filter((row) => row.asset && selectedKeys.has(row.asset.key))
-      .map((row) => row.line)
-  );
-  if (!removableLines.size) return assetInput;
-
-  const lineBreak = assetInput.includes("\r\n") ? "\r\n" : "\n";
-  return assetInput
-    .split(/\r?\n/)
-    .filter((_, index) => !removableLines.has(index + 1))
-    .join(lineBreak);
-}
-
 export function NftInventoryReview({
   assetInput,
   contractLabels,
@@ -111,6 +87,24 @@ export function NftInventoryReview({
     });
     return grouped;
   }, [results]);
+  const showingRoundResults = results.length > 0;
+  const assetOutcomeCounts = useMemo(() => parsed.assets.reduce((counts, asset) => {
+    const assetResults = resultsByAssetKey.get(asset.key) || [];
+    if (!assetResults.length) {
+      counts.pending += 1;
+      return counts;
+    }
+    const hasSuccess = assetResults.some((result) => result.status === "success");
+    const hasError = assetResults.some((result) => result.status === "error");
+    const hasActive = assetResults.some((result) => ![
+      "success", "skipped", "error"
+    ].includes(result.status));
+    if (hasActive) counts.active += 1;
+    else if (hasError) counts.review += 1;
+    else if (hasSuccess) counts.success += 1;
+    else counts.pending += 1;
+    return counts;
+  }, { active: 0, pending: 0, review: 0, success: 0 }), [parsed.assets, resultsByAssetKey]);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -145,19 +139,34 @@ export function NftInventoryReview({
     <section className="nft-inventory-review" aria-labelledby={titleId} aria-describedby={descriptionId}>
       <header className="nft-inventory-review__heading">
         <div>
-          <h3 id={titleId}>待归集资产</h3>
-          <p className="sr-only" id={descriptionId}>勾选资产后可从清单移除；无效原始行会保留。</p>
+          <h3 id={titleId}>{showingRoundResults ? "本轮资产结果" : "当前待归集资产"}</h3>
+          <p className="sr-only" id={descriptionId}>
+            {showingRoundResults
+              ? "逐项显示本轮归集状态与交易哈希。"
+              : "勾选资产后可从清单移除；无效原始行会保留。"}
+          </p>
         </div>
-        <Badge aria-live="polite" variant="outline">
-          {parsed.assets.length} 个有效{parsed.invalid ? ` · ${parsed.invalid} 行无效` : ""}
-        </Badge>
+        <div className="nft-inventory-review__summary" aria-live="polite">
+          {showingRoundResults ? (
+            <>
+              <Badge variant="outline">完成 {assetOutcomeCounts.success}</Badge>
+              {assetOutcomeCounts.active ? <Badge variant="outline">处理中 {assetOutcomeCounts.active}</Badge> : null}
+              {assetOutcomeCounts.review ? <Badge variant="destructive">需处理 {assetOutcomeCounts.review}</Badge> : null}
+              {assetOutcomeCounts.pending ? <Badge variant="outline">未发送 {assetOutcomeCounts.pending}</Badge> : null}
+            </>
+          ) : (
+            <Badge variant="outline">
+              {parsed.assets.length} 个有效{parsed.invalid ? ` · ${parsed.invalid} 行无效` : ""}
+            </Badge>
+          )}
+        </div>
       </header>
 
       {parsed.rows.length === 0 ? (
         <Empty className="nft-inventory-review__empty"><EmptyHeader><EmptyTitle>暂无资产</EmptyTitle></EmptyHeader></Empty>
       ) : (
         <>
-          <div className="nft-inventory-review__toolbar" role="group" aria-label="资产选择与移除">
+          {!showingRoundResults ? <div className="nft-inventory-review__toolbar" role="group" aria-label="资产选择与移除">
             <FieldLabel className="nft-inventory-review__select-all">
               <Checkbox
                 checked={allSelected}
@@ -193,18 +202,18 @@ export function NftInventoryReview({
                 triggerVariant="destructive"
               />
             </div>
-          </div>
+          </div> : null}
 
           <ScrollArea className="nft-inventory-review__table-wrap">
             <Table aria-label={`${standard === "erc721" ? "ERC721" : "ERC1155"} 待归集资产清单`} className="nft-inventory-review__table">
               <TableHeader>
                 <TableRow>
-                  <TableHead>选择</TableHead>
+                  {!showingRoundResults ? <TableHead>选择</TableHead> : null}
                   <TableHead>合约</TableHead>
                   <TableHead>Token ID</TableHead>
                   <TableHead>数量</TableHead>
                   <TableHead>状态</TableHead>
-                  <TableHead><span className="sr-only">操作</span></TableHead>
+                  {!showingRoundResults ? <TableHead><span className="sr-only">操作</span></TableHead> : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -218,7 +227,7 @@ export function NftInventoryReview({
                   ) {
                     return (
                       <TableRow className="nft-inventory-review__row is-invalid" key={`invalid-${row.line}`}>
-                        <TableCell><span aria-label="无效行不可选择">—</span></TableCell>
+                        {!showingRoundResults ? <TableCell><span aria-label="无效行不可选择">—</span></TableCell> : null}
                         <TableCell>
                           <strong>第 {row.line} 行无效</strong>
                           <code>{rawLine || "未能定位原始行"}</code>
@@ -229,7 +238,7 @@ export function NftInventoryReview({
                           <Badge variant="destructive">需修正</Badge>
                           <small>{row.problems.join(" / ")}</small>
                         </TableCell>
-                        <TableCell><small>保留原始行</small></TableCell>
+                        {!showingRoundResults ? <TableCell><small>保留原始行</small></TableCell> : null}
                       </TableRow>
                     );
                   }
@@ -238,12 +247,22 @@ export function NftInventoryReview({
                   const duplicate = row.status === "duplicate";
                   const name = contractLabel(contractLabels, row.asset.contractAddress);
                   const assetResults = resultsByAssetKey.get(row.asset.key) || [];
+                  const rowOutcome = assetResults.some((result) => ![
+                    "success", "skipped", "error"
+                  ].includes(result.status))
+                    ? "active"
+                    : assetResults.some((result) => result.status === "error")
+                      ? "error"
+                      : assetResults.some((result) => result.status === "success")
+                        ? "success"
+                        : assetResults.length ? "skipped" : "pending";
                   return (
                     <TableRow
-                      className={`nft-inventory-review__row${duplicate ? " is-duplicate" : ""}`}
+                      className={`nft-inventory-review__row${duplicate ? " is-duplicate" : ""}${rowOutcome === "success" ? " is-success" : ""}`}
+                      data-status={rowOutcome}
                       key={`${row.status}-${row.line}-${row.asset.key}`}
                     >
-                      <TableCell>
+                      {!showingRoundResults ? <TableCell>
                         {duplicate ? (
                           <span aria-label="重复行不可选择">—</span>
                         ) : (
@@ -259,7 +278,7 @@ export function NftInventoryReview({
                             })}
                           />
                         )}
-                      </TableCell>
+                      </TableCell> : null}
                       <TableCell>
                         <strong>{name}</strong>
                         <code title={row.asset.contractAddress}>{shortAddress(row.asset.contractAddress)}</code>
@@ -307,9 +326,9 @@ export function NftInventoryReview({
                             <Badge variant="outline">重复行</Badge>
                             <small>{row.problems.join(" / ")}</small>
                           </>
-                        ) : <Badge variant="outline">可归集</Badge>}
+                        ) : <Badge variant="outline">待归集</Badge>}
                       </TableCell>
-                      <TableCell>
+                      {!showingRoundResults ? <TableCell>
                         {duplicate ? <small>随对应资产一起移除</small> : (
                           <Button
                             aria-label={`移除第 ${row.line} 行 NFT`}
@@ -320,7 +339,7 @@ export function NftInventoryReview({
                             variant="ghost"
                           >移除</Button>
                         )}
-                      </TableCell>
+                      </TableCell> : null}
                     </TableRow>
                   );
                 })}

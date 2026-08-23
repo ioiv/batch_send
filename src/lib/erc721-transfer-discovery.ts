@@ -90,9 +90,23 @@ export type DiscoverErc721AssetsByTransferParameters = {
   onProgress?: (progress: Erc721TransferDiscoveryProgress) => void;
   ownerAddresses: readonly string[];
   publicClient: Erc721TransferDiscoveryClient;
+  signal?: AbortSignal;
   scope?: Erc721TransferDiscoveryScope;
   toBlock?: bigint;
 };
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return Boolean(signal?.aborted)
+    || (Boolean(error) && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("NFT 历史扫描已停止");
+  error.name = "AbortError";
+  throw error;
+}
 
 function hasCode(value: string | undefined) {
   return Boolean(value && value !== "0x");
@@ -206,6 +220,7 @@ export async function findErc721DeploymentBlock({
 export async function discoverErc721AssetsByTransfer(
   parameters: DiscoverErc721AssetsByTransferParameters
 ): Promise<Erc721TransferDiscoveryResult> {
+  throwIfAborted(parameters.signal);
   const contract = normalizeContract(parameters.contractAddress);
   const { hasInvalidOwner, owners } = normalizeOwners(parameters.ownerAddresses);
   const maxRpcRequests = parameters.maxRpcRequests ?? defaultRpcBudget;
@@ -240,8 +255,10 @@ export async function discoverErc721AssetsByTransfer(
   let rpcRequests = 0;
   try {
     latestBlock = parameters.toBlock ?? await parameters.publicClient.getBlockNumber();
+    throwIfAborted(parameters.signal);
     if (!parameters.toBlock) rpcRequests += 1;
   } catch (error) {
+    if (isAbortError(error, parameters.signal)) throw error;
     issues.push({ code: "log-query-failed", message: getErrorMessage(error, "无法读取当前区块高度") });
     return emptyResult;
   }
@@ -308,6 +325,7 @@ export async function discoverErc721AssetsByTransfer(
   };
 
   while (rangeStart <= latestBlock) {
+    throwIfAborted(parameters.signal);
     const rangeEnd = rangeStart + activeBlockSpan - 1n > latestBlock
       ? latestBlock
       : rangeStart + activeBlockSpan - 1n;
@@ -328,6 +346,7 @@ export async function discoverErc721AssetsByTransfer(
       toBlock: rangeEnd,
       totalBlocks
     });
+    throwIfAborted(parameters.signal);
 
     try {
       rpcRequests += logCalls;
@@ -361,6 +380,7 @@ export async function discoverErc721AssetsByTransfer(
           toBlock: rangeEnd
         })
       ]);
+      throwIfAborted(parameters.signal);
       for (const log of [...sentLogs, ...receivedLogs]) {
         const tokenId = (log as { args?: { tokenId?: unknown } }).args?.tokenId;
         if (typeof tokenId === "bigint" && !addTokenId(tokenId)) break;
@@ -373,6 +393,7 @@ export async function discoverErc721AssetsByTransfer(
       }
       if (!complete) break;
     } catch (error) {
+      if (isAbortError(error, parameters.signal)) throw error;
       // Providers often reject broad eth_getLogs ranges. Retry the same range
       // automatically with a smaller span before declaring the scan partial.
       if (activeBlockSpan > minimumBlockSpan) {
@@ -400,6 +421,7 @@ export async function discoverErc721AssetsByTransfer(
     owners.map((owner) => [owner.toLowerCase(), new Set<string>()])
   );
   for (const tokenId of tokenList) {
+    throwIfAborted(parameters.signal);
     if (rpcRequests >= maxRpcRequests) {
       complete = false;
       issues.push({
@@ -416,6 +438,7 @@ export async function discoverErc721AssetsByTransfer(
       toBlock: latestBlock,
       totalBlocks
     });
+    throwIfAborted(parameters.signal);
     try {
       rpcRequests += 1;
       const owner = await parameters.publicClient.readContract({
@@ -425,6 +448,7 @@ export async function discoverErc721AssetsByTransfer(
         blockNumber: latestBlock,
         functionName: "ownerOf"
       });
+      throwIfAborted(parameters.signal);
       if (typeof owner !== "string" || !isAddress(owner)) {
         complete = false;
         issues.push({
@@ -440,6 +464,7 @@ export async function discoverErc721AssetsByTransfer(
         assets.push(createAsset(contract, tokenId));
       }
     } catch (error) {
+      if (isAbortError(error, parameters.signal)) throw error;
       complete = false;
       issues.push({
         code: "owner-read-failed",
@@ -454,6 +479,7 @@ export async function discoverErc721AssetsByTransfer(
   // calling a scan complete; otherwise an RPC/indexing gap could look like a
   // fully recovered collection.
   for (const ownerAddress of owners) {
+    throwIfAborted(parameters.signal);
     if (rpcRequests >= maxRpcRequests) {
       complete = false;
       issues.push({
@@ -471,6 +497,7 @@ export async function discoverErc721AssetsByTransfer(
         blockNumber: latestBlock,
         functionName: "balanceOf"
       });
+      throwIfAborted(parameters.signal);
       if (typeof balance !== "bigint" || balance < 0n) {
         throw new Error("invalid balanceOf response");
       }
@@ -485,6 +512,7 @@ export async function discoverErc721AssetsByTransfer(
         });
       }
     } catch (error) {
+      if (isAbortError(error, parameters.signal)) throw error;
       complete = false;
       issues.push({
         code: "balance-read-failed",

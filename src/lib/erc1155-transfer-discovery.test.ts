@@ -80,6 +80,29 @@ describe("discoverErc1155AssetsByTransfer", () => {
       .not.toContain("rpc.example.test");
   });
 
+  it("stops after cancellation instead of shrinking and retrying the range", async () => {
+    const controller = new AbortController();
+    const { client, mocks } = createClient({
+      getLogs: async () => {
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      }
+    });
+
+    await expect(discoverErc1155AssetsByTransfer({
+      blockSpan: 4_000n,
+      contractAddress: contract,
+      fromBlock: 0n,
+      ownerAddresses: [owner],
+      publicClient: client,
+      signal: controller.signal,
+      toBlock: 5_000n
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.getLogs).toHaveBeenCalledTimes(4);
+    expect(mocks.readContract).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid source input before querying logs", async () => {
     const { client, mocks } = createClient({ getLogs: async () => [] });
     const result = await discoverErc1155AssetsByTransfer({

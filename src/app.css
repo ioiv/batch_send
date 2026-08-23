@@ -1819,7 +1819,8 @@
 }
 
 .nft-discovery-card__bar,
-.nft-discovery-card__contract {
+.nft-discovery-card__contract,
+.nft-discovery-card__title {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -1835,6 +1836,10 @@
   font-size: 0.76rem;
   font-weight: 620;
   letter-spacing: -0.01em;
+}
+
+.nft-discovery-card__title {
+  flex-wrap: wrap;
 }
 
 .nft-discovery-card__contract {
@@ -1864,6 +1869,69 @@
   text-wrap: pretty;
 }
 
+.nft-history-scan {
+  border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
+  background: color-mix(in oklab, var(--warning) 6%, var(--card));
+}
+
+.nft-history-scan [data-slot="alert-description"] {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.nft-history-scan p {
+  margin: 0;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.nft-history-scan__range {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--border);
+}
+
+.nft-history-scan__range > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.55rem 0.65rem;
+  background: color-mix(in oklab, var(--card) 92%, var(--background));
+}
+
+.nft-history-scan__range span {
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+}
+
+.nft-history-scan__range strong {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nft-history-scan__actions,
+.nft-inventory-review__summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.nft-history-scan[data-scanning="true"] {
+  border-color: color-mix(in oklab, var(--primary) 42%, var(--border));
+}
+
 .nft-mode-tabs {
   width: fit-content;
 }
@@ -1884,6 +1952,10 @@
   font-weight: 620;
 }
 
+.nft-inventory-review__summary {
+  justify-content: flex-end;
+}
+
 .nft-inventory-review__toolbar {
   justify-content: space-between;
   flex-wrap: wrap;
@@ -1896,6 +1968,14 @@
 
 .nft-inventory-review__row.is-invalid {
   background: color-mix(in oklab, var(--destructive) 7%, transparent);
+}
+
+.nft-inventory-review__row.is-success {
+  background: color-mix(in oklab, var(--success) 5%, transparent);
+}
+
+.nft-inventory-review__row.is-success > td:not(:has(a)) {
+  color: color-mix(in oklab, var(--foreground) 74%, var(--muted-foreground));
 }
 
 .nft-inventory-review__statuses {
@@ -1931,6 +2011,24 @@
   text-decoration-color: color-mix(in oklab, var(--success) 52%, transparent);
   text-underline-offset: 0.16rem;
   white-space: nowrap;
+}
+
+.collection-round-archive__message {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 0.85rem;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.collection-round-archive .collection-results.is-embedded > .panel-header {
+  padding-inline: 0;
+}
+
+.collection-round-archive .collection-results-body {
+  padding-inline: 0;
+  padding-bottom: 0;
 }
 
 .generator-mode-row {
@@ -2129,6 +2227,28 @@
 
   .compact-range {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .nft-history-scan__range {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nft-history-scan__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .nft-history-scan__actions > button,
+  .nft-history-scan__actions > [data-slot="alert-dialog-trigger"] {
+    width: 100%;
+  }
+
+  .nft-inventory-review__heading {
+    align-items: flex-start;
+  }
+
+  .nft-inventory-review__summary {
+    justify-content: flex-start;
   }
 
   .generator-heading,

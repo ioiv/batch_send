@@ -528,7 +528,7 @@ export function BatchDistributorPage() {
   const pageStatusLabel = unresolvedSubmission
     ? "链上待核对"
     : sendComplete
-      ? "分发完成"
+      ? "本轮完成"
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -555,7 +555,7 @@ export function BatchDistributorPage() {
   const statusTitle = unresolvedSubmission
     ? "链上状态待确认"
     : sendComplete
-      ? "分发完成"
+      ? "本轮分发完成"
       : sendFailed
         ? "分发未完成"
         : preflightFailed
@@ -577,7 +577,7 @@ export function BatchDistributorPage() {
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
-      ? `已完成 · ${sendState.signatures.length} 笔`
+      ? `本轮完成 · ${sendState.signatures.length} 笔`
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -662,25 +662,25 @@ export function BatchDistributorPage() {
                 ) : null}
                 {sendComplete ? (
                   <ConfirmActionDialog
-                    confirmLabel="保留清单并新建任务"
-                    description="当前交易记录会从结果区移除，收款清单与金额会保留。链上交易不会撤销；请先修改或核对清单，避免重复分发。"
+                    confirmLabel="继续编辑"
+                    description="本轮交易记录会从结果区收起，收款清单与金额继续保留。再次分发前请先修改或核对清单，避免重复发送。"
                     onConfirm={resetConfirmation}
-                    title="复制当前设置为新任务？"
-                    triggerLabel="保留清单，新建任务"
+                    title="继续使用当前清单？"
+                    triggerLabel="继续编辑清单"
                     triggerVariant="outline"
                   />
                 ) : null}
                 {sendComplete || unresolvedSubmission ? (
                   <ConfirmActionDialog
-                    confirmLabel="清空并开始新任务"
+                    confirmLabel="确认清空"
                     description={(
                       <span>
-                        当前任务包含已提交的交易哈希。清空会从当前视图移除这些记录；请先核对链上状态，且不要直接重试原任务。
+                        本轮包含已提交的交易哈希。清空会从当前视图移除这些记录；请先核对链上状态，且不要直接重复发送。
                       </span>
                     )}
                     onConfirm={startNewDistribution}
-                    title="清空当前 SOL 分发任务？"
-                    triggerLabel="清空清单并开始新任务"
+                    title="清空 SOL 分发工作台？"
+                    triggerLabel="清空清单"
                     triggerVariant="destructive"
                   />
                 ) : null}

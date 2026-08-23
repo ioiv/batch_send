@@ -79,6 +79,19 @@ function getErrorMessage(error: unknown, fallback: string) {
     .slice(0, 240) || fallback;
 }
 
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return Boolean(signal?.aborted)
+    || (Boolean(error) && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("NFT 历史扫描已停止");
+  error.name = "AbortError";
+  throw error;
+}
+
 function normalizeAddress(value: string) {
   if (!isAddress(value)) return null;
   const address = getAddress(value);
@@ -130,6 +143,7 @@ export async function discoverErc1155AssetsByTransfer({
   onProgress,
   ownerAddresses,
   publicClient,
+  signal,
   toBlock
 }: {
   blockSpan?: bigint;
@@ -140,8 +154,10 @@ export async function discoverErc1155AssetsByTransfer({
   onProgress?: (progress: Erc1155TransferDiscoveryProgress) => void;
   ownerAddresses: readonly string[];
   publicClient: Erc1155TransferDiscoveryClient;
+  signal?: AbortSignal;
   toBlock?: bigint;
 }): Promise<Erc1155TransferDiscoveryResult> {
+  throwIfAborted(signal);
   const contract = normalizeAddress(contractAddress);
   const normalizedOwners = normalizeOwners(ownerAddresses);
   const issues: Erc1155TransferDiscoveryIssue[] = [];
@@ -169,8 +185,10 @@ export async function discoverErc1155AssetsByTransfer({
   let rpcRequests = 0;
   try {
     latestBlock = toBlock ?? await publicClient.getBlockNumber();
+    throwIfAborted(signal);
     if (toBlock === undefined) rpcRequests += 1;
   } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     issues.push({ code: "log-query-failed", message: getErrorMessage(error, "无法读取当前区块高度") });
     return emptyResult;
   }
@@ -206,6 +224,7 @@ export async function discoverErc1155AssetsByTransfer({
   };
 
   while (rangeStart <= latestBlock && complete) {
+    throwIfAborted(signal);
     const rangeEnd = rangeStart + activeBlockSpan - 1n > latestBlock
       ? latestBlock
       : rangeStart + activeBlockSpan - 1n;
@@ -222,6 +241,7 @@ export async function discoverErc1155AssetsByTransfer({
         stage: "reading-events",
         toBlock: rangeEnd
       });
+      throwIfAborted(signal);
       rpcRequests += 4;
       const [singleSent, singleReceived, batchSent, batchReceived] = await Promise.all([
         publicClient.getLogs({ address: contract, args: { from: normalizedOwners.owners }, event: transferSingleEvent, fromBlock: rangeStart, toBlock: rangeEnd }),
@@ -229,6 +249,7 @@ export async function discoverErc1155AssetsByTransfer({
         publicClient.getLogs({ address: contract, args: { from: normalizedOwners.owners }, event: transferBatchEvent, fromBlock: rangeStart, toBlock: rangeEnd }),
         publicClient.getLogs({ address: contract, args: { to: normalizedOwners.owners }, event: transferBatchEvent, fromBlock: rangeStart, toBlock: rangeEnd })
       ]);
+      throwIfAborted(signal);
       [...singleSent, ...singleReceived].forEach((log) => {
         addTokenId((log as { args?: { id?: unknown } }).args?.id);
       });
@@ -241,6 +262,7 @@ export async function discoverErc1155AssetsByTransfer({
         ids.forEach(addTokenId);
       });
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       if (activeBlockSpan > minimumBlockSpan) {
         activeBlockSpan = activeBlockSpan / 2n < minimumBlockSpan ? minimumBlockSpan : activeBlockSpan / 2n;
         continue;
@@ -261,8 +283,10 @@ export async function discoverErc1155AssetsByTransfer({
   const assets: Extract<EvmCollectionAsset, { standard: "erc1155" }>[] = [];
 
   for (const tokenId of sortedTokenIds) {
+    throwIfAborted(signal);
     let held = false;
     for (const owner of normalizedOwners.owners) {
+      throwIfAborted(signal);
       if (rpcRequests >= maxRpcRequests) {
         complete = false;
         issues.push({ code: "rpc-budget-exceeded", message: `ERC1155 余额复核达到 ${maxRpcRequests} 次 RPC 预算，结果仅为部分数据` });
@@ -276,6 +300,7 @@ export async function discoverErc1155AssetsByTransfer({
           stage: "verifying-balance",
           toBlock: latestBlock
         });
+        throwIfAborted(signal);
         rpcRequests += 1;
         const balance = await publicClient.readContract({
           abi: erc1155BalanceAbi,
@@ -284,9 +309,11 @@ export async function discoverErc1155AssetsByTransfer({
           blockNumber: latestBlock,
           functionName: "balanceOf"
         });
+        throwIfAborted(signal);
         if (typeof balance !== "bigint" || balance < 0n) throw new Error("invalid balanceOf response");
         if (balance > 0n) held = true;
       } catch (error) {
+        if (isAbortError(error, signal)) throw error;
         complete = false;
         issues.push({
           code: "balance-read-failed",

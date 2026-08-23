@@ -362,7 +362,7 @@ export function EvmBatchDistributorPage() {
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
-      ? `已完成 · ${sendState.signatures.length} 笔`
+      ? `本轮完成 · ${sendState.signatures.length} 笔`
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -884,28 +884,28 @@ export function EvmBatchDistributorPage() {
                 ) : null}
                 {sendComplete ? (
                   <ConfirmActionDialog
-                    confirmLabel="保留清单并新建任务"
-                    description="当前交易记录会从结果区移除，网络、资产与收款清单会保留。链上交易不会撤销；请先修改或核对清单，避免重复分发。"
+                    confirmLabel="继续编辑"
+                    description="本轮交易记录会从结果区收起，网络、资产与收款清单继续保留。再次分发前请先修改或核对清单，避免重复发送。"
                     disabled={sending}
                     onConfirm={resetConfirmation}
-                    title="复制当前设置为新任务？"
-                    triggerLabel="保留清单，新建任务"
+                    title="继续使用当前清单？"
+                    triggerLabel="继续编辑清单"
                     triggerVariant="outline"
                   />
                 ) : null}
                 {sendComplete || unresolvedSubmission ? (
                   sendState.signatures.length > 0 ? (
                     <ConfirmActionDialog
-                      confirmLabel="清空并开始新任务"
-                      description="当前任务已产生交易哈希。清空只会从当前视图移除清单与哈希，不会撤销链上交易；请先核验链上记录，不得将原任务直接重试。"
+                      confirmLabel="确认清空"
+                      description="本轮已产生交易哈希。清空只会从当前视图移除清单与哈希，不会撤销链上交易；请先核验链上记录，不要直接重复发送。"
                       disabled={sending}
                       onConfirm={startNewDistribution}
-                      title="清空并新建分发任务？"
-                      triggerLabel="清空清单并开始新任务"
+                      title="清空 EVM 分发工作台？"
+                      triggerLabel="清空清单"
                       triggerVariant="destructive"
                     />
                   ) : (
-                    <Button onClick={startNewDistribution} type="button" variant="destructive">清空清单并开始新任务</Button>
+                    <Button onClick={startNewDistribution} type="button" variant="destructive">清空清单</Button>
                   )
                 ) : null}
               </div>
@@ -1102,7 +1102,7 @@ export function EvmBatchDistributorPage() {
           ) : null}
           {sendState.status !== "idle" ? (
             <Alert variant={sendFailed ? "destructive" : "default"}>
-              <AlertTitle>{sendComplete ? "分发已完成" : sendFailed ? "分发未完成" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "交易处理中"}</AlertTitle>
+              <AlertTitle>{sendComplete ? "本轮分发完成" : sendFailed ? "分发未完成" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "交易处理中"}</AlertTitle>
               <AlertDescription>{sendState.message}</AlertDescription>
             </Alert>
           ) : null}

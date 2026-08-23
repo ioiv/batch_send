@@ -14,7 +14,7 @@ afterEach(cleanup);
 describe("NftInventoryReview", () => {
   it("renders a concise accessible empty state", () => {
     render(<NftInventoryReview assetInput="" onChange={vi.fn()} standard="erc721" />);
-    expect(screen.getByRole("heading", { name: "待归集资产" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "当前待归集资产" })).toBeVisible();
     expect(screen.getByText("暂无资产")).toBeVisible();
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
@@ -93,6 +93,10 @@ describe("NftInventoryReview", () => {
     );
 
     const link = screen.getByRole("link", { name: new RegExp(`查看 来源一 的成功交易 ${hash}`) });
+    expect(screen.getByRole("heading", { name: "本轮资产结果" })).toBeVisible();
+    expect(screen.getByText("完成 1")).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: "选择全部" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "移除第 1 行 NFT" })).not.toBeInTheDocument();
     expect(link).toHaveAttribute("href", `https://scan.example/tx/${hash}`);
     expect(link).toHaveTextContent(/^0xabababab…ababab$/);
     expect(link).toHaveClass("nft-inventory-review__hash");

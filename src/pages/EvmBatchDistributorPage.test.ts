@@ -337,11 +337,11 @@ describe("EvmBatchDistributorPage safety", () => {
     await user.click(await screen.findByRole("button", { name: "确认分发" }));
     let dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
-    expect(await screen.findByText("分发已完成")).toBeVisible();
+    expect(await screen.findByText("本轮分发完成")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "清空清单并开始新任务" }));
-    dialog = screen.getByRole("alertdialog", { name: "清空并新建分发任务？" });
-    await user.click(within(dialog).getByRole("button", { name: "清空并开始新任务" }));
+    await user.click(screen.getByRole("button", { name: "清空清单" }));
+    dialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
+    await user.click(within(dialog).getByRole("button", { name: "确认清空" }));
 
     expect(await screen.findByRole("textbox", { name: "收款地址" })).toHaveValue("");
     expect(screen.queryByText("旧清单金额未导入")).not.toBeInTheDocument();
@@ -353,7 +353,7 @@ describe("EvmBatchDistributorPage safety", () => {
     const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
 
-    expect(await screen.findByText("分发已完成")).toBeVisible();
+    expect(await screen.findByText("本轮分发完成")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "success");
     expect(screen.getByRole("table", { name: "EVM 分发交易结果" })).toBeInTheDocument();
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
@@ -416,22 +416,22 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(addressInput).toBeDisabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
-    const newTaskTrigger = screen.getByRole("button", { name: "清空清单并开始新任务" });
-    expect(newTaskTrigger).toBeEnabled();
+    const clearTrigger = screen.getByRole("button", { name: "清空清单" });
+    expect(clearTrigger).toBeEnabled();
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);
     expect(pageMocks.ensureNetwork).toHaveBeenCalledTimes(1);
 
-    await user.click(newTaskTrigger);
-    let newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建分发任务？" });
-    expect(within(newTaskDialog).getByText(/哈希.*从当前视图移除/)).toBeInTheDocument();
-    expect(within(newTaskDialog).getByText(/先核验链上记录/)).toBeInTheDocument();
-    await user.click(within(newTaskDialog).getByRole("button", { name: "取消" }));
+    await user.click(clearTrigger);
+    let clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
+    expect(within(clearDialog).getByText(/哈希.*从当前视图移除/)).toBeInTheDocument();
+    expect(within(clearDialog).getByText(/先核验链上记录/)).toBeInTheDocument();
+    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
     expect(addressInput).toBeDisabled();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
 
-    await user.click(newTaskTrigger);
-    newTaskDialog = screen.getByRole("alertdialog", { name: "清空并新建分发任务？" });
-    await user.click(within(newTaskDialog).getByRole("button", { name: "清空并开始新任务" }));
+    await user.click(clearTrigger);
+    clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
+    await user.click(within(clearDialog).getByRole("button", { name: "确认清空" }));
 
     const freshAddressInput = await screen.findByRole("textbox", { name: "收款地址" });
     expect(freshAddressInput).toBeEnabled();

@@ -194,6 +194,29 @@ describe("discoverErc721AssetsByTransfer", () => {
     expect(mocks.getLogs).toHaveBeenCalled();
   });
 
+  it("stops after cancellation instead of treating it as a range error", async () => {
+    const controller = new AbortController();
+    const { client, mocks } = makeClient({
+      getLogs: async () => {
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      }
+    });
+
+    await expect(discoverErc721AssetsByTransfer({
+      blockSpan: 4_000n,
+      contractAddress,
+      fromBlock: 0n,
+      ownerAddresses: [ownerOne],
+      publicClient: client,
+      signal: controller.signal,
+      toBlock: 5_000n
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.getLogs).toHaveBeenCalledTimes(4);
+    expect(mocks.readContract).not.toHaveBeenCalled();
+  });
+
   it("rejects the zero address as a discovery source before querying logs", async () => {
     const { client, mocks } = makeClient({ getLogs: async () => [] });
 

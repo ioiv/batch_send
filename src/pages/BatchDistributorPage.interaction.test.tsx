@@ -316,15 +316,15 @@ describe("BatchDistributorPage network safety", () => {
 
     expect(await screen.findByText(/已完成 1 笔交易确认/)).toBeVisible();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toHaveAttribute("href", expect.stringContaining("solana-signature-1"));
-    await user.click(screen.getByRole("button", { name: "清空清单并开始新任务" }));
-    const clearDialog = await screen.findByRole("alertdialog", { name: "清空当前 SOL 分发任务？" });
+    await user.click(screen.getByRole("button", { name: "清空清单" }));
+    const clearDialog = await screen.findByRole("alertdialog", { name: "清空 SOL 分发工作台？" });
     expect(within(clearDialog).getByText(/请先核对链上状态/)).toBeVisible();
     await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
     expect(editor).toHaveValue("11111111111111111111111111111111");
 
-    await user.click(screen.getByRole("button", { name: "清空清单并开始新任务" }));
-    await user.click(within(await screen.findByRole("alertdialog", { name: "清空当前 SOL 分发任务？" }))
-      .getByRole("button", { name: "清空并开始新任务" }));
+    await user.click(screen.getByRole("button", { name: "清空清单" }));
+    await user.click(within(await screen.findByRole("alertdialog", { name: "清空 SOL 分发工作台？" }))
+      .getByRole("button", { name: "确认清空" }));
     expect(screen.getByRole("textbox", { name: "收款地址" })).toHaveValue("");
     expect(screen.queryByRole("link", { name: /交易 1:/ })).not.toBeInTheDocument();
   });
