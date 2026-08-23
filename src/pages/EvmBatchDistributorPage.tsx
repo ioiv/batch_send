@@ -368,7 +368,7 @@ export function EvmBatchDistributorPage() {
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
-      ? `本轮完成 · ${sendState.signatures.length} 笔`
+      ? `已完成 · ${sendState.signatures.length} 笔`
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -935,15 +935,15 @@ export function EvmBatchDistributorPage() {
                 {sendComplete || sendFailed ? (
                   <span className="collection-terminal-hint">
                     {unresolvedSubmission
-                      ? "可直接编辑；首次修改会归档本轮。核对链上状态后才可开始新的写入任务。"
-                      : "本轮已结束，直接编辑任一设置即可自动归档并进入下一轮。"}
+                      ? "可直接编辑；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
+                      : "任务已结束，直接编辑任一设置即可继续，当前结果会移入下方记录。"}
                   </span>
                 ) : null}
                 <ConfirmActionDialog
                   confirmLabel="确认清空"
                   description={sendState.signatures.length > 0 || Boolean(archivedRound?.transactions.length)
-                    ? "当前或上一轮包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
-                    : "收款清单、当前执行状态和上一轮结果将从页面清除。"}
+                    ? "当前或历史记录包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
+                    : "收款清单、当前执行状态和历史记录将从页面清除。"}
                   disabled={sending || preflighting || listImporting}
                   onConfirm={startNewDistribution}
                   title="清空 EVM 分发工作台？"
@@ -1144,7 +1144,7 @@ export function EvmBatchDistributorPage() {
           ) : null}
           {sendState.status !== "idle" ? (
             <Alert variant={sendFailed ? "destructive" : "default"}>
-              <AlertTitle>{sendComplete ? "本轮分发完成" : sendFailed ? "分发未完成" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "交易处理中"}</AlertTitle>
+              <AlertTitle>{sendComplete ? "分发完成" : sendFailed ? "分发未完成" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "交易处理中"}</AlertTitle>
               <AlertDescription>{sendState.message}</AlertDescription>
             </Alert>
           ) : null}
@@ -1246,12 +1246,12 @@ export function EvmBatchDistributorPage() {
             actions={archivedRound.requiresAcknowledgement ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
-                description="仅确认你已根据交易哈希核对上一轮链上状态；这不会重试或撤销原交易。"
+                description="仅确认你已根据交易哈希核对记录中的链上状态；这不会重试或撤销原交易。"
                 onConfirm={() => setArchivedRound((current) => current ? {
                   ...current,
                   requiresAcknowledgement: false
                 } : current)}
-                title="已核对上一轮链上状态？"
+                title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
@@ -1259,7 +1259,7 @@ export function EvmBatchDistributorPage() {
             className="review-panel collection-round-archive"
             stateKey={archivedRound.sequence}
             summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "已完成" : "需处理"} · {archivedRound.transactions.length} 笔</Badge>}
-            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+            title="分发记录"
           >
             <div className="flex min-w-0 flex-col gap-3">
               <p>{archivedRound.message}</p>
@@ -1269,7 +1269,7 @@ export function EvmBatchDistributorPage() {
               </div>
               {archivedRound.transactions.length ? (
                 <ResultTable<{ explorerUrl?: string; hash: string; index: number }>
-                  caption="上一轮 EVM 分发交易"
+                  caption="EVM 分发交易"
                   columns={[
                     { header: "交易", key: "index", render: (row) => `交易 ${row.index + 1}` },
                     {

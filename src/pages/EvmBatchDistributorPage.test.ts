@@ -337,7 +337,7 @@ describe("EvmBatchDistributorPage safety", () => {
     await user.click(await screen.findByRole("button", { name: "确认分发" }));
     let dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
-    expect(await screen.findByText("本轮分发完成")).toBeVisible();
+    expect(await screen.findByText("分发完成")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "清空清单" }));
     dialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
@@ -353,7 +353,7 @@ describe("EvmBatchDistributorPage safety", () => {
     const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
 
-    expect(await screen.findByText("本轮分发完成")).toBeVisible();
+    expect(await screen.findByText("分发完成")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "success");
     expect(screen.getByRole("table", { name: "EVM 分发交易结果" })).toBeInTheDocument();
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
@@ -429,7 +429,7 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
 
     await user.type(addressInput, "\n0x00000000000000000000000000000000000000b2");
-    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByText("分发记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: /运行预检|重新预检/ })).toBeDisabled();
 

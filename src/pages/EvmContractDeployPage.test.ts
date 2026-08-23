@@ -237,8 +237,8 @@ describe("EvmContractDeployPage safety", () => {
     await user.clear(explorerInput);
     await user.type(explorerInput, "https://explorer.example");
     await waitFor(() => expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "editing"));
-    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "展开上一轮结果 · 第 1 轮" }));
+    expect(screen.getByText("部署记录")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "展开部署记录" }));
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "EVM 分发链名称" })).not.toBeInTheDocument();
     const validateButton = screen.getByRole("button", { name: "校验部署条件" });
@@ -267,7 +267,7 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "false");
 
     await user.click(screen.getByRole("button", { name: "重新校验" }));
-    expect(await screen.findByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(await screen.findByText("部署记录")).toBeVisible();
     const deployButton = await screen.findByRole("button", { name: "确认部署" });
     expect(deployButton).toBeDisabled();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();

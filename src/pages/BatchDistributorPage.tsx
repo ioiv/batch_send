@@ -577,7 +577,7 @@ export function BatchDistributorPage() {
   const pageStatusLabel = unresolvedSubmission
     ? "链上待核对"
     : sendComplete
-      ? "本轮完成"
+      ? "已完成"
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -604,7 +604,7 @@ export function BatchDistributorPage() {
   const statusTitle = unresolvedSubmission
     ? "链上状态待确认"
     : sendComplete
-      ? "本轮分发完成"
+      ? "分发完成"
       : sendFailed
         ? "分发未完成"
         : preflightFailed
@@ -626,7 +626,7 @@ export function BatchDistributorPage() {
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
-      ? `本轮完成 · ${sendState.signatures.length} 笔`
+      ? `已完成 · ${sendState.signatures.length} 笔`
       : sendFailed
         ? "执行失败"
         : preflightFailed
@@ -709,15 +709,15 @@ export function BatchDistributorPage() {
                 {sendComplete || sendFailed ? (
                   <span className="collection-terminal-hint">
                     {unresolvedSubmission
-                      ? "可直接编辑；首次修改会归档本轮。核对链上状态后才可开始新的写入任务。"
-                      : "本轮已结束，直接编辑任一设置即可自动归档并进入下一轮。"}
+                      ? "可直接编辑；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
+                      : "任务已结束，直接编辑任一设置即可继续，当前结果会移入下方记录。"}
                   </span>
                 ) : null}
                 <ConfirmActionDialog
                   confirmLabel="确认清空"
                   description={sendState.signatures.length > 0 || Boolean(archivedRound?.signatures.length)
-                    ? "当前或上一轮包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
-                    : "收款清单、当前执行状态和上一轮结果将从页面清除。"}
+                    ? "当前或历史记录包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
+                    : "收款清单、当前执行状态和历史记录将从页面清除。"}
                   disabled={sending || preflighting || listImporting}
                   onConfirm={startNewDistribution}
                   title="清空 SOL 分发工作台？"
@@ -892,12 +892,12 @@ export function BatchDistributorPage() {
             actions={archivedRound.requiresAcknowledgement ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
-                description="仅确认你已根据交易签名核对上一轮链上状态；这不会重试或撤销原交易。"
+                description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。"
                 onConfirm={() => setArchivedRound((current) => current ? {
                   ...current,
                   requiresAcknowledgement: false
                 } : current)}
-                title="已核对上一轮链上状态？"
+                title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
@@ -905,13 +905,13 @@ export function BatchDistributorPage() {
             className="min-w-0 collection-round-archive"
             stateKey={archivedRound.sequence}
             summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "已完成" : "需处理"} · {archivedRound.signatures.length} 笔</Badge>}
-            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+            title="分发记录"
           >
             <div className="flex min-w-0 flex-col gap-3">
               <p>{archivedRound.message}</p>
               <Badge className="w-fit" variant="outline">{archivedRound.networkLabel}</Badge>
               {archivedRound.signatures.length ? (
-                <div className="flex flex-wrap gap-2" aria-label="上一轮交易哈希">
+                <div className="flex flex-wrap gap-2" aria-label="分发交易哈希">
                   {archivedRound.signatures.map((signature, index) => (
                     <a
                       className={buttonVariants({ variant: "outline" })}

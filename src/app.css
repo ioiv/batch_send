@@ -1860,6 +1860,23 @@
   white-space: nowrap;
 }
 
+.nft-opensea-key {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 16rem);
+  align-items: center;
+  width: auto;
+  gap: 0.45rem;
+}
+
+.nft-opensea-key [data-slot="field-label"] {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.collection-workbench-panel .workbench-panel__header:has(.nft-opensea-key) {
+  padding-block: 0.5675rem;
+}
+
 .nft-discovery-card__status {
   margin: 0;
   padding-inline: 0.1rem;
@@ -2360,6 +2377,22 @@
 
   .address-only-input {
     font-size: 1rem;
+  }
+}
+
+@media (max-width: 30rem) {
+  .collection-workbench-panel .workbench-panel__header:has(.nft-opensea-key) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workbench-panel__actions:has(.nft-opensea-key),
+  .nft-opensea-key {
+    width: 100%;
+  }
+
+  .nft-opensea-key {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 }
 

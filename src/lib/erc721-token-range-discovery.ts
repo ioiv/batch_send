@@ -351,7 +351,7 @@ export async function discoverErc721AssetsByTokenRange(
   if (rangeLength > remainingBudget) {
     issues.push({
       code: "range-limit-exceeded",
-      message: `推算范围 ${range.fromTokenId}–${range.toTokenId} 需要 ${rangeLength} 次 ownerOf，超过本轮剩余 ${remainingBudget} 次 RPC 上限；请拆分范围`
+      message: `推算范围 ${range.fromTokenId}–${range.toTokenId} 需要 ${rangeLength} 次 ownerOf，超过本次剩余 ${remainingBudget} 次 RPC 上限；请拆分范围`
     });
     return emptyResult({ expectedBalance, range, rpcRequests });
   }

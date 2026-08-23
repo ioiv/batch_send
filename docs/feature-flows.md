@@ -64,7 +64,7 @@
 | `preflight` | 只读检查进行中 | 取消页面级输入操作；不签名 |
 | `ready` | 当前输入快照通过预检 | 打开确认对话框、返回编辑 |
 | `running` | 等待签名、提交或确认 | 查看进度；锁定会改变任务的输入 |
-| `success` | 所有应执行项已确认 | 导出、查看哈希；直接编辑并自动归档本轮 |
+| `success` | 所有应执行项已确认 | 导出、查看哈希；直接编辑并将结果移入记录 |
 | `error` | 尚未提交，或某些项确定失败 | 修正后重新预检；保留逐项结果 |
 | `uncertain` | 已签名/已提交但最终状态未知 | 允许编辑和只读识别；核对确认前禁止新的写入，且永不自动重发原交易 |
 
@@ -292,10 +292,11 @@ flowchart TD
 - 选择 EVM 网络、ERC721/ERC1155 标准和 NFT 合约；合约检查会识别标准、名称、符号及 ERC721Enumerable 能力。
 - 手工输入 Token ID 或闭区间（如 `1,3,8-12`）、本地导入 TXT/CSV，或直接编辑 `合约地址,Token ID` 原始清单。
 - NFT 输入默认最多 1,000 个唯一资产；合并时去重，遇到错误或超限不会部分写入。
-- ERC721 自动发现顺序：先通过 RPC 调用 Enumerable；普通 ERC721 读取 `totalSupply` 与常见铸造计数器推算 Token ID 范围，再在同一快照直接调用 `ownerOf`。
-- 直接探测会先读取每个来源的 `balanceOf`；找到的数量与余额一致时立即停止并按合约替换旧清单。无法推算或未找全时允许填写 Token ID 起止范围，部分结果只能追加。
+- ERC721 自动发现顺序：RPC Enumerable → 可选 OpenSea 钱包索引 → `Transfer` / EIP-2309 `ConsecutiveTransfer` 事件候选 → 固定快照 `ownerOf + balanceOf` 对账 → Token ID 范围探测兜底。
+- OpenSea API Key 只保存在当前页面内存，不写入持久设置、结果或导出文件；OpenSea 结果只作为候选 ID，余额对账未完成时不会据此删除旧清单项。
+- Transfer 日志按来源地址 topic 过滤并自适应拆分区块范围；直接探测会先读取每个来源的 `balanceOf`，找到数量与余额一致时立即停止并按合约替换旧清单。无法推算或未找全时允许填写 Token ID 起止范围，部分结果只能追加。
 - 完整发现结果自动加入资产清单；部分结果必须单独确认“仅归集已验证项目”。
-- ERC1155 不猜 Token ID；用户明确给出 ID 后，执行时读取每个来源的完整余额。
+- ERC1155 通过 OpenSea 候选及 `TransferSingle` / `TransferBatch` 事件提取 Token ID，并在固定快照通过 `balanceOfBatch` 复核；事件历史未完整覆盖时只提供需额外确认的部分结果，仍保留手工/文件输入。
 - 资产表展示合约、Token ID、数量和有效/重复/错误状态；可单项或批量移除，有错误的原始行不会被静默删除。
 - ERC721 以 `ownerOf` 匹配来源；ERC1155 以 `balanceOf` 读取余额。同来源 + 同合约的 ERC1155 最多 100 个 ID 合并为一次标准批量转账，同时保留逐 ID 结果行。
 - 后续模拟、费用上限、本地签名、结果与不确定状态处理与 ERC20 归集共享。
@@ -311,8 +312,8 @@ flowchart TD
   nft_c_readonly --> nft_c_context["选择网络、ERC721/ERC1155 与合约"]
   nft_c_keys --> nft_c_context
   nft_c_context --> nft_c_method{"添加方式？"}
-  nft_c_method -->|自动识别 ERC721| nft_c_inspect["识别标准与 Enumerable 能力"]
-  nft_c_inspect --> nft_c_discovery["RPC Enumerable → 总量/计数器 → ownerOf 直接探测"]
+  nft_c_method -->|自动识别 ERC721 / ERC1155| nft_c_inspect["识别标准与 Enumerable 能力"]
+  nft_c_inspect --> nft_c_discovery["Enumerable → OpenSea 候选 → Transfer 事件 → 固定快照复核 → 范围兜底"]
   nft_c_discovery --> nft_c_complete{"发现结果完整？"}
   nft_c_complete -->|否| nft_c_partial["[不可删除] 单独确认仅使用已验证的部分结果"]
   nft_c_complete -->|是| nft_c_add["[不可删除] 用户点击加入资产清单"]
@@ -340,12 +341,14 @@ flowchart TD
   nft_o_start --> nft_o_source["来源模式：只读地址 / 私钥"]
   nft_o_source --> nft_o_context["网络、标准与 NFT 合约"]
   nft_o_context --> nft_o_method{"添加资产？"}
-  nft_o_method -->|自动识别 ERC721| nft_o_discover["[不可删除] RPC Enumerable / Token ID 直接探测"]
-  nft_o_discover --> nft_o_range{"合约能推算 Token ID 范围？"}
-  nft_o_range -->|否| nft_o_input["填写 Token ID 起止范围"]
-  nft_o_range -->|是| nft_o_stop["并发 ownerOf；balanceOf 找全即停止"]
+  nft_o_method -->|自动识别| nft_o_discover["[不可删除] Enumerable / OpenSea / Transfer 事件候选"]
+  nft_o_discover --> nft_o_verify["固定快照 ownerOf / balanceOfBatch 复核"]
+  nft_o_verify --> nft_o_complete{"发现结果完整？"}
+  nft_o_complete -->|是| nft_o_join
+  nft_o_complete -->|否，ERC721| nft_o_input["填写 Token ID 起止范围"]
+  nft_o_complete -->|否，ERC1155| nft_o_partial
   nft_o_input --> nft_o_stop
-  nft_o_method -->|ERC1155| nft_o_combined
+  nft_o_method -->|ERC1155 手工补充| nft_o_combined
   nft_o_stop --> nft_o_coverage
   nft_o_coverage -->|否| nft_o_partial["[不可删除] Alert 确认只追加已验证的部分结果"]
   nft_o_coverage -->|是| nft_o_join["按合约对账当前资产；零结果也清除该合约旧项"]
@@ -362,7 +365,7 @@ flowchart TD
   nft_o_dialog -->|取消| nft_o_table
   nft_o_dialog -->|确认| nft_o_recheck["[不可删除] 签名前重查网络、所有权/余额、模拟和费用"]
   nft_o_recheck --> nft_o_run["逐项或 ERC1155 批量签名、提交和确认"]
-  nft_o_run --> nft_o_results["资产表切为本轮结果；隐藏选择与移除操作"]
+  nft_o_run --> nft_o_results["资产表切为归集结果；隐藏选择与移除操作"]
   nft_o_results --> nft_o_lock["[不可删除] 保留哈希；不确定项排除重试"]
   nft_o_results -->|编辑或再次识别| nft_o_next["自动归档最近一轮：成功资产移出，失败 / 未执行项保留"]
   nft_o_next --> nft_o_discover
@@ -371,11 +374,11 @@ flowchart TD
 ### 保留与变更
 
 - `[合并]` 手工添加和文件导入；所有资产最终只进入一张明确的待归集表。高级原始编辑移动到 `Sheet`。
-- 自动识别由用户主动发起；Enumerable 或 `balanceOf` 已完全对账的 Token ID 直接探测可按合约替换旧清单。直接探测必须展示快照区块、Token ID 范围、预计调用量并允许停止。
+- 自动识别由用户主动发起；Enumerable、ERC721 `balanceOf` 对账或完整 ERC1155 事件扫描通过快照复核后，可按合约替换旧清单。范围兜底必须展示快照区块、Token ID 范围、预计调用量并允许停止。
 - `[不可删除]` 只有来源余额全部读取成功且发现数量完全一致时才能替换同合约旧清单（包括零结果清除）；未对账的手工范围只能追加链上快照验证通过的资产，不能依据“未发现”删除旧项。
-- NFT 发现不调用 Blockscout 或其他公开索引器；区块浏览器地址只用于已产生交易的跳转链接。
-- ERC1155 不猜测 Token ID，也不回溯 TransferSingle / TransferBatch；用户需手工或通过 TXT/CSV 提供已知 ID，执行时按快照余额复核。无对应私钥的 ERC721 必须跳过执行。
-- 页面不建立任务实体，只保留“持久设置、当前资产池、本轮结果、上一轮只读结果”。进入下一轮时仅移除所有执行行都已明确结算的 NFT；失败、跳过、未执行和状态不确定项继续保留。
+- NFT 发现可使用用户提供的 OpenSea API Key；Key 仅保存在当前浏览器的本地存储中，调用失败后自动回退 RPC。Blockscout 与区块浏览器仍只用于交易跳转，不作为持仓真值来源。
+- ERC1155 回溯 `TransferSingle` / `TransferBatch` 获取候选，并通过快照 `balanceOfBatch` 去除已转出或余额为零的 ID；日志范围不完整时结果只能追加。无对应私钥的 ERC721 必须跳过执行。
+- 页面不建立任务实体，只保留“持久设置、当前资产池、当前结果、历史只读记录”。继续编辑时仅移除所有执行行都已明确结算的 NFT；失败、跳过、未执行和状态不确定项继续保留。
 
 ## 5. SOL 归集 `/sol/collect/`
 
@@ -542,12 +545,12 @@ flowchart TD
 7. NFT 自动发现只使用 RPC；完整结果须经固定链上快照复核后才能按合约对账，部分结果必须额外确认且只能追加。
 8. 混合 SOL/EVM 清单不自动拆分；CreateX 成功后不自动注册链。
 9. 原生币元数据未确认时只开放 Token；RPC、钱包链、canonical 合约字节码或部署 runtime 不匹配时阻断签名。
-10. 清空工作台改用 shadcn `AlertDialog`；它会清除持久设置和当前轮次，不能在未解释哈希状态时抹掉已提交记录。
+10. 清空工作台改用 shadcn `AlertDialog`；它会清除持久设置和当前状态，不能在未解释哈希状态时抹掉已提交记录。
 
 ## 验收覆盖
 
-- 七个工具分别覆盖：编辑、导入、输入变化使预检失效、预检失败、取消 `AlertDialog`、执行成功、部分失败、状态不确定、清空工作台和继续下一轮。
+- 七个工具分别覆盖：编辑、导入、输入变化使预检失效、预检失败、取消 `AlertDialog`、执行成功、部分失败、状态不确定、清空工作台和继续操作。
 - 组件交互覆盖 `Combobox`、`Tabs`、`Dialog`、`AlertDialog`、`Sheet`、`Collapsible`、键盘导航、焦点陷阱/恢复及禁用状态。
-- 安全回归覆盖：私钥 DOM/计划清理、敏感页无 Analytics、CSV 与上一轮归档无密钥/敏感 RPC、终态解锁与不确定写入门禁、SOL genesis hash、EVM chain ID/runtime、NFT 部分结果确认与安全重试。
+- 安全回归覆盖：私钥 DOM/计划清理、敏感页无 Analytics、CSV 与历史记录无密钥/敏感 RPC、终态解锁与不确定写入门禁、SOL genesis hash、EVM chain ID/runtime、NFT 部分结果确认与安全重试。
 - 首页和七个工具页在 375、768、1024、1440 px 检查无整页横向溢出、无控制台错误、键盘可操作且可见文案符合本文件规则。
 - 最终保持现有测试基线通过，并运行 `npm test` 与 `npm run build`；预先存在的 `design-system/` 和 `output/` 不属于本次修改范围。

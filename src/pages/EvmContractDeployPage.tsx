@@ -656,8 +656,8 @@ export function EvmContractDeployPage() {
           <ConfirmActionDialog
             confirmLabel="确认清空"
             description={hash || archivedRound?.hash
-              ? "当前或上一轮包含已提交的交易哈希。清空只会删除本页记录，无法撤销链上交易，且清空后无法恢复。"
-              : "当前部署校验、网络识别结果和上一轮结果将被清除，网络选择会保留。"}
+              ? "当前或历史记录包含已提交的交易哈希。清空只会删除本页记录，无法撤销链上交易，且清空后无法恢复。"
+              : "当前部署校验、网络识别结果和历史记录将被清除，网络选择会保留。"}
             disabled={busy}
             onConfirm={clearWorkbench}
             title="清空 CreateX 部署工作台？"
@@ -713,8 +713,8 @@ export function EvmContractDeployPage() {
                 {deploymentComplete || submittedButUncertain ? (
                   <span className="collection-terminal-hint">
                     {submittedButUncertain
-                      ? "可直接编辑或重新校验；首次操作会归档本轮。核对交易状态后才可再次部署。"
-                      : "本轮已结束，直接编辑任一配置即可自动归档并进入下一轮。"}
+                      ? "可直接编辑或重新校验；当前结果会移入下方记录。核对交易状态后才可再次部署。"
+                      : "任务已结束，直接编辑任一配置即可继续，当前结果会移入下方记录。"}
                   </span>
                 ) : null}
               </div>
@@ -1071,12 +1071,12 @@ export function EvmContractDeployPage() {
             actions={archivedRound.requiresAcknowledgement ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
-                description="仅确认你已根据交易哈希和目标地址核对上一轮链上状态；这不会重试或撤销原部署。"
+                description="仅确认你已根据交易哈希和目标地址核对记录中的链上状态；这不会重试或撤销原部署。"
                 onConfirm={() => setArchivedRound((current) => current ? {
                   ...current,
                   requiresAcknowledgement: false
                 } : current)}
-                title="已核对上一轮链上状态？"
+                title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
@@ -1084,13 +1084,13 @@ export function EvmContractDeployPage() {
             className="deployment-review collection-round-archive"
             stateKey={archivedRound.sequence}
             summary={<Badge variant={archivedRound.requiresAcknowledgement ? "destructive" : "outline"}>{archivedRound.status === "success" ? "部署完成" : archivedRound.status === "already-deployed" ? "合约已存在" : "需处理"}</Badge>}
-            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+            title="部署记录"
           >
             <div className="flex min-w-0 flex-col gap-3">
               <p>{archivedRound.message}</p>
               <Badge className="w-fit" variant="outline">{archivedRound.networkLabel}</Badge>
               {archivedRound.hash ? (
-                <div className="summary-list" aria-label="上一轮部署交易">
+                <div className="summary-list" aria-label="部署交易">
                   <div>
                     <span>交易哈希</span>
                     <strong title={archivedRound.hash}>{archivedRound.explorerUrl
@@ -1101,7 +1101,7 @@ export function EvmContractDeployPage() {
               ) : null}
               {archivedRound.checks.length ? (
                 <ResultTable<DisperseDeploymentCheck>
-                  caption="上一轮 CreateX 部署校验"
+                  caption="CreateX 部署校验"
                   columns={[
                     { header: "检查项", key: "label", render: (check) => check.label },
                     { header: "状态", key: "status", render: (check) => <Badge variant={check.status === "fail" ? "destructive" : "outline"}>{check.status === "pass" ? "通过" : check.status === "fail" ? "失败" : "跳过"}</Badge> },

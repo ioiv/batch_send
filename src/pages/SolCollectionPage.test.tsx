@@ -131,7 +131,7 @@ describe("SolCollectionPage workbench", () => {
     const user = await prepareSolPage();
     await confirmExecution(user);
 
-    expect(await screen.findByText(/本轮完成：1 笔成功/)).toBeVisible();
+    expect(await screen.findByText(/归集完成：1 笔成功/)).toBeVisible();
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("已完成")).toBeVisible();
     expect(within(walletList).getByText("SOL · 0.999995")).toBeVisible();
@@ -144,7 +144,7 @@ describe("SolCollectionPage workbench", () => {
     await user.type(target, targetAddress);
     expect(target).toHaveValue(targetAddress);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
-    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByText("归集记录")).toBeVisible();
   });
 
   it("offers retry for safe failures and retries only those wallets", async () => {
@@ -199,7 +199,7 @@ describe("SolCollectionPage workbench", () => {
     expect(target).toBeEnabled();
     await user.clear(target);
     await user.type(target, targetAddress);
-    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });

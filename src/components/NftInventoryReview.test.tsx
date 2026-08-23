@@ -93,7 +93,7 @@ describe("NftInventoryReview", () => {
     );
 
     const link = screen.getByRole("link", { name: new RegExp(`查看 来源一 的交易 ${hash}`) });
-    expect(screen.getByRole("heading", { name: "本轮资产结果" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "资产结果" })).toBeVisible();
     expect(screen.getByText("完成 1")).toBeVisible();
     expect(screen.queryByRole("checkbox", { name: "选择全部" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "移除第 1 行 NFT" })).not.toBeInTheDocument();

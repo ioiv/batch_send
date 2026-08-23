@@ -358,7 +358,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(screen.getByRole("link", { name: /交易 1:/ })).toBeVisible();
 
     await user.type(editor, "\nVote111111111111111111111111111111111111111");
-    expect(screen.getByText("上一轮结果 · 第 1 轮")).toBeVisible();
+    expect(screen.getByText("分发记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
   });

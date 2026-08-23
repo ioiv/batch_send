@@ -80,7 +80,7 @@ const solStatusLabels: Record<WorkbenchStatus, string> = {
   preflight: "检查中",
   ready: "等待确认",
   running: "执行中",
-  success: "本轮完成",
+  success: "已完成",
   uncertain: "部分交易需核对"
 };
 
@@ -225,7 +225,7 @@ export function SolCollectionPage() {
     const requiresAcknowledgement = workbenchStatus === "uncertain"
       || results.some((result) => result.uncertain);
     setArchivedRound({
-      message: sanitizeRoundArchiveText(message || `第 ${roundSequence} 轮已结束`),
+      message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
         ...result,
@@ -393,7 +393,7 @@ export function SolCollectionPage() {
       const skipped = collectionResults.filter((item) => item.status === "skipped").length;
       const failed = collectionResults.filter((item) => item.status === "error").length;
       setStage("complete");
-      setMessage(`本轮完成：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`
+      setMessage(`归集完成：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`
         + (retrySourcesRef.current.length ? `；${retrySourcesRef.current.length} 笔可直接重试` : ""));
     } catch (error) {
       retrySourcesRef.current = sources.filter((source) => !submittedAddresses.has(source.address));
@@ -458,7 +458,7 @@ export function SolCollectionPage() {
             confirmLabel="确认清空"
             description={hasRecordedHash
               ? "当前钱包行包含已提交的交易。清空前请先核对链上状态；清空后本页记录无法恢复。"
-              : "来源密钥、目标地址、当前执行状态和上一轮结果将从页面清除。"}
+              : "来源密钥、目标地址、当前执行状态和历史记录将从页面清除。"}
             disabled={running}
             onConfirm={resetTask}
             title="清空 SOL 归集工作台？"
@@ -493,8 +493,8 @@ export function SolCollectionPage() {
               ) : results.length && (stage === "complete" || stage === "error") ? (
                 <p className="collection-terminal-hint">
                   {workbenchStatus === "uncertain"
-                    ? "可直接编辑设置；首次修改会归档本轮。核对上一轮链上状态后才可开始新的写入任务。"
-                    : "本轮已结束。直接修改任一设置即可自动归档并进入下一轮。"}
+                    ? "可直接编辑设置；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
+                    : "任务已结束。直接修改任一设置即可继续，当前结果会移入下方记录。"}
                 </p>
               ) : (
                 <ConfirmActionDialog
@@ -646,12 +646,12 @@ export function SolCollectionPage() {
             actions={archivedRound.requiresAcknowledgement ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
-                description="仅确认你已根据交易签名核对上一轮链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
+                description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
                 onConfirm={() => setArchivedRound((current) => current ? {
                   ...current,
                   requiresAcknowledgement: false
                 } : current)}
-                title="已核对上一轮链上状态？"
+                title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
@@ -666,12 +666,12 @@ export function SolCollectionPage() {
                 )).length}
               </span>
             )}
-            title={`上一轮结果 · 第 ${archivedRound.sequence} 轮`}
+            title="归集记录"
           >
             <p className="collection-round-archive__message">{archivedRound.message}</p>
             <CollectionResults
               embedded
-              exportFilename={`sol-collection-round-${archivedRound.sequence}.csv`}
+              exportFilename="sol-collection-records.csv"
               results={archivedRound.results}
               title="交易明细"
             />

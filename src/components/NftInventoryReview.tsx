@@ -148,10 +148,10 @@ export function NftInventoryReview({
     <section className="nft-inventory-review" aria-labelledby={titleId} aria-describedby={descriptionId}>
       <header className="nft-inventory-review__heading">
         <div>
-          <h3 id={titleId}>{showingRoundResults ? "本轮资产结果" : "当前待归集资产"}</h3>
+          <h3 id={titleId}>{showingRoundResults ? "资产结果" : "当前待归集资产"}</h3>
           <p className="sr-only" id={descriptionId}>
             {showingRoundResults
-              ? "逐项显示本轮归集状态与交易哈希。"
+              ? "逐项显示归集状态与交易哈希。"
               : "勾选资产后可从清单移除；无效原始行会保留。"}
           </p>
         </div>
