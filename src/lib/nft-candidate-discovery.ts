@@ -67,7 +67,7 @@ const urlPattern = /https?:\/\/\S+/gi;
 
 export type NftCandidateStandard = "erc721" | "erc1155";
 export type NftCandidateAsset =
-  | Extract<EvmCollectionAsset, { standard: "erc721" }>
+  | (Extract<EvmCollectionAsset, { standard: "erc721" }> & { ownerAddress: Address })
   | Extract<EvmCollectionAsset, { standard: "erc1155" }>;
 
 export type NftCandidateDiscoveryIssueCode =
@@ -559,10 +559,16 @@ async function scanTransferEventCandidates({
   }
 }
 
-function createAsset(contract: Address, standard: NftCandidateStandard, tokenId: bigint): NftCandidateAsset {
+function createAsset(
+  contract: Address,
+  standard: NftCandidateStandard,
+  tokenId: bigint,
+  ownerAddress?: Address
+): NftCandidateAsset {
   return {
     contractAddress: contract,
     key: `${standard}:${contract.toLowerCase()}:${tokenId}`,
+    ...(standard === "erc721" && ownerAddress ? { ownerAddress } : {}),
     standard,
     tokenId
   } as NftCandidateAsset;
@@ -698,7 +704,7 @@ async function verifyErc721Candidates({
     }
     const owner = getAddress(value).toLowerCase();
     if (!ownerSet.has(owner)) return;
-    assets.push(createAsset(contract, "erc721", tokenIds[index]));
+    assets.push(createAsset(contract, "erc721", tokenIds[index], getAddress(value)));
     discoveredByOwner.set(owner, (discoveredByOwner.get(owner) || 0n) + 1n);
   });
   assets.sort((left, right) => left.tokenId < right.tokenId ? -1 : left.tokenId > right.tokenId ? 1 : 0);

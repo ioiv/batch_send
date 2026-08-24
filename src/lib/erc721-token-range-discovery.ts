@@ -66,7 +66,9 @@ export type Erc721TokenRangeProgress = {
 };
 
 export type Erc721TokenRangeDiscoveryResult = {
-  assets: Extract<EvmCollectionAsset, { standard: "erc721" }>[];
+  assets: Array<Extract<EvmCollectionAsset, { standard: "erc721" }> & {
+    ownerAddress: Address;
+  }>;
   complete: boolean;
   expectedBalance: bigint | null;
   issues: Erc721TokenRangeIssue[];
@@ -167,10 +169,15 @@ function normalizeInputs(contractAddress: string, ownerAddresses: readonly strin
   return { contract: getAddress(contractAddress), issues, owners };
 }
 
-function createAsset(contractAddress: Address, tokenId: bigint): Extract<EvmCollectionAsset, { standard: "erc721" }> {
+function createAsset(
+  contractAddress: Address,
+  tokenId: bigint,
+  ownerAddress: Address
+): Extract<EvmCollectionAsset, { standard: "erc721" }> & { ownerAddress: Address } {
   return {
     contractAddress,
     key: `erc721:${contractAddress.toLowerCase()}:${tokenId}`,
+    ownerAddress,
     standard: "erc721",
     tokenId
   };
@@ -357,7 +364,7 @@ export async function discoverErc721AssetsByTokenRange(
   }
 
   const tokenIds = Array.from({ length: Number(rangeLength) }, (_, index) => range.fromTokenId + BigInt(index));
-  const assets: Extract<EvmCollectionAsset, { standard: "erc721" }>[] = [];
+  const assets: Erc721TokenRangeDiscoveryResult["assets"] = [];
   let scanned = 0;
   const hasFoundExpectedBalance = () => !balanceReadFailed && [...expectedByOwner.entries()].every(([owner, balance]) => (
     (discoveredByOwner.get(owner) || 0n) >= balance
@@ -391,7 +398,7 @@ export async function discoverErc721AssetsByTokenRange(
       }
       scanned += 1;
       if (owner && ownerSet.has(owner.toLowerCase())) {
-        assets.push(createAsset(contract, tokenId));
+        assets.push(createAsset(contract, tokenId, owner));
         discoveredByOwner.set(owner.toLowerCase(), (discoveredByOwner.get(owner.toLowerCase()) || 0n) + 1n);
       }
       if (scanned === 1 || scanned % 25 === 0 || scanned === tokenIds.length || hasFoundExpectedBalance()) {

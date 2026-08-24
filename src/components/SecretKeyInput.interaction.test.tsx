@@ -81,6 +81,42 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     expect(secretStore.value).toBe("");
   });
 
+  it("keeps wallet rows compact and opens execution details in a side sheet", async () => {
+    const user = userEvent.setup();
+    const sentinel = (`0x${"33".repeat(32)}`) as `0x${string}`;
+    const address = privateKeyToAccount(sentinel).address;
+    render(
+      <SecretKeyInput
+        compactStatuses
+        mode="evm"
+        walletStatuses={{
+          [address.toLowerCase()]: [{
+            asset: "ERC721 · 2 个",
+            explorerUrl: "https://explorer.test/tx/0xabc",
+            hash: "0xabc",
+            message: "成功 1 · 失败 1",
+            status: "error"
+          }]
+        }}
+      />
+    );
+    await importEvmWallet(user, sentinel);
+
+    const walletRow = screen.getByTitle(address).closest('[role="listitem"]') as HTMLElement;
+    expect(within(walletRow).getByText("ERC721 · 2 个")).toBeVisible();
+    expect(within(walletRow).getByText("失败")).toBeVisible();
+    expect(within(walletRow).getByRole("link", { name: "查看交易" })).toBeVisible();
+    expect(within(walletRow).queryByText("成功 1 · 失败 1")).not.toBeInTheDocument();
+
+    await user.click(within(walletRow).getByRole("button", { name: new RegExp(`查看.*${address}.*归集详情`, "i") }));
+    const details = screen.getByRole("dialog", { name: "归集详情" });
+    expect(within(details).getByText("成功 1 · 失败 1")).toBeVisible();
+    expect(within(details).getByRole("link", { name: "查看交易" })).toHaveAttribute(
+      "href",
+      "https://explorer.test/tx/0xabc"
+    );
+  });
+
   it("imports a large pasted batch and incrementally renders wallets while scrolling", async () => {
     const user = userEvent.setup();
     render(<SecretKeyInput mode="evm" />);

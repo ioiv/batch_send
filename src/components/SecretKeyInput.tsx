@@ -22,6 +22,14 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger
+} from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { parseEvmPrivateKeyInput } from "../lib/evm-collection";
 import type { CollectionResultStatus } from "../lib/collection-results";
@@ -44,6 +52,30 @@ export type WalletExecutionItem = {
   message: string;
   status: CollectionResultStatus;
 };
+
+const walletStatusLabels: Record<CollectionResultStatus, string> = {
+  confirming: "确认中",
+  error: "失败",
+  pending: "待处理",
+  scanning: "读取中",
+  skipped: "已跳过",
+  submitting: "提交中",
+  success: "已完成"
+};
+
+const activeWalletStatuses = new Set<CollectionResultStatus>([
+  "confirming",
+  "pending",
+  "scanning",
+  "submitting"
+]);
+
+function getWalletSummaryStatus(statuses: readonly WalletExecutionItem[]): CollectionResultStatus {
+  return statuses.find((item) => activeWalletStatuses.has(item.status))?.status
+    || statuses.find((item) => item.status === "error")?.status
+    || statuses.find((item) => item.status === "success")?.status
+    || "skipped";
+}
 
 type ImportedWallet = {
   address: string;
@@ -121,7 +153,98 @@ function shortenAddress(value: string, edge = 8) {
   return value.length > edge * 2 + 1 ? `${value.slice(0, edge)}…${value.slice(-edge)}` : value;
 }
 
+function WalletStatusSummary({
+  accessibleName,
+  address,
+  label,
+  statuses
+}: {
+  accessibleName: string;
+  address: string;
+  label?: string;
+  statuses: readonly WalletExecutionItem[];
+}) {
+  const summaryStatus = getWalletSummaryStatus(statuses);
+  const firstStatus = statuses[0];
+  const firstStatusSummary = `${firstStatus.asset}${firstStatus.amount ? ` · ${firstStatus.amount}` : ""}`;
+  const singleTransaction = statuses.length === 1 && firstStatus.explorerUrl && firstStatus.hash
+    ? firstStatus
+    : null;
+
+  return (
+    <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-status-summary">
+      <Badge
+        data-status={summaryStatus}
+        variant={summaryStatus === "error" ? "destructive" : "outline"}
+      >
+        {walletStatusLabels[summaryStatus]}
+      </Badge>
+      <strong title={statuses.length === 1 ? firstStatusSummary : `${statuses.length} 项归集结果`}>
+        {statuses.length === 1 ? firstStatusSummary : `${statuses.length} 项结果`}
+      </strong>
+      {singleTransaction ? (
+        <a href={singleTransaction.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
+      ) : null}
+      <Sheet>
+        <SheetTrigger
+          render={(
+            <Button
+              aria-label={`查看 ${accessibleName} 归集详情`}
+              className="imported-wallet-status-summary__details"
+              size="sm"
+              type="button"
+              variant="ghost"
+            />
+          )}
+        >
+          详情
+        </SheetTrigger>
+        <SheetContent className="wallet-status-sheet">
+          <SheetHeader className="wallet-status-sheet__header">
+            <SheetTitle>归集详情</SheetTitle>
+            <SheetDescription>
+              {label ? <span>{label}</span> : null}
+              <code title={address}>{address}</code>
+            </SheetDescription>
+          </SheetHeader>
+          <div className="wallet-status-sheet__summary" aria-label="钱包归集结果摘要">
+            <span><strong>{statuses.length}</strong> 项结果</span>
+            <Badge
+              data-status={summaryStatus}
+              variant={summaryStatus === "error" ? "destructive" : "outline"}
+            >
+              {walletStatusLabels[summaryStatus]}
+            </Badge>
+          </div>
+          <div className="wallet-status-sheet__results" role="list">
+            {statuses.map((status, index) => (
+              <article
+                className="wallet-status-detail"
+                data-status={status.status}
+                key={`${status.asset}-${index}`}
+                role="listitem"
+              >
+                <div className="wallet-status-detail__heading">
+                  <Badge variant={status.status === "error" ? "destructive" : "outline"}>
+                    {walletStatusLabels[status.status]}
+                  </Badge>
+                  <strong>{status.asset}{status.amount ? ` · ${status.amount}` : ""}</strong>
+                </div>
+                <p>{status.message}</p>
+                {status.explorerUrl && status.hash ? (
+                  <a href={status.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
+                ) : status.hash ? <code title={status.hash}>{status.hash}</code> : null}
+              </article>
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}
+
 export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
+  compactStatuses?: boolean;
   disabled?: boolean;
   mode: "evm" | "solana";
   onDirty?: (reason: SecretKeyInputChangeReason, address?: string) => void;
@@ -133,6 +256,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   >>;
   walletStatuses?: Readonly<Record<string, readonly WalletExecutionItem[]>>;
 }>(function SecretKeyInput({
+  compactStatuses = false,
   disabled = false,
   mode,
   onDirty,
@@ -513,7 +637,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                 || [];
               const accessibleName = [wallet.label, wallet.address].filter(Boolean).join(" ");
               return (
-                <div className="imported-wallet-row" key={wallet.id} role="listitem">
+                <div
+                  className="imported-wallet-row"
+                  data-compact-status={compactStatuses && statuses.length ? true : undefined}
+                  key={wallet.id}
+                  role="listitem"
+                >
                   <Checkbox
                     aria-label={`选择 ${accessibleName}`}
                     checked={selectedIds.has(wallet.id)}
@@ -535,34 +664,31 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                     </div>
                   ) : null}
                   {statuses.length ? (
-                    <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-statuses">
-                      {statuses.map((status, index) => (
-                        <div className="imported-wallet-status" data-status={status.status} key={`${status.asset}-${index}`}>
-                          <div className="imported-wallet-status__heading">
-                            <Badge variant={status.status === "error" ? "destructive" : "outline"}>
-                              {status.status === "success"
-                                ? "已完成"
-                                : status.status === "error"
-                                  ? "失败"
-                                  : status.status === "skipped"
-                                    ? "已跳过"
-                                    : status.status === "confirming"
-                                      ? "确认中"
-                                      : status.status === "submitting"
-                                        ? "提交中"
-                                        : status.status === "scanning"
-                                          ? "读取中"
-                                          : "待处理"}
-                            </Badge>
-                            <strong>{status.asset}{status.amount ? ` · ${status.amount}` : ""}</strong>
-                            {status.explorerUrl && status.hash ? (
-                              <a href={status.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
-                            ) : null}
+                    compactStatuses ? (
+                      <WalletStatusSummary
+                        accessibleName={accessibleName}
+                        address={wallet.address}
+                        label={wallet.label}
+                        statuses={statuses}
+                      />
+                    ) : (
+                      <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-statuses">
+                        {statuses.map((status, index) => (
+                          <div className="imported-wallet-status" data-status={status.status} key={`${status.asset}-${index}`}>
+                            <div className="imported-wallet-status__heading">
+                              <Badge variant={status.status === "error" ? "destructive" : "outline"}>
+                                {walletStatusLabels[status.status]}
+                              </Badge>
+                              <strong>{status.asset}{status.amount ? ` · ${status.amount}` : ""}</strong>
+                              {status.explorerUrl && status.hash ? (
+                                <a href={status.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
+                              ) : null}
+                            </div>
+                            <span title={status.message}>{status.message}</span>
                           </div>
-                          <span title={status.message}>{status.message}</span>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )
                   ) : null}
                   <Button
                     aria-label={`删除 ${accessibleName}`}

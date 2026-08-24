@@ -61,6 +61,7 @@ describe("discoverNftAssetsFromCandidates", () => {
 
     expect(result.complete).toBe(true);
     expect(result.assets.map((asset) => asset.tokenId)).toEqual([42n]);
+    expect(result.assets[0]).toEqual(expect.objectContaining({ ownerAddress: owner }));
     expect(result.sources).toEqual(["opensea"]);
     expect(client.getLogs).not.toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledWith(

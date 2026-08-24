@@ -1564,6 +1564,13 @@
   background: color-mix(in oklab, var(--card) 94%, var(--muted));
 }
 
+.imported-wallet-row[data-compact-status="true"] {
+  grid-template-columns: auto minmax(10rem, 1fr) minmax(0, auto) minmax(0, auto) auto;
+  gap: 0.6rem;
+  min-height: 3.25rem;
+  padding: 0.4rem 0.6rem;
+}
+
 .imported-wallet-remove {
   grid-column: 5;
   justify-self: end;
@@ -1620,6 +1627,145 @@
   flex: 0 0 auto;
   text-decoration: underline;
   text-underline-offset: 0.15rem;
+}
+
+.imported-wallet-status-summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.imported-wallet-status-summary > strong {
+  min-width: 0;
+  max-width: 11rem;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imported-wallet-status-summary > a {
+  color: var(--muted-foreground);
+  font-size: 0.6rem;
+  text-decoration: underline;
+  text-underline-offset: 0.15rem;
+}
+
+.imported-wallet-status-summary__details {
+  color: var(--muted-foreground);
+}
+
+.wallet-status-sheet {
+  width: min(92vw, 30rem);
+  max-width: none;
+}
+
+.wallet-status-sheet__header {
+  border-bottom: 1px solid var(--border);
+  padding: 1.25rem 1.25rem 1rem;
+}
+
+.wallet-status-sheet__header [data-slot="sheet-description"] {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.wallet-status-sheet__header [data-slot="sheet-description"] > span {
+  color: var(--foreground);
+  font-weight: 550;
+}
+
+.wallet-status-sheet__header code {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-status-sheet__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 1rem 1.25rem 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+  color: var(--muted-foreground);
+}
+
+.wallet-status-sheet__summary strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-status-sheet__results {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  overflow-y: auto;
+  padding: 0.25rem 1.25rem 1.5rem;
+}
+
+.wallet-status-detail {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+}
+
+.wallet-status-detail:last-child {
+  border-bottom: 0;
+}
+
+.wallet-status-detail__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wallet-status-detail__heading strong {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-status-detail p {
+  margin: 0;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.wallet-status-detail[data-status="error"] p {
+  color: color-mix(in oklab, var(--destructive) 78%, var(--foreground));
+}
+
+.wallet-status-detail > a {
+  width: fit-content;
+  color: var(--foreground);
+  font-weight: 550;
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+}
+
+.wallet-status-detail > code {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .imported-wallet-identity {
@@ -1871,6 +2017,31 @@
 .nft-opensea-key [data-slot="field-label"] {
   margin: 0;
   white-space: nowrap;
+}
+
+.nft-opensea-key__control {
+  position: relative;
+  min-width: 0;
+}
+
+.nft-opensea-key__input {
+  padding-right: 2.85rem;
+}
+
+.nft-opensea-key__input[data-masked="true"] {
+  -webkit-text-security: disc;
+}
+
+.nft-opensea-key__visibility {
+  position: absolute;
+  top: 50%;
+  right: 0.2rem;
+  z-index: 1;
+  height: 1.25rem;
+  padding-inline: 0.4rem;
+  color: var(--muted-foreground);
+  font-size: 0.6rem;
+  transform: translateY(-50%);
 }
 
 .collection-workbench-panel .workbench-panel__header:has(.nft-opensea-key) {
@@ -2369,10 +2540,15 @@
     justify-content: flex-start;
   }
 
-  .imported-wallet-statuses {
+  .imported-wallet-statuses,
+  .imported-wallet-status-summary {
     min-width: 0;
     grid-column: 2 / 4;
     grid-row: 3;
+  }
+
+  .imported-wallet-status-summary {
+    justify-content: flex-start;
   }
 
   .address-only-input {

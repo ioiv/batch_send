@@ -28,6 +28,7 @@ describe("discoverErc721AssetsByTokenRange", () => {
 
     expect(result.complete).toBe(true);
     expect(result.assets.map((asset) => asset.tokenId)).toEqual([1n, 4n]);
+    expect(result.assets.every((asset) => asset.ownerAddress === owner)).toBe(true);
     expect(result.range).toEqual({ fromTokenId: 0n, source: "totalSupply", toTokenId: 4n });
     expect(readContract.mock.calls.some(([request]) => request.functionName === "getLogs")).toBe(false);
   });
@@ -72,6 +73,7 @@ describe("discoverErc721AssetsByTokenRange", () => {
 
     expect(result.complete).toBe(true);
     expect(result.assets.map((asset) => asset.tokenId)).toEqual([42n]);
+    expect(result.assets[0].ownerAddress).toBe(owner);
     expect(result.range?.source).toBe("manual");
     expect(readContract).not.toHaveBeenCalledWith(expect.objectContaining({ functionName: "getLogs" }));
   });

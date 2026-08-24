@@ -76,18 +76,21 @@ describe("discoverEnumerableErc721Assets", () => {
       {
         contractAddress,
         key: `erc721:${contractAddress}:0`,
+        ownerAddress: ownerOne,
         standard: "erc721",
         tokenId: 0n
       },
       {
         contractAddress,
         key: `erc721:${contractAddress}:9007199254740993`,
+        ownerAddress: ownerOne,
         standard: "erc721",
         tokenId: 9_007_199_254_740_993n
       },
       {
         contractAddress,
         key: `erc721:${contractAddress}:42`,
+        ownerAddress: ownerTwo,
         standard: "erc721",
         tokenId: 42n
       }

@@ -66,7 +66,9 @@ export type Erc721DiscoveryProgress = {
 
 export type Erc721DiscoveryResult = {
   /** Directly consumable by planEvmCollection. Only ERC721Enumerable assets are included. */
-  assets: Extract<EvmCollectionAsset, { standard: "erc721" }>[];
+  assets: Array<Extract<EvmCollectionAsset, { standard: "erc721" }> & {
+    ownerAddress: Address;
+  }>;
   issues: Erc721DiscoveryIssue[];
   owners: Erc721DiscoveryOwner[];
   /** Number of attempted `readContract` RPC calls, including failed calls. */
@@ -669,7 +671,13 @@ export async function discoverEnumerableErc721Assets(
         continue;
       }
       seenTokens.add(key);
-      result.assets.push({ contractAddress: contract, key, standard: "erc721", tokenId });
+      result.assets.push({
+        contractAddress: contract,
+        key,
+        ownerAddress,
+        standard: "erc721",
+        tokenId
+      });
       ownerDiscovered += 1;
     }
 
