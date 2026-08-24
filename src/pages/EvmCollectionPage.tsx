@@ -28,8 +28,8 @@ import {
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
   AdvancedSettings,
+  CollectionExecutionControls,
   ConfirmActionDialog,
-  ExecutionProgress,
   ReviewPanel,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
@@ -51,6 +51,7 @@ import {
 import { resolveCollectionAmount, type CollectionAmountPolicy } from "../lib/collection-amount";
 import { selectErc721CollectionPlan } from "../lib/erc721-collection-selection";
 import {
+  CollectionPauseController,
   mapWithCollectionConcurrency,
   waitForCollectionDelay
 } from "../lib/collection-execution";
@@ -601,6 +602,7 @@ export function EvmCollectionPage({
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
   const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
+  const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
@@ -613,6 +615,7 @@ export function EvmCollectionPage({
   const balanceRequestRef = useRef(0);
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
+  const pauseControllerRef = useRef(new CollectionPauseController());
   const planRef = useRef<EvmCollectionPlanItem[]>([]);
   const retryPlanRef = useRef<EvmCollectionPlanItem[]>([]);
   const discoveryAbortRef = useRef<AbortController | null>(null);
@@ -722,6 +725,7 @@ export function EvmCollectionPage({
     return () => {
       window.removeEventListener("pagehide", discardSigningPlan);
       window.removeEventListener("pageshow", resetRestoredPage);
+      pauseControllerRef.current.resume();
       discoveryAbortRef.current?.abort();
       openSeaApiKeyRef.current = "";
       planRef.current = [];
@@ -1573,6 +1577,16 @@ export function EvmCollectionPage({
     addDiscoveredAssets(pendingDiscovery, allowPartial);
   };
 
+  const handlePausedChange = (nextPaused: boolean) => {
+    if (!transactionRunning) return;
+    if (nextPaused) pauseControllerRef.current.pause();
+    else pauseControllerRef.current.resume();
+    setPaused(nextPaused);
+    setMessage(nextPaused
+      ? "已请求暂停：当前正在提交或确认的交易会安全完成，之后不再启动新的钱包或归集项"
+      : "已继续归集，正在启动后续钱包与归集项");
+  };
+
   const executeCollection = async (retryIds?: readonly string[]) => {
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running) return;
     const retryOnly = retryIds !== undefined;
@@ -1596,6 +1610,8 @@ export function EvmCollectionPage({
     }
     const target = getAddress(targetAddress.trim());
     operationRef.current = true;
+    pauseControllerRef.current.resume();
+    setPaused(false);
     retryPlanRef.current = untouchedRetryPlan;
     setIssues([]);
     setStage("running");
@@ -1687,7 +1703,9 @@ export function EvmCollectionPage({
         groups,
         prepared.executionSettings.concurrency,
         async (group) => {
+          await pauseControllerRef.current.waitUntilResumed();
           await waitForCollectionDelay(prepared.executionSettings!);
+          await pauseControllerRef.current.waitUntilResumed();
           return executeEvmCollectionPlan({
             gasSettings,
             getWalletClient: (account) => createWalletClient({
@@ -1697,6 +1715,7 @@ export function EvmCollectionPage({
             }),
             maxFeePerTransactionWei,
             onProgress: updateProgress,
+            pauseControl: pauseControllerRef.current,
             plan: group,
             publicClient,
             targetAddress: target
@@ -1752,10 +1771,14 @@ export function EvmCollectionPage({
         : "归集流程中断，钱包与设置均已保留，可直接重试；已显示哈希的项目请先核对链上状态");
     } finally {
       operationRef.current = false;
+      pauseControllerRef.current.resume();
+      setPaused(false);
     }
   };
 
   const clearWorkbench = () => {
+    pauseControllerRef.current.resume();
+    setPaused(false);
     keyInputRef.current?.clear();
     balanceRequestRef.current += 1;
     tokenRecognitionRequestRef.current += 1;
@@ -1915,7 +1938,13 @@ export function EvmCollectionPage({
           footer={(
             <div className="actions collection-actions">
               {stage === "running" ? (
-                <Button disabled type="button">归集中</Button>
+                <CollectionExecutionControls
+                  current={completedResultCount}
+                  label="EVM 归集进度"
+                  onPausedChange={handlePausedChange}
+                  paused={paused}
+                  total={results.length}
+                />
               ) : retryableCount ? (
                 <ConfirmActionDialog
                   confirmLabel={`重试 ${retryableCount} 个失败项`}
@@ -2644,13 +2673,6 @@ export function EvmCollectionPage({
               </Alert>
             ) : null}
 
-            {stage === "running" ? (
-              <ExecutionProgress
-                current={completedResultCount}
-                label="EVM 归集进度"
-                total={results.length}
-              />
-            ) : null}
           </div>
         </WorkbenchPanel>
         {archivedRound ? (

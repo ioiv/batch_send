@@ -15,6 +15,7 @@ import {
   type SolCollectionSource
 } from "./sol-collection";
 import { maximumCollectionSources } from "./collection-workload";
+import { CollectionPauseController } from "./collection-execution";
 
 const testBlockhash = "11111111111111111111111111111111";
 
@@ -253,6 +254,29 @@ describe("SOL collection planning", () => {
 });
 
 describe("collectSolFromSources", () => {
+  it("does not start a wallet while collection is paused", async () => {
+    const source = makeSource(28);
+    const connection = makeConnection();
+    const pauseControl = new CollectionPauseController();
+    pauseControl.pause();
+
+    const request = collectSolFromSources({
+      connection,
+      destination: makeKeypair(29).publicKey,
+      minCollectionLamports: 1n,
+      pauseControl,
+      reserveLamports: 10_000n,
+      sources: [source]
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(connection.getBalance).not.toHaveBeenCalled();
+    pauseControl.resume();
+    await expect(request).resolves.toMatchObject([{ status: "success" }]);
+    expect(connection.getBalance).toHaveBeenCalledOnce();
+  });
+
   it("skips the destination wallet before making any RPC request", async () => {
     const source = makeSource(8);
     const connection = makeConnection();

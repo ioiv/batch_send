@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CollectionPauseController,
   mapWithCollectionConcurrency,
   normalizeCollectionExecutionSettings
 } from "./collection-execution";
@@ -48,5 +49,25 @@ describe("collection execution settings", () => {
 
     await expect(request).resolves.toEqual([10, 20, 30, 40]);
     expect(maximumActive).toBe(2);
+  });
+
+  it("holds work at a safe boundary until collection is resumed", async () => {
+    const pause = new CollectionPauseController();
+    let continued = false;
+    pause.pause();
+
+    const waiting = pause.waitUntilResumed().then(() => {
+      continued = true;
+    });
+    await Promise.resolve();
+
+    expect(pause.paused).toBe(true);
+    expect(continued).toBe(false);
+
+    pause.resume();
+    await waiting;
+
+    expect(pause.paused).toBe(false);
+    expect(continued).toBe(true);
   });
 });

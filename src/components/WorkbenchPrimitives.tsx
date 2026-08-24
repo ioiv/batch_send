@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Loading03Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -227,6 +229,55 @@ export function ExecutionProgress({
       <ProgressLabel>{label}</ProgressLabel>
       <ProgressValue>{() => `${safeCurrent}/${safeTotal}`}</ProgressValue>
     </Progress>
+  );
+}
+
+export function CollectionExecutionControls({
+  current,
+  label,
+  onPausedChange,
+  paused,
+  total
+}: {
+  current: number;
+  label: string;
+  onPausedChange: (paused: boolean) => void;
+  paused: boolean;
+  total: number;
+}) {
+  return (
+    <div
+      aria-live="polite"
+      className="collection-execution-controls"
+      data-paused={paused || undefined}
+      role="status"
+    >
+      <div className="collection-execution-controls__progress">
+        <div className="collection-execution-controls__status">
+          <HugeiconsIcon
+            aria-hidden="true"
+            className={paused ? "" : "animate-spin"}
+            icon={paused ? PauseIcon : Loading03Icon}
+            strokeWidth={2}
+          />
+          <span>{paused ? "已暂停，将在当前交易完成后停止启动新任务" : "归集中，请保持页面打开"}</span>
+        </div>
+        <ExecutionProgress
+          current={current}
+          label={paused ? `${label}（已暂停）` : label}
+          total={total}
+        />
+      </div>
+      <Button
+        aria-pressed={paused}
+        onClick={() => onPausedChange(!paused)}
+        type="button"
+        variant={paused ? "default" : "outline"}
+      >
+        <HugeiconsIcon aria-hidden="true" icon={paused ? PlayIcon : PauseIcon} strokeWidth={2} />
+        {paused ? "继续归集" : "暂停归集"}
+      </Button>
+    </div>
   );
 }
 

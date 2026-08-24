@@ -4,6 +4,42 @@ export type CollectionExecutionSettings = {
   minimumDelayMs: number;
 };
 
+export interface CollectionPauseControl {
+  readonly paused: boolean;
+  waitUntilResumed(): Promise<void>;
+}
+
+/**
+ * Cooperative pause control for collection runners. A pause never interrupts a
+ * transaction that is already being submitted or confirmed; callers await the
+ * control only at safe boundaries before starting the next wallet/operation.
+ */
+export class CollectionPauseController implements CollectionPauseControl {
+  private isPaused = false;
+  private waiters = new Set<() => void>();
+
+  get paused() {
+    return this.isPaused;
+  }
+
+  pause() {
+    this.isPaused = true;
+  }
+
+  resume() {
+    if (!this.isPaused && !this.waiters.size) return;
+    this.isPaused = false;
+    const pendingWaiters = [...this.waiters];
+    this.waiters.clear();
+    pendingWaiters.forEach((resolve) => resolve());
+  }
+
+  waitUntilResumed() {
+    if (!this.isPaused) return Promise.resolve();
+    return new Promise<void>((resolve) => this.waiters.add(resolve));
+  }
+}
+
 export function normalizeCollectionExecutionSettings(
   settings: Partial<CollectionExecutionSettings> = {}
 ): CollectionExecutionSettings {

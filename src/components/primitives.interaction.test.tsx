@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  CollectionExecutionControls,
   ConfirmActionDialog,
   ReviewPanel,
   WalletChooserDialog,
@@ -35,6 +36,31 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 afterEach(cleanup);
 
 describe("shadcn Base UI interactions", () => {
+  it("keeps collection progress visible and toggles pause and resume", async () => {
+    const user = userEvent.setup();
+
+    function Harness() {
+      const [paused, setPaused] = useState(false);
+      return (
+        <CollectionExecutionControls
+          current={2}
+          label="EVM 归集进度"
+          onPausedChange={setPaused}
+          paused={paused}
+          total={5}
+        />
+      );
+    }
+
+    render(<Harness />);
+    expect(screen.getByRole("progressbar", { name: "EVM 归集进度" })).toBeVisible();
+    expect(screen.getByText("2/5")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "暂停归集" }));
+    expect(screen.getByRole("button", { name: "继续归集" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("progressbar", { name: "EVM 归集进度（已暂停）" })).toBeVisible();
+  });
+
   it("keeps a panel footer as the final visible card region", () => {
     render(
       <WorkbenchPanel footer={<Button>运行预检</Button>} title="任务配置">

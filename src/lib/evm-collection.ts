@@ -27,6 +27,7 @@ import {
   type EvmGasSettings
 } from "./evm-gas";
 import { resolveCollectionAmount, type CollectionAmountPolicy } from "./collection-amount";
+import type { CollectionPauseControl } from "./collection-execution";
 
 export type EvmCollectionStandard = "native" | "erc20" | "erc721" | "erc1155";
 
@@ -1447,6 +1448,7 @@ export async function executeEvmCollectionPlan({
   getWalletClient,
   maxFeePerTransactionWei,
   onProgress,
+  pauseControl,
   plan,
   publicClient,
   targetAddress
@@ -1458,6 +1460,7 @@ export async function executeEvmCollectionPlan({
   ) => EvmCollectionWalletClient | Promise<EvmCollectionWalletClient>;
   maxFeePerTransactionWei: bigint;
   onProgress?: (progress: EvmCollectionProgress) => void;
+  pauseControl?: CollectionPauseControl;
   plan: readonly EvmCollectionPlanItem[];
   publicClient: EvmCollectionPublicClient;
   targetAddress: string;
@@ -1468,6 +1471,7 @@ export async function executeEvmCollectionPlan({
   const operations = buildCollectionExecutionOperations(plan);
 
   for (let operationIndex = 0; operationIndex < operations.length; operationIndex += 1) {
+    await pauseControl?.waitUntilResumed();
     const operation = operations[operationIndex];
     const primary = getOperationPrimaryItem(operation);
     if (primary.status !== "ready") {

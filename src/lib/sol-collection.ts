@@ -17,7 +17,8 @@ import {
   mapWithCollectionConcurrency,
   normalizeCollectionExecutionSettings,
   waitForCollectionDelay,
-  type CollectionExecutionSettings
+  type CollectionExecutionSettings,
+  type CollectionPauseControl
 } from "./collection-execution";
 import { maximumCollectionSources } from "./collection-workload";
 
@@ -145,6 +146,7 @@ export type CollectSolFromSourcesOptions = {
   fallbackFeeLamports?: bigint | null;
   minCollectionLamports: bigint;
   onProgress?: (progress: SolCollectionProgress) => void;
+  pauseControl?: CollectionPauseControl;
   executionSettings?: Partial<CollectionExecutionSettings>;
   reserveLamports: bigint;
   sendOptions?: SendOptions;
@@ -602,6 +604,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
     fallbackFeeLamports = defaultSolCollectionFeeLamports,
     minCollectionLamports,
     onProgress,
+    pauseControl,
     reserveLamports,
     sendOptions = { preflightCommitment: "confirmed", skipPreflight: true },
     sources
@@ -686,7 +689,9 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         return finishSkipped("same-as-destination");
       }
 
+      await pauseControl?.waitUntilResumed();
       await waitForCollectionDelay(executionSettings);
+      await pauseControl?.waitUntilResumed();
 
       balanceLamports = toSafeLamports(await connection.getBalance(source.keypair.publicKey, commitment), "balance");
       if (balanceLamports === 0n) {

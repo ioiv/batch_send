@@ -126,6 +126,28 @@ describe("SolCollectionPage workbench", () => {
     }));
   });
 
+  it("keeps progress controls visible and cooperatively pauses the collection runner", async () => {
+    let finishCollection: ((value: never[]) => void) | undefined;
+    solMocks.collect.mockImplementationOnce(() => new Promise((resolve) => {
+      finishCollection = resolve;
+    }));
+    const user = await prepareSolPage();
+    await confirmExecution(user);
+
+    const pauseButton = await screen.findByRole("button", { name: "暂停归集" });
+    expect(screen.getByRole("progressbar", { name: "SOL 归集进度" })).toBeVisible();
+    expect(solMocks.collect.mock.calls[0][0].pauseControl.paused).toBe(false);
+
+    await user.click(pauseButton);
+    expect(screen.getByRole("button", { name: "继续归集" })).toBeVisible();
+    expect(solMocks.collect.mock.calls[0][0].pauseControl.paused).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "继续归集" }));
+    expect(solMocks.collect.mock.calls[0][0].pauseControl.paused).toBe(false);
+    finishCollection?.([]);
+    await screen.findByText(/归集完成：0 笔成功/);
+  });
+
   it("keeps the wallet and renders success status inside its imported row", async () => {
     solMocks.collect.mockResolvedValueOnce([result({})]);
     const user = await prepareSolPage();

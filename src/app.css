@@ -752,6 +752,42 @@
   justify-content: flex-end;
 }
 
+.collection-execution-controls {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+}
+
+.collection-execution-controls__progress {
+  min-width: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.collection-execution-controls__status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--foreground);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.collection-execution-controls__status svg,
+.collection-execution-controls > button svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.collection-execution-controls[data-paused] .collection-execution-controls__status {
+  color: var(--muted-foreground);
+}
+
 .workbench-review {
   min-width: 0;
 }
@@ -2500,6 +2536,14 @@
   .workbench-panel__footer {
     max-height: none;
     overflow: visible;
+  }
+
+  .collection-execution-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .collection-execution-controls > button {
+    width: 100%;
   }
 
   .secret-import-file-row {

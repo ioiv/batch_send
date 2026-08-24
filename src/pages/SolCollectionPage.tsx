@@ -16,13 +16,14 @@ import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayo
 import { CollectionResults } from "../components/CollectionResults";
 import {
   AdvancedSettings,
+  CollectionExecutionControls,
   ConfirmActionDialog,
-  ExecutionProgress,
   ReviewPanel,
   WorkbenchPanel
 } from "../components/WorkbenchPrimitives";
 import { formatLamports, parseSolToLamports } from "../lib/amount";
 import type { CollectionAmountPolicy } from "../lib/collection-amount";
+import { CollectionPauseController } from "../lib/collection-execution";
 import {
   sanitizeRoundArchiveText,
   type CollectionDisplayResult,
@@ -169,6 +170,7 @@ export function SolCollectionPage() {
   const [maximumDelay, setMaximumDelay] = useState("0");
   const [sourceCount, setSourceCount] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
+  const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
@@ -178,6 +180,7 @@ export function SolCollectionPage() {
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const keyImportingRef = useRef(false);
   const operationRef = useRef(false);
+  const pauseControllerRef = useRef(new CollectionPauseController());
   const retrySourcesRef = useRef<SolCollectionSource[]>([]);
   const selectedNetwork = getNetworkConfig(networkId);
   const normalizedTarget = validatePublicKey(targetAddress.trim());
@@ -217,8 +220,21 @@ export function SolCollectionPage() {
       setStage("editing");
     };
     window.addEventListener("pageshow", resetRestoredPage);
-    return () => window.removeEventListener("pageshow", resetRestoredPage);
+    return () => {
+      window.removeEventListener("pageshow", resetRestoredPage);
+      pauseControllerRef.current.resume();
+    };
   }, []);
+
+  const handlePausedChange = (nextPaused: boolean) => {
+    if (!taskRunning) return;
+    if (nextPaused) pauseControllerRef.current.pause();
+    else pauseControllerRef.current.resume();
+    setPaused(nextPaused);
+    setMessage(nextPaused
+      ? "已请求暂停：当前正在提交或确认的交易会安全完成，之后不再启动新的钱包"
+      : "已继续归集，正在启动后续钱包");
+  };
 
   const archiveCurrentRound = () => {
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
@@ -325,6 +341,8 @@ export function SolCollectionPage() {
     }
 
     operationRef.current = true;
+    pauseControllerRef.current.resume();
+    setPaused(false);
     retrySourcesRef.current = [];
     setIssues([]);
     setStage("running");
@@ -378,6 +396,7 @@ export function SolCollectionPage() {
         executionSettings: prepared.executionSettings,
         minCollectionLamports: prepared.minCollectionLamports,
         onProgress: updateProgress,
+        pauseControl: pauseControllerRef.current,
         reserveLamports: prepared.reserveLamports,
         sources
       });
@@ -417,10 +436,14 @@ export function SolCollectionPage() {
         : "归集流程中断，钱包与设置均已保留，可直接重试；已显示签名的项目请先核对链上状态");
     } finally {
       operationRef.current = false;
+      pauseControllerRef.current.resume();
+      setPaused(false);
     }
   };
 
   const resetTask = () => {
+    pauseControllerRef.current.resume();
+    setPaused(false);
     keyInputRef.current?.clear();
     retrySourcesRef.current = [];
     setTargetAddress("");
@@ -479,7 +502,13 @@ export function SolCollectionPage() {
           footer={(
             <div className="actions collection-actions">
               {stage === "running" ? (
-                <Button disabled type="button">归集中</Button>
+                <CollectionExecutionControls
+                  current={completedResultCount}
+                  label="SOL 归集进度"
+                  onPausedChange={handlePausedChange}
+                  paused={paused}
+                  total={results.length}
+                />
               ) : retryableCount ? (
                 <ConfirmActionDialog
                   confirmLabel={`重试 ${retryableCount} 个失败钱包`}
@@ -638,7 +667,6 @@ export function SolCollectionPage() {
                 <AlertTitle>{solStatusLabels[workbenchStatus]}</AlertTitle><AlertDescription>{message}</AlertDescription>
               </Alert>
             ) : null}
-            {stage === "running" ? <ExecutionProgress current={completedResultCount} label="SOL 归集进度" total={results.length} /> : null}
           </div>
         </WorkbenchPanel>
         {archivedRound ? (
