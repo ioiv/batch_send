@@ -739,6 +739,42 @@ describe("executeEvmCollectionPlan", () => {
     expect(waitForTransactionReceipt).toHaveBeenCalledOnce();
   });
 
+  it("splits a failed ERC1155 batch and submits only independently simulated items", async () => {
+    const account = parseAccounts([privateKeyOne])[0];
+    const plans = await readyPlansForAllStandards(account);
+    const first = plans[2];
+    const rejectedAsset = getSingleAsset(`${nftAddress},43`, "erc1155");
+    const rejected: EvmCollectionPlanItem = {
+      ...first,
+      amount: 5n,
+      asset: rejectedAsset,
+      id: "erc1155-rejected-43"
+    };
+    const { client: publicClient, simulateContract } = makePublicClient({
+      simulateContract: async (parameters) => {
+        const ids = parameters.functionName === "safeBatchTransferFrom"
+          ? parameters.args?.[2] as bigint[]
+          : [parameters.args?.[2] as bigint];
+        if (ids.includes(43n)) throw new Error("receiver rejects token 43");
+        return { request: { prepared: true } };
+      }
+    });
+    const { client: walletClient, writeContract } = makeWalletClient();
+
+    const results = await executeEvmCollectionPlan({
+      getWalletClient: () => walletClient,
+      maxFeePerTransactionWei,
+      plan: [first, rejected],
+      publicClient,
+      targetAddress
+    });
+
+    expect(results.map((result) => result.status)).toEqual(["success", "failed"]);
+    expect(results[1]).toMatchObject({ hash: null, retryable: true, uncertain: false });
+    expect(simulateContract).toHaveBeenCalledTimes(3);
+    expect(writeContract).toHaveBeenCalledOnce();
+  });
+
   it("continues signing and confirmation when a UI progress callback throws", async () => {
     const account = parseAccounts([privateKeyOne])[0];
     const [item] = await readyPlansForAllStandards(account);

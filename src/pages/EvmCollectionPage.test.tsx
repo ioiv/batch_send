@@ -462,7 +462,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
   });
 
-  it("uses checked private-key wallets and keeps NFT discovery automatic-only", () => {
+  it("uses checked private-key wallets and offers automatic plus manual NFT entry", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
 
     expect(screen.getByRole("heading", { name: "EVM NFT 归集", level: 1 })).toBeInTheDocument();
@@ -470,7 +470,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "导入钱包" })).toBeVisible();
     expect(screen.queryByRole("tab", { name: "ERC721" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "ERC1155" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "手工 / 文件" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "手工 / 文件" })).toBeVisible();
     expect(screen.getAllByRole("textbox", { name: "NFT 合约" })).toHaveLength(1);
     expect(screen.getByRole("tab", { name: "归集全部" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "指定总数量" })).toHaveAttribute("aria-disabled", "true");
@@ -478,19 +478,25 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.queryByText(/下一步|预检准备项|平台费 0|不上传密钥|密钥仅在本地内存/)).not.toBeInTheDocument();
   });
 
-  it("places NFT source keys above automatic discovery without manual Token ID entry", () => {
+  it("places NFT source keys above discovery and exposes manual Token ID entry on demand", async () => {
+    const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
 
     const walletImport = screen.getByRole("button", { name: "导入钱包" });
     const nftContract = screen.getByRole("textbox", { name: "NFT 合约" });
 
     expect(walletImport.compareDocumentPosition(nftContract) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(screen.queryByRole("tab", { name: "手工 / 文件" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "手工 / 文件" })).toBeVisible();
     expect(screen.queryByLabelText("Token ID / 区间")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "识别持仓" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "发现方式与事件范围" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tablist", { name: "NFT 发现方式" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("事件起始区块")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    expect(screen.getByLabelText("Token ID / 区间")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "ERC721" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "ERC1155" })).toBeVisible();
   });
 
   it("shows execution failures inside the wallet row and offers retry", async () => {
@@ -669,7 +675,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(window.localStorage.getItem("chainkit.opensea-api-key.v1")).toBe("chrome-compatible-key");
   });
 
-  it("blocks ERC1155 on the current page without removing the underlying discovery capability", async () => {
+  it("discovers ERC1155 holdings and does not fall back to ERC721 range probing", async () => {
     evmMocks.inspectContract.mockResolvedValueOnce({
       address: tokenAddress,
       enumerable: false,
@@ -679,13 +685,76 @@ describe("EvmCollectionPage workbench", () => {
       standard: "erc1155",
       symbol: "MULTI"
     });
+    evmMocks.discoverCandidates.mockResolvedValueOnce({
+      assets: [{
+        contractAddress: tokenAddress,
+        key: `erc1155:${tokenAddress.toLowerCase()}:9`,
+        standard: "erc1155",
+        tokenId: 9n
+      }],
+      candidateCount: 1,
+      complete: true,
+      eventScanComplete: true,
+      expectedBalance: null,
+      holdings: [{
+        balance: 4n,
+        contractAddress: tokenAddress,
+        ownerAddress: signerAccount.address,
+        tokenId: 9n
+      }],
+      issues: [],
+      openSeaComplete: false,
+      openSeaUsed: false,
+      snapshotBlock: 100n,
+      sources: ["transfer-events"]
+    });
     await discoverNft();
 
-    expect(await screen.findByText(/当前 NFT 页面暂时只支持 ERC721/)).toBeVisible();
-    expect(evmMocks.discoverCandidates).not.toHaveBeenCalled();
+    expect(await screen.findByText(/共有 1 个 ERC1155 Token ID，合计 4 份/)).toBeVisible();
+    expect(evmMocks.discoverCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      standard: "erc1155"
+    }));
     expect(evmMocks.discoverRange).not.toHaveBeenCalled();
-    expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("已导入来源钱包")).getByText("1 ID / 4")).toBeVisible();
+    expect(screen.getByText("归集全部余额")).toBeVisible();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+  });
+
+  it("executes manually entered ERC1155 assets without applying the ERC721 total selector", async () => {
+    const asset = {
+      contractAddress: tokenAddress,
+      key: `erc1155:${tokenAddress.toLowerCase()}:9`,
+      standard: "erc1155" as const,
+      tokenId: 9n
+    };
+    const erc1155Plan = [{
+      account: signerAccount,
+      address: signerAccount.address,
+      amount: 4n,
+      asset,
+      id: "erc1155-manual-9",
+      label: "来源一",
+      message: "已检测到可归集 NFT 余额",
+      status: "ready" as const
+    }] satisfies EvmCollectionPlanItem[];
+    evmMocks.plan.mockResolvedValueOnce(erc1155Plan);
+
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="nft" />);
+    await importEvmSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    await user.click(screen.getByRole("tab", { name: "ERC1155" }));
+    await user.type(screen.getByLabelText("Token ID / 区间"), "9");
+    await user.click(screen.getByRole("button", { name: "加入清单" }));
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await confirmEvmExecution(user);
+
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
+    expect(evmMocks.plan).toHaveBeenCalledWith(expect.objectContaining({
+      assets: [expect.objectContaining({ standard: "erc1155", tokenId: 9n })]
+    }));
+    expect(evmMocks.execute.mock.calls[0][0].plan).toEqual(erc1155Plan);
   });
 
   it("stops an in-progress direct Token ID scan without changing the asset inventory", async () => {

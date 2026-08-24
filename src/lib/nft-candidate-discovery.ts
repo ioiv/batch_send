@@ -70,6 +70,13 @@ export type NftCandidateAsset =
   | (Extract<EvmCollectionAsset, { standard: "erc721" }> & { ownerAddress: Address })
   | Extract<EvmCollectionAsset, { standard: "erc1155" }>;
 
+export type Erc1155CandidateHolding = {
+  balance: bigint;
+  contractAddress: Address;
+  ownerAddress: Address;
+  tokenId: bigint;
+};
+
 export type NftCandidateDiscoveryIssueCode =
   | "balance-read-failed"
   | "candidate-limit-exceeded"
@@ -99,6 +106,7 @@ export type NftCandidateDiscoveryResult = {
   complete: boolean;
   eventScanComplete: boolean;
   expectedBalance: bigint | null;
+  holdings: Erc1155CandidateHolding[];
   issues: NftCandidateDiscoveryIssue[];
   openSeaComplete: boolean;
   openSeaUsed: boolean;
@@ -739,6 +747,7 @@ async function verifyErc1155Candidates({
   if (totalChecks > BigInt(maximumEvmCollectionChecks)) {
     return {
       assets: [] as NftCandidateAsset[],
+      holdings: [] as Erc1155CandidateHolding[],
       issue: {
         code: "verification-limit-exceeded" as const,
         message: `ERC1155 候选需要 ${totalChecks} 次余额配对检查，超过 ${maximumEvmCollectionChecks} 次安全上限`
@@ -749,6 +758,7 @@ async function verifyErc1155Candidates({
 
   const pairs = tokenIds.flatMap((tokenId) => owners.map((owner) => ({ owner, tokenId })));
   const positiveTokenIds = new Set<string>();
+  const holdings: Erc1155CandidateHolding[] = [];
   let verificationComplete = true;
   for (let index = 0; index < pairs.length; index += 500) {
     throwIfAborted(signal);
@@ -767,7 +777,15 @@ async function verifyErc1155Candidates({
         break;
       }
       result.forEach((balance, pairIndex) => {
-        if (balance > 0n) positiveTokenIds.add(chunk[pairIndex].tokenId.toString());
+        if (balance <= 0n) return;
+        const pair = chunk[pairIndex];
+        positiveTokenIds.add(pair.tokenId.toString());
+        holdings.push({
+          balance,
+          contractAddress: contract,
+          ownerAddress: pair.owner,
+          tokenId: pair.tokenId
+        });
       });
     } catch {
       verificationComplete = false;
@@ -783,7 +801,7 @@ async function verifyErc1155Candidates({
   const assets = [...positiveTokenIds]
     .map((tokenId) => createAsset(contract, "erc1155", BigInt(tokenId)))
     .sort((left, right) => left.tokenId < right.tokenId ? -1 : left.tokenId > right.tokenId ? 1 : 0);
-  return { assets, issue: null, verificationComplete };
+  return { assets, holdings, issue: null, verificationComplete };
 }
 
 export async function discoverNftAssetsFromCandidates(
@@ -798,6 +816,7 @@ export async function discoverNftAssetsFromCandidates(
     complete: false,
     eventScanComplete: false,
     expectedBalance: null,
+    holdings: [],
     issues,
     openSeaComplete: false,
     openSeaUsed: false,
@@ -963,6 +982,7 @@ export async function discoverNftAssetsFromCandidates(
     candidateCount: candidates.size,
     complete: eventScan.complete && verified.verificationComplete,
     eventScanComplete: eventScan.complete,
+    holdings: verified.holdings,
     issues,
     openSeaComplete,
     openSeaUsed,

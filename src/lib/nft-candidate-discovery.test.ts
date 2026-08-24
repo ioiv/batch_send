@@ -176,6 +176,12 @@ describe("discoverNftAssetsFromCandidates", () => {
 
     expect(result.complete).toBe(true);
     expect(result.assets.map((asset) => asset.tokenId)).toEqual([10n]);
+    expect(result.holdings).toEqual([{
+      balance: 2n,
+      contractAddress: contract,
+      ownerAddress: owner,
+      tokenId: 10n
+    }]);
     expect(readContract).toHaveBeenCalledWith(expect.objectContaining({
       blockNumber: 100n,
       functionName: "balanceOfBatch"

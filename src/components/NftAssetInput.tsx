@@ -45,6 +45,8 @@ export function NftAssetInput({
   onChange,
   onContractAddressChange,
   onImportingChange,
+  onStandardChange,
+  standard = "erc721",
   value
 }: {
   autoOnly?: boolean;
@@ -57,6 +59,8 @@ export function NftAssetInput({
   onChange: (value: string) => void;
   onContractAddressChange: (value: string) => void;
   onImportingChange?: (importing: boolean) => void;
+  onStandardChange?: (standard: "erc721" | "erc1155") => void;
+  standard?: "erc721" | "erc1155";
   value: string;
 }) {
   const disabledRef = useRef(Boolean(disabled));
@@ -112,7 +116,7 @@ export function NftAssetInput({
 
   const addExpression = () => {
     cancelPendingImport();
-    const merged = mergeNftAssetInput(value, contractAddress, tokenExpression);
+    const merged = mergeNftAssetInput(value, contractAddress, tokenExpression, { standard });
     setIssues(merged.issues);
     if (merged.issues.some((issue) => issue.severity === "error")) {
       setMessage("请修正合约地址或 Token ID 后再加入");
@@ -263,6 +267,20 @@ export function NftAssetInput({
           {autoDiscoveryPanel ? <TabsContent value="auto">{autoDiscoveryPanel}</TabsContent> : null}
 
           <TabsContent className="nft-asset-builder-fields" value="manual">
+            {onStandardChange ? (
+              <Field>
+                <FieldLabel>NFT 标准</FieldLabel>
+                <Tabs
+                  onValueChange={(nextStandard) => onStandardChange(nextStandard as "erc721" | "erc1155")}
+                  value={standard}
+                >
+                  <TabsList aria-label="NFT 标准">
+                    <TabsTrigger disabled={controlsDisabled} value="erc721">ERC721</TabsTrigger>
+                    <TabsTrigger disabled={controlsDisabled} value="erc1155">ERC1155</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </Field>
+            ) : null}
             <Field>
               <FieldLabel htmlFor="nft-token-expression">Token ID / 区间</FieldLabel>
               <Input

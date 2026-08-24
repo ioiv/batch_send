@@ -86,7 +86,8 @@ import {
 } from "../lib/opensea-key-preference";
 import {
   discoverNftAssetsFromCandidates,
-  getOpenSeaChainIdentifier
+  getOpenSeaChainIdentifier,
+  type Erc1155CandidateHolding
 } from "../lib/nft-candidate-discovery";
 import {
   getSettledNftAssetKeys,
@@ -102,6 +103,7 @@ type PendingNftDiscovery = {
   assets: Array<{ contractAddress: string; ownerAddress?: string; tokenId: bigint }>;
   complete: boolean;
   contractAddress: string;
+  holdings?: Erc1155CandidateHolding[];
   kind: "candidate-scan" | "enumerable" | "token-range";
   standard: "erc721" | "erc1155";
 };
@@ -421,6 +423,7 @@ function groupNftWalletStatuses(results: readonly CollectionDisplayResult[]) {
   });
 
   return Object.fromEntries([...groupedResults.entries()].map(([address, items]) => {
+    const standard = items.some((item) => item.asset.startsWith("ERC1155")) ? "ERC1155" : "ERC721";
     const success = items.filter((item) => item.status === "success").length;
     const failed = items.filter((item) => item.status === "error").length;
     const skipped = items.filter((item) => item.status === "skipped").length;
@@ -438,7 +441,9 @@ function groupNftWalletStatuses(results: readonly CollectionDisplayResult[]) {
       skipped ? `跳过 ${skipped}` : ""
     ].filter(Boolean);
     return [address, [{
-      asset: `ERC721 · ${items.length} 个`,
+      asset: standard === "ERC1155"
+        ? `ERC1155 · ${items.length} 个 Token ID`
+        : `ERC721 · ${items.length} 个`,
       ...(onlyResult?.explorerUrl && onlyResult.hash ? {
         explorerUrl: onlyResult.explorerUrl,
         hash: onlyResult.hash
@@ -589,7 +594,6 @@ export function EvmCollectionPage({
   const [randomMaximum, setRandomMaximum] = useState("0.1");
   const [nftAmountMode, setNftAmountMode] = useState<"all" | "fixed">("all");
   const [nftFixedAmount, setNftFixedAmount] = useState("1");
-  const [nftRecognizedTotal, setNftRecognizedTotal] = useState(0);
   const [concurrency, setConcurrency] = useState("3");
   const [minimumDelay, setMinimumDelay] = useState("0");
   const [maximumDelay, setMaximumDelay] = useState("0");
@@ -865,7 +869,6 @@ export function EvmCollectionPage({
     }
     if (fixedStandard === "nft") {
       setNftAssetInputs({ erc721: "", erc1155: "" });
-      setNftRecognizedTotal(0);
       setDiscoveryComplete(false);
     }
     balanceRequestRef.current += 1;
@@ -919,7 +922,6 @@ export function EvmCollectionPage({
     setContractInspection(null);
     if (fixedStandard === "nft") {
       setNftAssetInputs({ erc721: "", erc1155: "" });
-      setNftRecognizedTotal(0);
       setAddressBalances(emptyAddressBalanceState);
     }
     rememberPreferredEvmDistributionNetwork(value);
@@ -1108,11 +1110,11 @@ export function EvmCollectionPage({
       randomMaximum,
       randomMinimum
     })) nextIssues.push("归集数量设置无效，请检查当前数量模式");
-    if (fixedStandard === "nft" && nftAmountMode === "fixed") {
+    if (fixedStandard === "nft" && nftStandard === "erc721" && nftAmountMode === "fixed") {
       const fixedTotal = parseErc721CollectionLimit(nftFixedAmount);
       if (fixedTotal === null) nextIssues.push("ERC721 指定数量需要是大于 0 的整数");
-      else if (fixedTotal > nftRecognizedTotal) {
-        nextIssues.push(`指定数量不能大于已识别总量 ${nftRecognizedTotal}`);
+      else if (fixedTotal > parsedAssets.validAssets.length) {
+        nextIssues.push(`指定数量不能大于当前资产总量 ${parsedAssets.validAssets.length}`);
       }
     }
     const executionSettings = getExecutionSettings();
@@ -1151,17 +1153,32 @@ export function EvmCollectionPage({
     }
 
     const selectedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "").accounts;
-    const counts = new Map<string, number>(
-      selectedAccounts.map((account) => [account.address.toLowerCase(), 0])
+    const holdingsByOwner = new Map<string, { tokenIds: Set<string>; units: bigint }>(
+      selectedAccounts.map((account) => [
+        account.address.toLowerCase(),
+        { tokenIds: new Set<string>(), units: 0n }
+      ])
     );
-    discovery.assets.forEach((asset) => {
-      const ownerAddress = asset.ownerAddress
-        || (selectedAccounts.length === 1 ? selectedAccounts[0].address : "");
-      const ownerKey = ownerAddress.toLowerCase();
-      if (!counts.has(ownerKey)) return;
-      counts.set(ownerKey, (counts.get(ownerKey) || 0) + 1);
-    });
-    const recognizedTotal = [...counts.values()].reduce((sum, count) => sum + count, 0);
+    if (discovery.standard === "erc1155" && discovery.holdings?.length) {
+      discovery.holdings.forEach((holding) => {
+        const summary = holdingsByOwner.get(holding.ownerAddress.toLowerCase());
+        if (!summary) return;
+        summary.tokenIds.add(holding.tokenId.toString());
+        summary.units += holding.balance;
+      });
+    } else {
+      discovery.assets.forEach((asset) => {
+        const ownerAddress = asset.ownerAddress
+          || (selectedAccounts.length === 1 ? selectedAccounts[0].address : "");
+        const summary = holdingsByOwner.get(ownerAddress.toLowerCase());
+        if (!summary) return;
+        summary.tokenIds.add(asset.tokenId.toString());
+        if (discovery.standard === "erc721") summary.units += 1n;
+      });
+    }
+    const recognizedTotal = discovery.assets.length;
+    const recognizedUnits = [...holdingsByOwner.values()].reduce((sum, summary) => sum + summary.units, 0n);
+    const standardLabel = discovery.standard.toUpperCase();
 
     planRef.current = [];
     retryPlanRef.current = [];
@@ -1171,15 +1188,18 @@ export function EvmCollectionPage({
     setResults([]);
     setNftStandard(discovery.standard);
     setNftAssetInputs((current) => ({ ...current, [discovery.standard]: nextInventory.serialized }));
-    setNftRecognizedTotal(recognizedTotal);
     setAddressBalances({
-      message: `已识别 ${recognizedTotal} 个可归集 ERC721`,
+      message: discovery.standard === "erc1155"
+        ? `已识别 ${recognizedTotal} 个可归集 ERC1155 Token ID，共 ${recognizedUnits} 份`
+        : `已识别 ${recognizedTotal} 个可归集 ERC721`,
       rows: selectedAccounts.map((account) => ({
         address: account.address,
         assets: [{
-          amount: String(counts.get(account.address.toLowerCase()) || 0),
+          amount: discovery.standard === "erc1155"
+            ? `${holdingsByOwner.get(account.address.toLowerCase())?.tokenIds.size || 0} ID / ${holdingsByOwner.get(account.address.toLowerCase())?.units || 0n}`
+            : String(holdingsByOwner.get(account.address.toLowerCase())?.tokenIds.size || 0),
           contractAddress: getAddress(discovery.contractAddress),
-          symbol: "ERC721"
+          symbol: standardLabel
         }],
         label: account.label
       })),
@@ -1194,15 +1214,17 @@ export function EvmCollectionPage({
     if (discovery.complete) {
       const inventoryCount = discovery.assets.length;
       setDiscoveryMessage(inventoryCount
-        ? `持仓识别完成：${selectedAccounts.length} 个已选钱包中共有 ${recognizedTotal} 个可归集 ERC721`
-        : "持仓识别完成：已选钱包当前没有该合约的可归集 ERC721");
+        ? discovery.standard === "erc1155"
+          ? `持仓识别完成：${selectedAccounts.length} 个已选钱包中共有 ${recognizedTotal} 个 ERC1155 Token ID，合计 ${recognizedUnits} 份`
+          : `持仓识别完成：${selectedAccounts.length} 个已选钱包中共有 ${recognizedTotal} 个可归集 ERC721`
+        : `持仓识别完成：已选钱包当前没有该合约的可归集 ${standardLabel}`);
     } else {
       setDiscoveryMessage(
         nextInventory.added
-          ? `已识别 ${recognizedTotal} 个经链上验证的 ERC721`
+          ? `已识别 ${recognizedTotal} 个经链上验证的 ${standardLabel}${discovery.standard === "erc1155" ? ` Token ID，合计 ${recognizedUnits} 份` : ""}`
             + (nextInventory.duplicates ? `，跳过 ${nextInventory.duplicates} 个重复项` : "")
             + "；当前结果可能未覆盖完整持仓"
-          : "部分识别完成；没有新增的可归集 ERC721"
+          : `部分识别完成；没有新增的可归集 ${standardLabel}`
       );
     }
     return true;
@@ -1269,7 +1291,7 @@ export function EvmCollectionPage({
     setTokenRangeEnd("");
     setDiscoveryComplete(false);
     if (assetInput.trim()) {
-      const existingAssets = parseEvmCollectionAssets(assetInput, "erc721");
+      const existingAssets = parseEvmCollectionAssets(assetInput, nftStandard);
       if (existingAssets.rows.some((row) => row.status === "invalid")) {
         setDiscoveryMessage("当前识别结果格式异常，请重新输入合约后再识别；旧结果不会被覆盖");
         return;
@@ -1300,7 +1322,7 @@ export function EvmCollectionPage({
     const discoveryWorkloadIssues = validateEvmCollectionWorkload({
       accountCount: ownerAddresses.length,
       assetCount: 1,
-      standard: "erc721"
+      standard: nftStandard
     });
     if (discoveryWorkloadIssues.length) {
       setDiscoveryIssues([...sourceIssues, ...discoveryWorkloadIssues]);
@@ -1328,11 +1350,7 @@ export function EvmCollectionPage({
         setDiscoveryMessage("该地址没有通过 ERC721 / ERC1155 标准识别，未修改持仓结果");
         return;
       }
-      if (inspection.standard === "erc1155") {
-        setDiscoveryIssues([...sourceIssues, ...inspection.issues]);
-        setDiscoveryMessage("当前 NFT 页面暂时只支持 ERC721；已识别为 ERC1155，未读取或修改持仓。ERC1155 归集能力仍保留，后续单独开放。");
-        return;
-      }
+      setNftStandard(inspection.standard);
       let candidateSourceIssues = [...sourceIssues, ...inspection.issues];
       if (inspection.standard === "erc721") {
         setDiscoveryMessage("正在检查 ERC721Enumerable 并读取来源钱包持有的 Token ID…");
@@ -1410,12 +1428,24 @@ export function EvmCollectionPage({
         assets: candidateResult.assets,
         complete: candidateResult.complete,
         contractAddress: inspection.address,
+        holdings: candidateResult.holdings,
         kind: "candidate-scan",
         standard: inspection.standard
       };
       setDiscoveryIssues([...candidateSourceIssues, ...candidateIssues]);
       if (candidateResult.complete) {
         addDiscoveredAssets(candidateDiscovery);
+        return;
+      }
+      if (inspection.standard === "erc1155") {
+        if (candidateResult.assets.length) {
+          setPendingDiscovery(candidateDiscovery);
+          setDiscoveryMessage(
+            `已通过 balanceOfBatch 验证 ${candidateResult.assets.length} 个 ERC1155 Token ID；事件历史未完整覆盖，请确认只使用该部分结果，或通过手工 / 文件补充。`
+          );
+        } else {
+          setDiscoveryMessage("ERC1155 事件历史未完整覆盖，且没有发现余额大于 0 的候选 Token ID；请通过手工 / 文件提供已知 ID。");
+        }
         return;
       }
       setDiscoveryMessage("索引与事件尚未完成余额对账，正在使用 Token ID 范围做最后兜底…");
@@ -1635,11 +1665,13 @@ export function EvmCollectionPage({
               randomMaximum,
               randomMinimum
             })
-          : selectErc721CollectionPlan(
-              ownershipPlan,
-              prepared.parsedAccounts.accounts,
-              nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null
-            );
+          : nftStandard === "erc1155"
+            ? ownershipPlan
+            : selectErc721CollectionPlan(
+                ownershipPlan,
+                prepared.parsedAccounts.accounts,
+                nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null
+              );
         planRef.current = executionPlan;
         setResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
       }
@@ -1751,7 +1783,6 @@ export function EvmCollectionPage({
     setRandomMaximum("0.1");
     setNftAmountMode("all");
     setNftFixedAmount("1");
-    setNftRecognizedTotal(0);
     setConcurrency("3");
     setMinimumDelay("0");
     setMaximumDelay("0");
@@ -1766,8 +1797,8 @@ export function EvmCollectionPage({
   };
 
   const parsedNftFixedAmount = parseErc721CollectionLimit(nftFixedAmount);
-  const nftAmountPolicyValid = nftAmountMode === "all"
-    || (parsedNftFixedAmount !== null && parsedNftFixedAmount <= nftRecognizedTotal);
+  const nftAmountPolicyValid = nftStandard === "erc1155" || nftAmountMode === "all"
+    || (parsedNftFixedAmount !== null && parsedNftFixedAmount <= parsedAssetCount);
   const amountPolicyValid = fixedStandard === "nft"
     ? nftAmountPolicyValid
     : Boolean(parseEvmAmountPolicy({
@@ -1780,7 +1811,7 @@ export function EvmCollectionPage({
       }));
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(effectiveRpcEndpoint);
-  const executableAssetCount = fixedStandard === "nft" ? nftRecognizedTotal : parsedAssetCount;
+  const executableAssetCount = parsedAssetCount;
   const canStart = targetIsValid && sourceKeyLineCount > 0 && executableAssetCount > 0
     && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
     && executionSettingsValid && rpcEndpointValid && !running
@@ -1911,10 +1942,10 @@ export function EvmCollectionPage({
                       <div><span>来源钱包</span><strong>{sourceKeyLineCount} 个已选择</strong></div>
                       <div>
                         <span>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</span>
-                        <strong>{fixedStandard === "nft" ? `${nftRecognizedTotal} 个` : parsedAssetCount}</strong>
+                        <strong>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</strong>
                       </div>
                       <div><span>归集数量</span><strong>{fixedStandard === "nft"
-                        ? nftAmountMode === "all" ? "全部" : `${nftFixedAmount} 个（所有钱包合计）`
+                        ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
                         : amountModeLabels[amountMode]}</strong></div>
                       <div><span>并发</span><strong>{fixedStandard === "nft"
                         ? `${Math.min(sourceKeyLineCount, 20)} 个钱包`
@@ -1966,7 +1997,6 @@ export function EvmCollectionPage({
                   setTokenRangeStart("");
                   setTokenRangeEnd("");
                   setDiscoveryComplete(false);
-                  setNftRecognizedTotal(0);
                   setNftAssetInputs({ erc721: "", erc1155: "" });
                   setAddressBalances(emptyAddressBalanceState);
                   invalidatePlan();
@@ -2157,7 +2187,7 @@ export function EvmCollectionPage({
                         <div className="nft-discovery-card__title">
                           <h4 id="nft-discovery-title">持仓识别</h4>
                           <Badge variant="outline">
-                            {discoveryComplete ? `${nftRecognizedTotal} 个 ERC721` : "OpenSea + RPC 复核"}
+                            {discoveryComplete ? `${parsedAssetCount} 个 ${nftStandard.toUpperCase()} Token ID` : "OpenSea + RPC 复核"}
                           </Badge>
                         </div>
                         <Button
@@ -2301,12 +2331,11 @@ export function EvmCollectionPage({
                       ) : null}
                     </section>
                   )}
-                  autoOnly
                   contractAddress={discoveryContract}
                   contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
                   defaultMode="auto"
                   disabled={controlsLocked || keyImporting}
-                  key={[nftInputResetNonce, standard].join("-")}
+                  key={nftInputResetNonce}
                   onChange={(value) => {
                     setCurrentAssetInput(value);
                     invalidatePlan();
@@ -2314,8 +2343,6 @@ export function EvmCollectionPage({
                   onContractAddressChange={(value) => {
                     setDiscoveryContract(value);
                     setNftAssetInputs({ erc721: "", erc1155: "" });
-                    setNftStandard("erc721");
-                    setNftRecognizedTotal(0);
                     setAddressBalances(emptyAddressBalanceState);
                     setPendingDiscovery(null);
                     setPendingTokenScan(null);
@@ -2328,6 +2355,18 @@ export function EvmCollectionPage({
                     invalidatePlan();
                   }}
                   onImportingChange={handleAssetImportingChange}
+                  onStandardChange={(nextStandard) => {
+                    setNftStandard(nextStandard);
+                    if (nextStandard === "erc1155") setNftAmountMode("all");
+                    setAddressBalances(emptyAddressBalanceState);
+                    setPendingDiscovery(null);
+                    setPendingTokenScan(null);
+                    setDiscoveryComplete(false);
+                    setDiscoveryMessage("");
+                    setDiscoveryIssues([]);
+                    invalidatePlan();
+                  }}
+                  standard={nftStandard}
                   value={assetInput}
                 />
 
@@ -2390,7 +2429,6 @@ export function EvmCollectionPage({
                     setContractInspection(null);
                     if (fixedStandard === "nft") {
                       setNftAssetInputs({ erc721: "", erc1155: "" });
-                      setNftRecognizedTotal(0);
                       setAddressBalances(emptyAddressBalanceState);
                     }
                     invalidatePlan();
@@ -2453,45 +2491,60 @@ export function EvmCollectionPage({
             ) : null}
 
             {fixedStandard === "nft" ? (
-              <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
-                <div className="flex w-fit items-center gap-1">
-                  <FieldLabel>归集数量</FieldLabel>
-                  <HelpTooltip label="归集数量说明">
-                    归集全部：归集所有已识别的 ERC721；指定总数量：从已选钱包合计归集 N 个，不足则全部归集。
-                  </HelpTooltip>
-                </div>
-                <Tabs
-                  onValueChange={(value) => {
-                    setNftAmountMode(value as "all" | "fixed");
-                    invalidatePlan();
-                  }}
-                  value={nftAmountMode}
-                >
-                  <TabsList aria-label="ERC721 归集数量模式">
-                    <TabsTrigger disabled={controlsLocked} value="all">归集全部</TabsTrigger>
-                    <TabsTrigger disabled={controlsLocked || nftRecognizedTotal === 0} value="fixed">指定总数量</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                {nftAmountMode === "fixed" ? (
-                  <Input
-                    aria-label="ERC721 归集总数量"
-                    disabled={controlsLocked || nftRecognizedTotal === 0}
-                    inputMode="numeric"
-                    max={Math.max(1, nftRecognizedTotal)}
-                    min="1"
-                    onChange={(event) => {
-                      setNftFixedAmount(event.target.value);
+              nftStandard === "erc1155" ? (
+                <Field>
+                  <div className="flex w-fit items-center gap-1">
+                    <FieldLabel>归集数量</FieldLabel>
+                    <HelpTooltip label="归集数量说明">
+                      归集每个已选来源钱包中、每个已列出 Token ID 的全部实时余额。余额会在提交前重新读取。
+                    </HelpTooltip>
+                  </div>
+                  <Badge variant="outline">归集全部余额</Badge>
+                  <FieldDescription>
+                    ERC1155 暂不提供“指定总数量”，避免在多个钱包和 Token ID 之间产生不明确的份数分配。
+                  </FieldDescription>
+                </Field>
+              ) : (
+                <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
+                  <div className="flex w-fit items-center gap-1">
+                    <FieldLabel>归集数量</FieldLabel>
+                    <HelpTooltip label="归集数量说明">
+                      归集全部：归集所有已识别的 ERC721；指定总数量：从已选钱包合计归集 N 个，不足则全部归集。
+                    </HelpTooltip>
+                  </div>
+                  <Tabs
+                    onValueChange={(value) => {
+                      setNftAmountMode(value as "all" | "fixed");
                       invalidatePlan();
                     }}
-                    step="1"
-                    type="number"
-                    value={nftFixedAmount}
-                  />
-                ) : null}
-                {!nftAmountPolicyValid ? (
-                  <FieldError>请输入 1–{nftRecognizedTotal} 的整数</FieldError>
-                ) : null}
-              </Field>
+                    value={nftAmountMode}
+                  >
+                    <TabsList aria-label="ERC721 归集数量模式">
+                      <TabsTrigger disabled={controlsLocked} value="all">归集全部</TabsTrigger>
+                      <TabsTrigger disabled={controlsLocked || parsedAssetCount === 0} value="fixed">指定总数量</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  {nftAmountMode === "fixed" ? (
+                    <Input
+                      aria-label="ERC721 归集总数量"
+                      disabled={controlsLocked || parsedAssetCount === 0}
+                      inputMode="numeric"
+                      max={Math.max(1, parsedAssetCount)}
+                      min="1"
+                      onChange={(event) => {
+                        setNftFixedAmount(event.target.value);
+                        invalidatePlan();
+                      }}
+                      step="1"
+                      type="number"
+                      value={nftFixedAmount}
+                    />
+                  ) : null}
+                  {!nftAmountPolicyValid ? (
+                    <FieldError>请输入 1–{parsedAssetCount} 的整数</FieldError>
+                  ) : null}
+                </Field>
+              )
             ) : null}
 
             <div className="field-row execution-settings-row">
@@ -2505,7 +2558,7 @@ export function EvmCollectionPage({
                       </HelpTooltip>
                     </div>
                     <Input
-                      aria-label="ERC721 自动并发钱包数"
+                      aria-label={`${nftStandard.toUpperCase()} 自动并发钱包数`}
                       disabled
                       type="number"
                       value={Math.min(sourceKeyLineCount, 20)}

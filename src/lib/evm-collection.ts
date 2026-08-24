@@ -961,6 +961,17 @@ function buildCollectionExecutionOperations(plan: readonly EvmCollectionPlanItem
   return operations;
 }
 
+function splitFailedErc1155Batch(operation: EvmCollectionExecutionOperation) {
+  if (operation.kind !== "erc1155-batch" || operation.entries.length < 2) return null;
+  const midpoint = Math.ceil(operation.entries.length / 2);
+  return [operation.entries.slice(0, midpoint), operation.entries.slice(midpoint)]
+    .filter((entries) => entries.length > 0)
+    .map((entries): EvmCollectionExecutionOperation => ({
+      entries,
+      kind: entries.length === 1 ? "single" : "erc1155-batch"
+    }));
+}
+
 function getOperationPrimaryItem(operation: EvmCollectionExecutionOperation) {
   const item = operation.entries[0]?.item;
   if (!item) throw new EvmCollectionCoreError("invalid-input", "归集计划缺少可执行项");
@@ -1305,7 +1316,8 @@ export async function preflightEvmCollectionPlan({
     return request;
   };
 
-  for (const operation of operations) {
+  for (let operationIndex = 0; operationIndex < operations.length; operationIndex += 1) {
+    const operation = operations[operationIndex];
     const primary = getOperationPrimaryItem(operation);
     if (primary.status !== "ready") {
       const status = primary.status === "skipped" ? "skipped" : "failed";
@@ -1341,6 +1353,19 @@ export async function preflightEvmCollectionPlan({
       );
       await simulateCollectionOperation(publicClient, operation, target);
     } catch (error) {
+      const splitOperations = splitFailedErc1155Batch(operation);
+      if (splitOperations) {
+        emitOperationProgress(
+          onProgress,
+          operation,
+          "simulating",
+          plan.length,
+          `ERC1155 批量模拟失败，正在拆分 ${operation.entries.length} 个 Token ID 以隔离异常项`
+        );
+        operations.splice(operationIndex, 1, ...splitOperations);
+        operationIndex -= 1;
+        continue;
+      }
       const detail = normalizeEvmCollectionError(error, "交易模拟失败", "simulation-failed");
       const message = `预检模拟失败：${detail.message}`;
       updateOperationPlanItems(preflightPlan, operation, "failed", message);
@@ -1440,8 +1465,10 @@ export async function executeEvmCollectionPlan({
   const target = normalizeCollectionExecutionTarget(targetAddress, maxFeePerTransactionWei);
   const results: Array<EvmCollectionResult | undefined> = Array.from({ length: plan.length });
   const uncertainSources = new Set<string>();
+  const operations = buildCollectionExecutionOperations(plan);
 
-  for (const operation of buildCollectionExecutionOperations(plan)) {
+  for (let operationIndex = 0; operationIndex < operations.length; operationIndex += 1) {
+    const operation = operations[operationIndex];
     const primary = getOperationPrimaryItem(operation);
     if (primary.status !== "ready") {
       const status = primary.status === "skipped" ? "skipped" : "failed";
@@ -1486,6 +1513,19 @@ export async function executeEvmCollectionPlan({
       );
       simulation = await simulateCollectionOperation(publicClient, operation, target);
     } catch (error) {
+      const splitOperations = splitFailedErc1155Batch(operation);
+      if (splitOperations) {
+        emitOperationProgress(
+          onProgress,
+          operation,
+          "simulating",
+          plan.length,
+          `ERC1155 批量模拟失败，正在拆分 ${operation.entries.length} 个 Token ID 以隔离异常项`
+        );
+        operations.splice(operationIndex, 1, ...splitOperations);
+        operationIndex -= 1;
+        continue;
+      }
       const detail = normalizeEvmCollectionError(error, "交易模拟失败", "simulation-failed");
       const message = `模拟失败：${detail.message}`;
       emitOperationProgress(onProgress, operation, "failed", plan.length, message);
