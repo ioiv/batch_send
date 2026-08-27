@@ -51,6 +51,15 @@ describe("collection execution settings", () => {
     expect(maximumActive).toBe(2);
   });
 
+  it("accepts concurrency above the item count without creating extra work", async () => {
+    const visited: number[] = [];
+    await expect(mapWithCollectionConcurrency([1, 2], 20, async (item) => {
+      visited.push(item);
+      return item * 10;
+    })).resolves.toEqual([10, 20]);
+    expect(visited.sort((left, right) => left - right)).toEqual([1, 2]);
+  });
+
   it("holds work at a safe boundary until collection is resumed", async () => {
     const pause = new CollectionPauseController();
     let continued = false;

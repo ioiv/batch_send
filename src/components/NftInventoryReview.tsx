@@ -7,7 +7,11 @@ import { FieldLabel } from "@/components/ui/field";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmActionDialog } from "@/components/WorkbenchPrimitives";
-import type { CollectionDisplayResult, CollectionResultStatus } from "../lib/collection-results";
+import {
+  shortenTransactionHash,
+  type CollectionDisplayResult,
+  type CollectionResultStatus
+} from "../lib/collection-results";
 import {
   removeValidNftInventoryAssets,
   type NftInventoryStandard
@@ -53,10 +57,6 @@ function contractLabel(contractLabels: ReadonlyMap<string, string> | undefined, 
 
 function getAssetTokenId(asset: EvmCollectionAsset) {
   return "tokenId" in asset ? asset.tokenId.toString() : "";
-}
-
-function shortHash(hash: string) {
-  return hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
 
 export function NftInventoryReview({
@@ -332,9 +332,9 @@ export function NftInventoryReview({
                                     target="_blank"
                                     title={result.hash}
                                   >
-                                    {shortHash(result.hash)}
+                                    {shortenTransactionHash(result.hash)}
                                   </a>
-                                ) : <code className={`nft-inventory-review__hash${result.status === "success" ? " is-success" : ""}`} title={result.hash}>{shortHash(result.hash)}</code> : null}
+                                ) : <code className={`nft-inventory-review__hash${result.status === "success" ? " is-success" : ""}`} title={result.hash}>{shortenTransactionHash(result.hash)}</code> : null}
                                 {result.status === "error" && result.retryable && result.executionId && onRetry ? (
                                   <ConfirmActionDialog
                                     confirmLabel="确认重试"

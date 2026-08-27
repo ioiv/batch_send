@@ -22,6 +22,10 @@ export type CollectionDisplayResult = {
   uncertain?: boolean;
 };
 
+export function shortenTransactionHash(hash: string) {
+  return hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
+}
+
 export function sanitizeRoundArchiveText(value: string) {
   return value.replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, "[敏感 URL 已隐藏]");
 }

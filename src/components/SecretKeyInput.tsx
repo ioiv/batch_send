@@ -32,7 +32,11 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { parseEvmPrivateKeyInput } from "../lib/evm-collection";
-import type { CollectionResultStatus } from "../lib/collection-results";
+import {
+  shortenTransactionHash,
+  type CollectionResultStatus
+} from "../lib/collection-results";
+import { copyText } from "../lib/clipboard";
 import { readSecretKeyFile, SecretKeyImportError } from "../lib/secret-key-import";
 import { parseSolanaSourceKeys } from "../lib/sol-collection";
 
@@ -77,6 +81,19 @@ function getWalletSummaryStatus(statuses: readonly WalletExecutionItem[]): Colle
     || "skipped";
 }
 
+function getWalletStatusBreakdown(statuses: readonly WalletExecutionItem[]) {
+  const success = statuses.filter((item) => item.status === "success").length;
+  const failed = statuses.filter((item) => item.status === "error").length;
+  const skipped = statuses.filter((item) => item.status === "skipped").length;
+  const active = statuses.length - success - failed - skipped;
+  return [
+    success ? `成功 ${success}` : "",
+    failed ? `失败 ${failed}` : "",
+    active ? `处理中 ${active}` : "",
+    skipped ? `跳过 ${skipped}` : ""
+  ].filter(Boolean).join(" · ");
+}
+
 type ImportedWallet = {
   address: string;
   id: string;
@@ -116,7 +133,9 @@ function parseSecretEntries(value: string, mode: "evm" | "solana"): ParsedSecret
   if (mode === "evm") {
     const parsed = parseEvmPrivateKeyInput(value);
     return {
-      issues: parsed.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`),
+      issues: parsed.issues
+        .filter((issue) => issue.code !== "duplicate-account")
+        .map((issue) => `第 ${issue.line} 行：${issue.message}`),
       lines: parsed.accounts.map((account) => sourceLines[account.line - 1]?.trim() || "").filter(Boolean),
       wallets: parsed.accounts.map((account) => {
         const rawLine = sourceLines[account.line - 1]?.trim() || "";
@@ -134,12 +153,7 @@ function parseSecretEntries(value: string, mode: "evm" | "solana"): ParsedSecret
 
   const parsed = parseSolanaSourceKeys(value);
   return {
-    issues: [
-      ...parsed.errors.map((issue) => issue.message),
-      ...parsed.duplicates.map((duplicate) => (
-        `第 ${duplicate.duplicateLine} 行与第 ${duplicate.originalLine} 行钱包重复`
-      ))
-    ],
+    issues: parsed.errors.map((issue) => issue.message),
     lines: parsed.sources.map((source) => sourceLines[source.line - 1]?.trim() || "").filter(Boolean),
     wallets: parsed.sources.map((source) => ({
       address: source.address,
@@ -147,6 +161,24 @@ function parseSecretEntries(value: string, mode: "evm" | "solana"): ParsedSecret
       ...(source.label ? { label: source.label } : {})
     }))
   };
+}
+
+function mergeUniqueSecretEntries(
+  existing: ParsedSecretEntries,
+  incoming: ParsedSecretEntries
+): Pick<ParsedSecretEntries, "lines" | "wallets"> {
+  const lines = [...existing.lines];
+  const wallets = [...existing.wallets];
+  const seenIds = new Set(wallets.map((wallet) => wallet.id));
+
+  incoming.wallets.forEach((wallet, index) => {
+    if (seenIds.has(wallet.id)) return;
+    seenIds.add(wallet.id);
+    wallets.push(wallet);
+    lines.push(incoming.lines[index]);
+  });
+
+  return { lines, wallets };
 }
 
 function shortenAddress(value: string, edge = 8) {
@@ -167,9 +199,22 @@ function WalletStatusSummary({
   const summaryStatus = getWalletSummaryStatus(statuses);
   const firstStatus = statuses[0];
   const firstStatusSummary = `${firstStatus.asset}${firstStatus.amount ? ` · ${firstStatus.amount}` : ""}`;
-  const singleTransaction = statuses.length === 1 && firstStatus.explorerUrl && firstStatus.hash
-    ? firstStatus
-    : null;
+  const nftStandard = statuses.some((status) => status.asset.startsWith("ERC1155"))
+    ? "ERC1155"
+    : statuses.some((status) => status.asset.startsWith("ERC721")) ? "ERC721" : null;
+  const summaryText = nftStandard
+    ? nftStandard === "ERC1155"
+      ? `ERC1155 · ${statuses.length} 个 Token ID`
+      : `ERC721 · ${statuses.length} 个`
+    : statuses.length === 1 ? firstStatusSummary : `${statuses.length} 项结果`;
+  const statusBreakdown = getWalletStatusBreakdown(statuses);
+  const transactions = new Map<string, { explorerUrl: string; hash: string }>();
+  statuses.forEach((status) => {
+    if (status.hash && status.explorerUrl) {
+      transactions.set(status.hash, { explorerUrl: status.explorerUrl, hash: status.hash });
+    }
+  });
+  const singleTransaction = transactions.size === 1 ? [...transactions.values()][0] : null;
 
   return (
     <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-status-summary">
@@ -179,11 +224,17 @@ function WalletStatusSummary({
       >
         {walletStatusLabels[summaryStatus]}
       </Badge>
-      <strong title={statuses.length === 1 ? firstStatusSummary : `${statuses.length} 项归集结果`}>
-        {statuses.length === 1 ? firstStatusSummary : `${statuses.length} 项结果`}
+      <strong title={summaryText}>
+        {summaryText}
       </strong>
       {singleTransaction ? (
-        <a href={singleTransaction.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
+        <a
+          aria-label={`查看交易 ${singleTransaction.hash}`}
+          href={singleTransaction.explorerUrl}
+          rel="noreferrer"
+          target="_blank"
+          title={singleTransaction.hash}
+        >{shortenTransactionHash(singleTransaction.hash)}</a>
       ) : null}
       <Sheet>
         <SheetTrigger
@@ -209,6 +260,7 @@ function WalletStatusSummary({
           </SheetHeader>
           <div className="wallet-status-sheet__summary" aria-label="钱包归集结果摘要">
             <span><strong>{statuses.length}</strong> 项结果</span>
+            {statusBreakdown ? <span>{statusBreakdown}</span> : null}
             <Badge
               data-status={summaryStatus}
               variant={summaryStatus === "error" ? "destructive" : "outline"}
@@ -232,8 +284,14 @@ function WalletStatusSummary({
                 </div>
                 <p>{status.message}</p>
                 {status.explorerUrl && status.hash ? (
-                  <a href={status.explorerUrl} rel="noreferrer" target="_blank">查看交易</a>
-                ) : status.hash ? <code title={status.hash}>{status.hash}</code> : null}
+                  <a
+                    aria-label={`查看交易 ${status.hash}`}
+                    href={status.explorerUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                    title={status.hash}
+                  >{shortenTransactionHash(status.hash)}</a>
+                ) : status.hash ? <code title={status.hash}>{shortenTransactionHash(status.hash)}</code> : null}
               </article>
             ))}
           </div>
@@ -270,6 +328,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importingRef = useRef(false);
   const importRequestRef = useRef(0);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
   const secretStoreRef = useRef<HTMLTextAreaElement>(null);
   const selectedIdsRef = useRef<Set<string>>(new Set());
   const walletListRef = useRef<HTMLDivElement>(null);
@@ -280,6 +339,10 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     | { fileName: string; kind: "success"; lineCount: number }
   >({ kind: "idle", message: "可粘贴私钥，或选择 TXT / CSV / JSON 文件" });
   const [importIssues, setImportIssues] = useState<string[]>([]);
+  const [copyFeedback, setCopyFeedback] = useState<{
+    status: "error" | "success";
+    walletId: string;
+  } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleWalletCount, setVisibleWalletCount] = useState(importedWalletBatchSize);
   const [wallets, setWallets] = useState<ImportedWallet[]>([]);
@@ -310,6 +373,11 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
 
   const clearDomValue = useCallback(() => {
     resetDraft();
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+      copyFeedbackTimerRef.current = null;
+    }
+    setCopyFeedback(null);
     if (secretStoreRef.current) secretStoreRef.current.value = "";
     setWallets([]);
     setVisibleWalletCount(importedWalletBatchSize);
@@ -413,11 +481,21 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       return;
     }
 
-    const existing = secretStoreRef.current?.value || "";
-    const combined = [existing.trim(), draft.trim()].filter(Boolean).join("\n");
-    const parsed = parseSecretEntries(combined, mode);
-    if (parsed.issues.length || !parsed.wallets.length) {
-      setImportIssues(parsed.issues.length ? parsed.issues : ["没有识别到有效的钱包私钥"]);
+    const existingValue = secretStoreRef.current?.value || "";
+    const existing = existingValue.trim()
+      ? parseSecretEntries(existingValue, mode)
+      : { issues: [], lines: [], wallets: [] };
+    const incoming = parseSecretEntries(draft, mode);
+    if (incoming.issues.length || !incoming.wallets.length) {
+      setImportIssues(incoming.issues.length ? incoming.issues : ["没有识别到有效的钱包私钥"]);
+      return;
+    }
+
+    const parsed = mergeUniqueSecretEntries(existing, incoming);
+    if (parsed.wallets.length > maximumSecretInputLines) {
+      setImportIssues([
+        `来源钱包总数不能超过 ${maximumSecretInputLines.toLocaleString("zh-CN")} 个，请删除部分钱包后再导入`
+      ]);
       return;
     }
 
@@ -433,9 +511,21 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       Math.max(current, importedWalletBatchSize)
     ));
     updateSelectedIds(nextSelectedIds);
-    onDirty?.("import");
+    if (parsed.wallets.some((wallet) => !existingIds.has(wallet.id))) onDirty?.("import");
     setDialogOpen(false);
     resetDraft();
+  };
+
+  const copyWalletAddress = async (wallet: ImportedWallet) => {
+    const copied = await copyText(wallet.address);
+    setCopyFeedback({ status: copied ? "success" : "error", walletId: wallet.id });
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+    }
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopyFeedback(null);
+      copyFeedbackTimerRef.current = null;
+    }, 1_600);
   };
 
   const toggleWallet = (walletId: string, checked: boolean) => {
@@ -651,7 +741,22 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                   />
                   <div className="imported-wallet-identity">
                     {wallet.label ? <strong>{wallet.label}</strong> : null}
-                    <code title={wallet.address}>{shortenAddress(wallet.address)}</code>
+                    <div className="imported-wallet-address">
+                      <code title={wallet.address}>{shortenAddress(wallet.address)}</code>
+                      <Button
+                        aria-label={`复制 ${accessibleName} 地址`}
+                        className="imported-wallet-copy"
+                        onClick={() => void copyWalletAddress(wallet)}
+                        size="xs"
+                        title="复制完整地址"
+                        type="button"
+                        variant="ghost"
+                      >
+                        {copyFeedback?.walletId === wallet.id
+                          ? copyFeedback.status === "success" ? "已复制" : "复制失败"
+                          : "复制"}
+                      </Button>
+                    </div>
                   </div>
                   {balances.length ? (
                     <div aria-label={`${accessibleName} 余额`} className="imported-wallet-balances">

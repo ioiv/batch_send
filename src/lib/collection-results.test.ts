@@ -4,6 +4,7 @@ import {
   filterCollectionResults,
   getCollectionResultCounts,
   sanitizeRoundArchiveText,
+  shortenTransactionHash,
   type CollectionDisplayResult
 } from "./collection-results";
 
@@ -31,6 +32,11 @@ const results: CollectionDisplayResult[] = [
 ];
 
 describe("collection result helpers", () => {
+  it("shows transaction hash prefixes and suffixes", () => {
+    expect(shortenTransactionHash(`0x${"ab".repeat(32)}`)).toBe("0xabababab…ababab");
+    expect(shortenTransactionHash("0xabc")).toBe("0xabc");
+  });
+
   it("counts terminal and active states", () => {
     expect(getCollectionResultCounts([
       ...results,

@@ -19,6 +19,7 @@ import {
   downloadCollectionResults,
   filterCollectionResults,
   getCollectionResultCounts,
+  shortenTransactionHash,
   type CollectionDisplayResult,
   type CollectionResultFilter,
   type CollectionResultStatus
@@ -154,8 +155,9 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
                           href={result.explorerUrl}
                           rel="noreferrer"
                           target="_blank"
-                        >查看交易</a>
-                      ) : result.hash ? <code>{result.hash}</code> : "—"}
+                          title={result.hash}
+                        >{shortenTransactionHash(result.hash)}</a>
+                      ) : result.hash ? <code title={result.hash}>{shortenTransactionHash(result.hash)}</code> : "—"}
                     </TableCell>
                   </TableRow>
                 );

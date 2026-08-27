@@ -528,7 +528,7 @@ describe("EvmCollectionPage workbench", () => {
   });
 
   it("summarizes complete discovery results in the source wallet row", async () => {
-    await discoverNft();
+    const user = await discoverNft();
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(await within(walletList).findByText("ERC721")).toBeVisible();
     expect(within(walletList).getByText("1")).toBeVisible();
@@ -539,9 +539,15 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
     expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("tab", { name: "指定总数量" })).toBeEnabled();
+
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "再次识别" }));
+    await waitFor(() => expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
 
-  it("shows each checked wallet's ERC721 count and derives NFT concurrency from wallet selection", async () => {
+  it("shows each checked wallet's ERC721 count and keeps NFT concurrency user-controlled", async () => {
     evmMocks.discoverEnumerable.mockResolvedValueOnce({
       assets: [
         {
@@ -592,9 +598,13 @@ describe("EvmCollectionPage workbench", () => {
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
     expect(await within(firstRow).findByText("1")).toBeVisible();
     expect(within(secondRow).getByText("2")).toBeVisible();
-    expect(screen.getByRole("spinbutton", { name: "ERC721 自动并发钱包数" })).toHaveValue(2);
     expect(screen.getByText(/共有 3 个可归集 ERC721/)).toBeVisible();
-    expect(screen.queryByText("按已勾选钱包自动并发；超过 20 个时分批执行。")).not.toBeInTheDocument();
+    const concurrencyInput = screen.getByRole("spinbutton", { name: "并发钱包数" });
+    expect(concurrencyInput).toBeEnabled();
+    expect(concurrencyInput).toHaveValue(3);
+    await user.clear(concurrencyInput);
+    await user.type(concurrencyInput, "9");
+    expect(concurrencyInput).toHaveValue(9);
 
     expect(screen.getByLabelText("并发钱包数说明")).toHaveTextContent("?");
   });
@@ -720,24 +730,35 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
-  it("executes manually entered ERC1155 assets without applying the ERC721 total selector", async () => {
-    const asset = {
+  it("executes ERC1155 assets and links their shared batch hash from wallet details", async () => {
+    const assets = [9n, 10n].map((tokenId) => ({
       contractAddress: tokenAddress,
-      key: `erc1155:${tokenAddress.toLowerCase()}:9`,
+      key: `erc1155:${tokenAddress.toLowerCase()}:${tokenId}`,
       standard: "erc1155" as const,
-      tokenId: 9n
-    };
-    const erc1155Plan = [{
+      tokenId
+    }));
+    const erc1155Plan = assets.map((asset, index) => ({
       account: signerAccount,
       address: signerAccount.address,
-      amount: 4n,
+      amount: index === 0 ? 4n : 2n,
       asset,
-      id: "erc1155-manual-9",
+      id: `erc1155-manual-${asset.tokenId}`,
       label: "来源一",
       message: "已检测到可归集 NFT 余额",
       status: "ready" as const
-    }] satisfies EvmCollectionPlanItem[];
+    })) satisfies EvmCollectionPlanItem[];
     evmMocks.plan.mockResolvedValueOnce(erc1155Plan);
+    evmMocks.execute.mockResolvedValueOnce(erc1155Plan.map((item) => ({
+      address: item.address,
+      amount: item.amount,
+      asset: item.asset,
+      hash: transactionHash,
+      id: item.id,
+      label: item.label,
+      message: "ERC1155 批量归集交易已确认（2 个 Token ID）",
+      retryable: false,
+      status: "success" as const
+    })));
 
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
@@ -745,16 +766,29 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.click(screen.getByRole("tab", { name: "ERC1155" }));
-    await user.type(screen.getByLabelText("Token ID / 区间"), "9");
+    await user.type(screen.getByLabelText("Token ID / 区间"), "9,10");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
 
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
     expect(evmMocks.plan).toHaveBeenCalledWith(expect.objectContaining({
-      assets: [expect.objectContaining({ standard: "erc1155", tokenId: 9n })]
+      assets: [
+        expect.objectContaining({ standard: "erc1155", tokenId: 9n }),
+        expect.objectContaining({ standard: "erc1155", tokenId: 10n })
+      ]
     }));
     expect(evmMocks.execute.mock.calls[0][0].plan).toEqual(erc1155Plan);
+
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(await within(walletList).findByText("ERC1155 · 2 个 Token ID")).toBeVisible();
+    const batchLink = within(walletList).getByRole("link", { name: `查看交易 ${transactionHash}` });
+    expect(batchLink).toHaveTextContent("0xabababab…ababab");
+    await user.click(within(walletList).getByRole("button", { name: /归集详情/ }));
+    const details = screen.getByRole("dialog", { name: "归集详情" });
+    const hashLinks = within(details).getAllByRole("link", { name: `查看交易 ${transactionHash}` });
+    expect(hashLinks).toHaveLength(2);
+    hashLinks.forEach((link) => expect(link).toHaveTextContent("0xabababab…ababab"));
   });
 
   it("stops an in-progress direct Token ID scan without changing the asset inventory", async () => {
@@ -1146,14 +1180,23 @@ describe("EvmCollectionPage workbench", () => {
 
     const user = await discoverNft();
     expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("2")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "指定总数量" }));
+    const nftTotal = screen.getByRole("spinbutton", { name: "ERC721 归集总数量" });
+    await user.clear(nftTotal);
+    await user.type(nftTotal, "2");
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
 
     const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(await screen.findByText(/归集完成：1 项确认成功，1 项失败/)).toBeVisible();
     expect(await within(walletList).findByText("ERC721 · 2 个")).toBeVisible();
     expect(within(walletList).queryByText("成功 1 · 失败 1")).not.toBeInTheDocument();
     await user.click(within(walletList).getByRole("button", { name: /归集详情/ }));
-    expect(within(screen.getByRole("dialog", { name: "归集详情" })).getByText("成功 1 · 失败 1")).toBeVisible();
+    const details = screen.getByRole("dialog", { name: "归集详情" });
+    expect(within(details).getByText("成功 1 · 失败 1")).toBeVisible();
+    const hashLink = within(details).getByRole("link", { name: `查看交易 ${transactionHash}` });
+    expect(hashLink).toHaveTextContent("0xabababab…ababab");
+    expect(hashLink).toHaveAttribute("href", expect.stringContaining(transactionHash));
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
 
@@ -1175,6 +1218,8 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(walletList).getByText("1")).toBeVisible();
     expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
+    expect(screen.getByRole("spinbutton", { name: "ERC721 归集总数量" })).toHaveValue(1);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
 
   it("validates an ERC721 total and collects all remaining items when live ownership is lower", async () => {

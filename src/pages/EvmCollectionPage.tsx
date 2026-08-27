@@ -414,45 +414,7 @@ function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
 }
 
 function groupNftWalletStatuses(results: readonly CollectionDisplayResult[]) {
-  const groupedResults = new Map<string, CollectionDisplayResult[]>();
-  results.forEach((result) => {
-    const key = result.address.toLowerCase();
-    if (!key || key === "—") return;
-    const current = groupedResults.get(key) || [];
-    current.push(result);
-    groupedResults.set(key, current);
-  });
-
-  return Object.fromEntries([...groupedResults.entries()].map(([address, items]) => {
-    const standard = items.some((item) => item.asset.startsWith("ERC1155")) ? "ERC1155" : "ERC721";
-    const success = items.filter((item) => item.status === "success").length;
-    const failed = items.filter((item) => item.status === "error").length;
-    const skipped = items.filter((item) => item.status === "skipped").length;
-    const active = items.length - success - failed - skipped;
-    const status: CollectionResultStatus = active
-      ? items.some((item) => item.status === "confirming") ? "confirming"
-        : items.some((item) => item.status === "submitting") ? "submitting"
-          : items.some((item) => item.status === "scanning") ? "scanning" : "pending"
-      : failed ? "error" : success ? "success" : "skipped";
-    const onlyResult = items.length === 1 ? items[0] : null;
-    const parts = [
-      success ? `成功 ${success}` : "",
-      failed ? `失败 ${failed}` : "",
-      active ? `处理中 ${active}` : "",
-      skipped ? `跳过 ${skipped}` : ""
-    ].filter(Boolean);
-    return [address, [{
-      asset: standard === "ERC1155"
-        ? `ERC1155 · ${items.length} 个 Token ID`
-        : `ERC721 · ${items.length} 个`,
-      ...(onlyResult?.explorerUrl && onlyResult.hash ? {
-        explorerUrl: onlyResult.explorerUrl,
-        hash: onlyResult.hash
-      } : {}),
-      message: parts.join(" · ") || "等待处理",
-      status
-    } satisfies WalletExecutionItem]];
-  }));
+  return groupWalletStatuses(results);
 }
 
 export function parseErc721CollectionLimit(value: string) {
@@ -1064,9 +1026,7 @@ export function EvmCollectionPage({
   };
 
   const getExecutionSettings = () => {
-    const parsedConcurrency = fixedStandard === "nft"
-      ? Math.min(Math.max(sourceKeyLineCount, 1), 20)
-      : Number(concurrency);
+    const parsedConcurrency = Number(concurrency);
     const parsedMinimumDelay = Number(minimumDelay);
     const parsedMaximumDelay = Number(maximumDelay);
     if (!Number.isInteger(parsedConcurrency) || parsedConcurrency < 1 || parsedConcurrency > 20
@@ -1192,6 +1152,14 @@ export function EvmCollectionPage({
     setResults([]);
     setNftStandard(discovery.standard);
     setNftAssetInputs((current) => ({ ...current, [discovery.standard]: nextInventory.serialized }));
+    if (discovery.standard === "erc721") {
+      setNftFixedAmount((current) => {
+        const fixedTotal = parseErc721CollectionLimit(current);
+        return fixedTotal !== null && fixedTotal <= recognizedTotal
+          ? current
+          : String(Math.max(1, recognizedTotal));
+      });
+    }
     setAddressBalances({
       message: discovery.standard === "erc1155"
         ? `已识别 ${recognizedTotal} 个可归集 ERC1155 Token ID，共 ${recognizedUnits} 份`
@@ -1286,6 +1254,12 @@ export function EvmCollectionPage({
       || running || fixedStandard !== "nft") return;
 
     archiveCurrentRound(true);
+    planRef.current = [];
+    retryPlanRef.current = [];
+    setResults([]);
+    setIssues([]);
+    setMessage("");
+    setStage("editing");
 
     setDiscoveryIssues([]);
     setDiscoveryMessage("");
@@ -1976,9 +1950,7 @@ export function EvmCollectionPage({
                       <div><span>归集数量</span><strong>{fixedStandard === "nft"
                         ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
                         : amountModeLabels[amountMode]}</strong></div>
-                      <div><span>并发</span><strong>{fixedStandard === "nft"
-                        ? `${Math.min(sourceKeyLineCount, 20)} 个钱包`
-                        : concurrency}</strong></div>
+                      <div><span>并发</span><strong>{concurrency}</strong></div>
                       <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
                       <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
                     </div>
@@ -2578,37 +2550,25 @@ export function EvmCollectionPage({
 
             <div className="field-row execution-settings-row">
               <Field>
-                {fixedStandard === "nft" ? (
-                  <>
-                    <div className="flex w-fit items-center gap-1">
-                      <FieldLabel>并发钱包数</FieldLabel>
-                      <HelpTooltip label="并发钱包数说明">
-                        按已勾选钱包自动并发；超过 20 个时分批执行。
-                      </HelpTooltip>
-                    </div>
-                    <Input
-                      aria-label={`${nftStandard.toUpperCase()} 自动并发钱包数`}
-                      disabled
-                      type="number"
-                      value={Math.min(sourceKeyLineCount, 20)}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
-                    <Input
-                      disabled={controlsLocked}
-                      id="evm-collection-concurrency"
-                      inputMode="numeric"
-                      max="20"
-                      min="1"
-                      onChange={(event) => { setConcurrency(event.target.value); invalidatePlan(); }}
-                      step="1"
-                      type="number"
-                      value={concurrency}
-                    />
-                  </>
-                )}
+                <div className="flex w-fit items-center gap-1">
+                  <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
+                  {fixedStandard === "nft" ? (
+                    <HelpTooltip label="并发钱包数说明">
+                      可按 RPC 承载能力自行设置；高于已选钱包数时只执行现有钱包，不会产生额外任务。
+                    </HelpTooltip>
+                  ) : null}
+                </div>
+                <Input
+                  disabled={controlsLocked}
+                  id="evm-collection-concurrency"
+                  inputMode="numeric"
+                  max="20"
+                  min="1"
+                  onChange={(event) => { setConcurrency(event.target.value); invalidatePlan(); }}
+                  step="1"
+                  type="number"
+                  value={concurrency}
+                />
               </Field>
               <Field>
                 <FieldLabel>随机延迟（秒）</FieldLabel>

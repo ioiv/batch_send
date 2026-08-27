@@ -10,6 +10,8 @@ import {
   getIndexedCollectionResults
 } from "./CollectionResults";
 
+const transactionHash = `0x${"ab".repeat(32)}`;
+
 const results: CollectionDisplayResult[] = [
   {
     address: "0x1111111111111111111111111111111111111111",
@@ -27,8 +29,8 @@ const results: CollectionDisplayResult[] = [
   {
     address: "0x3333333333333333333333333333333333333333",
     asset: "USDT",
-    explorerUrl: "https://explorer.test/tx/0xabc",
-    hash: "0xabc",
+    explorerUrl: `https://explorer.test/tx/${transactionHash}`,
+    hash: transactionHash,
     message: "RPC 请求失败",
     status: "error"
   }
@@ -80,7 +82,9 @@ describe("CollectionResults", () => {
     expect(screen.getByLabelText("归集执行统计")).toHaveTextContent("资产项");
     expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("来源 1");
     expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("运营钱包");
-    expect(screen.getByRole("link", { name: "查看来源 3的交易" })).toHaveAttribute("href", results[2].explorerUrl);
+    const transactionLink = screen.getByRole("link", { name: "查看来源 3的交易" });
+    expect(transactionLink).toHaveAttribute("href", results[2].explorerUrl);
+    expect(transactionLink).toHaveTextContent("0xabababab…ababab");
   });
 
   it("supports an embedded wallet-list presentation", () => {
