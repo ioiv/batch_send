@@ -4,7 +4,8 @@ import {
   maximumEvmCollectionAssets,
   maximumEvmCollectionChecks,
   validateEvmCollectionWorkload,
-  validateSolCollectionWorkload
+  validateSolCollectionWorkload,
+  validateSolTokenCollectionWorkload
 } from "./collection-workload";
 
 describe("collection workload limits", () => {
@@ -12,6 +13,7 @@ describe("collection workload limits", () => {
     expect(validateEvmCollectionWorkload({ accountCount: 100, assetCount: 5, standard: "erc20" })).toEqual([]);
     expect(validateEvmCollectionWorkload({ accountCount: 1_000, assetCount: 1_000, standard: "erc721" })).toEqual([]);
     expect(validateSolCollectionWorkload(1_000)).toEqual([]);
+    expect(validateSolTokenCollectionWorkload(100, 50)).toEqual([]);
   });
 
   it("blocks source, asset, and multiplied read amplification independently", () => {
@@ -29,5 +31,11 @@ describe("collection workload limits", () => {
 
   it("caps SOL sources before any RPC execution", () => {
     expect(validateSolCollectionWorkload(maximumCollectionSources + 1)[0]).toContain("拆分任务");
+  });
+
+  it("caps SPL Mint count and wallet × Mint amplification", () => {
+    expect(validateSolTokenCollectionWorkload(1, maximumEvmCollectionAssets + 1)[0]).toContain("Token Mint");
+    expect(validateSolTokenCollectionWorkload(100, maximumEvmCollectionChecks / 100 + 1).at(-1))
+      .toContain("钱包与 Token 检查");
   });
 });

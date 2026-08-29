@@ -85,16 +85,16 @@ export const tools: ToolDefinition[] = [
   },
   {
     id: "sol-collection",
-    title: "SOL 归集",
-    shortTitle: "SOL 归集",
-    description: "批量读取 SOL 余额，预留网络费与保留金额后归集到指定钱包。",
+    title: "SOL / SPL Token 归集",
+    shortTitle: "SOL / SPL 归集",
+    description: "Token 清单留空归集 SOL，填写 Mint 后归集所列 SPL Token / Token-2022，并预检 ATA 租金和网络费。",
     href: "/sol/collect/",
     category: "collection",
     ecosystems: ["solana"],
     icon: "sol",
     featured: true,
     badge: "新增",
-    keywords: ["SOL", "Solana", "余额", "归集"]
+    keywords: ["SOL", "Solana", "SPL Token", "Token-2022", "ATA", "持仓", "余额", "归集"]
   },
   {
     id: "sol-distribution",

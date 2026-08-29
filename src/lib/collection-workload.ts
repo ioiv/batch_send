@@ -35,3 +35,17 @@ export function validateSolCollectionWorkload(sourceCount: number) {
     ? [`单次最多处理 ${maximumCollectionSources} 个来源钱包，请拆分任务`]
     : [];
 }
+
+export function validateSolTokenCollectionWorkload(sourceCount: number, mintCount: number) {
+  const issues = validateSolCollectionWorkload(sourceCount);
+  if (mintCount > maximumEvmCollectionAssets) {
+    issues.push(`单次最多处理 ${maximumEvmCollectionAssets} 个 Token Mint，请拆分任务`);
+  }
+  const checkCount = BigInt(sourceCount) * BigInt(mintCount);
+  if (checkCount > BigInt(maximumEvmCollectionChecks)) {
+    issues.push(
+      `本次将产生 ${checkCount} 组钱包与 Token 检查，超过 ${maximumEvmCollectionChecks} 次安全上限；请减少来源钱包或 Token 数量`
+    );
+  }
+  return issues;
+}

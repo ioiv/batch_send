@@ -21,11 +21,11 @@ describe("HomePage ecosystem filter", () => {
 
     await user.click(screen.getByRole("tab", { name: "Solana" }));
     expect(main.getByRole("link", { name: /SOL 分发/ })).toBeVisible();
-    expect(main.getByRole("link", { name: /SOL 归集/ })).toBeVisible();
+    expect(main.getByRole("link", { name: /SOL.*归集/ })).toBeVisible();
     expect(main.queryByRole("link", { name: /代币归集/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "EVM" }));
     expect(main.getByRole("link", { name: /EVM 分发/ })).toBeVisible();
-    expect(main.queryByRole("link", { name: /SOL 归集/ })).not.toBeInTheDocument();
+    expect(main.queryByRole("link", { name: /SOL.*归集/ })).not.toBeInTheDocument();
   });
 });

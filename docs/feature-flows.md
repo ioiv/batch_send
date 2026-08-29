@@ -20,7 +20,7 @@
 | EVM 批量分发 | `/evm/` | 一个连接钱包 → 多个地址 | 注入式 EVM 钱包 | 授权/分发进度、交易哈希 |
 | ERC20 归集 | `/evm/collect/` | 多个来源钱包 → 一个目标地址 | 浏览器本地私钥签名 | 逐来源/资产结果、CSV、交易哈希 |
 | EVM NFT 归集 | `/evm/nft-collect/` | 多个来源钱包 → 一个目标地址 | 浏览器本地私钥签名 | 逐 NFT 结果、CSV、交易哈希 |
-| SOL 归集 | `/sol/collect/` | 多个来源钱包 → 一个目标地址 | 浏览器本地私钥签名 | 逐来源结果、CSV、交易签名 |
+| SOL / SPL Token 归集 | `/sol/collect/` | 多个来源钱包的 SOL / SPL Token → 一个目标地址 | 浏览器本地私钥签名 | 逐来源/Token Account 结果、CSV、交易签名 |
 | CreateX 部署 | `/evm/deploy/` | 固定部署交易 | 注入式 EVM 钱包 | 校验项、部署哈希、runtime 验证 |
 
 当前 EVM 工具页的内置网络配置包括 Ethereum、BNB Chain、Base、Robinhood Chain、Arbitrum、Polygon、Optimism、Avalanche、Hyperliquid、Monad、Gnosis，以及对应的主要测试网；CreateX 页还可把用户明确验证并保存的自定义链加入 EVM 分发。首页优化后只使用 `EVM / Solana` 生态级筛选，不再用少量营销链列表冒充工具页的实际网络能力。
@@ -380,14 +380,20 @@ flowchart TD
 - ERC1155 回溯 `TransferSingle` / `TransferBatch` 获取候选，并通过快照 `balanceOfBatch` 去除已转出或余额为零的 ID；日志范围不完整时结果只能追加。无对应私钥的 ERC721 必须跳过执行。
 - 页面不建立任务实体，只保留“持久设置、当前资产池、当前结果、历史只读记录”。继续编辑时仅移除所有执行行都已明确结算的 NFT；失败、跳过、未执行和状态不确定项继续保留。
 
-## 5. SOL 归集 `/sol/collect/`
+## 5. SOL / SPL Token 归集 `/sol/collect/`
 
 ### 功能清单
 
 - 导入 Base58、32/64 字节 JSON 数组密钥，或 `标签,密钥`；按派生地址去重。
 - 选择 Mainnet、Devnet 或 Testnet，配置 RPC、目标地址、每钱包保留额和最小归集金额。
+- 资产入口与 EVM 代币归集一致：Token 清单留空时查询并归集 SOL；填写 Mint 后只查询并归集清单内的经典 SPL Token / Token-2022。
+- “查看地址余额”是可选只读操作，不要求目标地址；每个钱包始终先显示原生 SOL（包括 0 或读取失败），再显示清单内 Token。执行确认后仍会即时重读持仓并生成计划。
+- SPL 执行资产直接来自 Token 清单，不再要求扫描全量持仓后勾选。执行计划保留每个底层 Token Account；同一 mint 的多个账户不能静默漏掉。
+- 基础 Token-2022 与 TransferFee 扩展进入受支持路径。冻结账户、NonTransferable、已暂停的 Pausable、TransferHook、ConfidentialTransfer、需要 MemoTransfer、动态显示余额的 InterestBearing / ScaledUiAmount，以及任何客户端无法识别、尚未审计或会改变转账账户要求的扩展都必须 fail-closed；只展示原因，不签名、不提交。任一 Token Program 的查询不完整时，整份 SPL 清单只读展示，重新识别完整前不得执行。
 - 预检和执行前都按 genesis hash 校验 RPC 网络。
 - 预检逐来源读取余额、最新 blockhash 和手续费，计算 `余额 - 手续费 - 保留额`；零余额、余额不足、低于阈值或与目标相同的来源跳过。
+- SPL 预检重新读取 mint、Token Program、Token Account 状态与余额，派生并验证目标 ATA 的 owner、mint 和 program。目标 ATA 不存在时，把创建账户的免租金余额与交易网络费计入该来源钱包所需的原生 SOL；余额不足时阻断该项。
+- SPL 归集仅转移 Token 余额。即使来源 Token Account 归零，也不自动关闭账户或回收其租金。
 - 任一来源发生 RPC 预检错误时不开始整批签名；正常跳过项不阻断其他来源。
 - 执行时重新解析密钥并再次校验网络，然后清空可见密钥。
 - 每个来源在签名前重新读取余额、手续费和 blockhash，重新计算金额，再本地签名并顺序提交确认。
@@ -395,6 +401,8 @@ flowchart TD
 - 预检逐来源显示余额、费用和可归集金额；执行结果显示最终金额、状态和签名，可筛选、搜索、导出 CSV。
 
 ### 当前流程
+
+以下图保留重构启动时仅归集 SOL 的实现基线；SPL Token 持仓识别与归集体现在后面的优化流程和安全边界中。
 
 ```mermaid
 flowchart TD
@@ -424,20 +432,26 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  sol_o_start(["进入 SOL 归集"]) -.-> sol_o_omit["[省略] 步骤器、页面编号、静态安全宣传和下一步提示"]
-  sol_o_start --> sol_o_identity["目标地址与来源密钥"]
-  sol_o_identity --> sol_o_network["网络及金额设置"]
-  sol_o_network --> sol_o_advanced["高级设置：RPC、保留额、最小归集金额"]
-  sol_o_network --> sol_o_preflight["[不可删除] genesis hash、余额、费用和可归集金额预检"]
-  sol_o_preflight --> sol_o_pass{"存在 RPC 错误或无可执行来源？"}
-  sol_o_pass -->|是| sol_o_error["[合并] 结果表原位显示失败与跳过原因"]
+  sol_o_start(["进入 SOL / SPL Token 归集"]) -.-> sol_o_omit["[省略] 步骤器、页面编号、静态安全宣传和下一步提示"]
+  sol_o_start --> sol_o_identity["导入并勾选来源密钥；填写目标地址"]
+  sol_o_identity --> sol_o_assets["可选 Token 清单：留空 = SOL；填写 Mint = 所列 SPL"]
+  sol_o_assets --> sol_o_network["选择网络 / RPC"]
+  sol_o_network --> sol_o_holdings["可选查看余额：钱包行始终先显示 SOL，再显示清单内 Token"]
+  sol_o_holdings --> sol_o_standard{"Token 清单是否为空？"}
+  sol_o_standard -->|SOL| sol_o_sol["重读余额、费用、保留额与归集数量"]
+  sol_o_standard -->|SPL| sol_o_spl["重读 Token Account；校验 program / mint / 扩展"]
+  sol_o_spl --> sol_o_ata["派生并验证目标 ATA；计入 ATA 租金 + 网络费"]
+  sol_o_sol --> sol_o_pass{"存在错误或无可执行项？"}
+  sol_o_ata --> sol_o_pass
+  sol_o_pass -->|是| sol_o_error["原位展示失败/跳过原因；危险或未知扩展 fail-closed"]
   sol_o_error --> sol_o_identity
-  sol_o_pass -->|否| sol_o_dialog["AlertDialog：网络、完整目标、来源数、总额、费用和保留额"]
+  sol_o_pass -->|否| sol_o_dialog["AlertDialog：网络、目标、来源、资产、数量、SOL 费用与 ATA 租金"]
   sol_o_dialog -->|取消| sol_o_identity
-  sol_o_dialog -->|确认| sol_o_recheck["[不可删除] 重解析密钥并重查网络、余额、费用和金额"]
+  sol_o_dialog -->|确认| sol_o_recheck["[不可删除] 重查 genesis hash、余额、账户状态、扩展、费用与 ATA"]
   sol_o_recheck --> sol_o_clear["清除可见密钥"]
-  sol_o_clear --> sol_o_run["逐项本地签名、提交和确认"]
-  sol_o_run --> sol_o_results["[合并] 预检表原位转为执行结果表"]
+  sol_o_clear --> sol_o_run["逐 Token Account 本地签名、提交和确认"]
+  sol_o_run --> sol_o_keep["仅转移余额；不自动关闭 Token Account 或回收租金"]
+  sol_o_keep --> sol_o_results["逐来源/资产结果原位展示"]
   sol_o_results --> sol_o_lock["[不可删除] 保存签名；不确定项禁止盲目重发"]
 ```
 
@@ -445,6 +459,9 @@ flowchart TD
 
 - `[合并]` 确认复选框和执行按钮改为一次 `AlertDialog`；预检列表在原位成为结果列表。
 - `[不可删除]` 双重 genesis hash 校验、执行时逐项重算金额、可见密钥清理、RPC 签名一致性检查和状态不确定提示。
+- `[不可删除]` Token 清单与执行模型对齐 EVM 代币归集；余额查询无论清单是否为空都先展示每钱包原生 SOL，SPL 同时覆盖经典 Token Program 与受限的 Token-2022 安全子集。
+- `[不可删除]` Token-2022 未知或危险扩展 fail-closed；目标 ATA 必须复核，ATA 租金和网络费必须计入原生 SOL 需求。
+- `[不可删除]` SPL 归集不会自动关闭来源 Token Account，也不会以“节省租金”为由附带授权其他账户操作。
 - 保留额为 0 的配置仍允许，但它是动态警告而不是静态宣传文案；用户必须在确认摘要中看到该值。
 
 ## 6. CreateX 合约部署 `/evm/deploy/`

@@ -327,6 +327,10 @@ describe("collectSolFromSources", () => {
       transferLamports: 85_000n
     }]);
     expect(connection.getFeeForMessage).toHaveBeenCalledOnce();
+    expect(connection.sendRawTransaction).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      expect.objectContaining({ skipPreflight: false })
+    );
     expect(connection.confirmTransaction).toHaveBeenCalledWith({
       blockhash: testBlockhash,
       lastValidBlockHeight: 100,
@@ -337,6 +341,31 @@ describe("collectSolFromSources", () => {
     expect(decoded.lamports).toBe(85_000n);
     expect(submittedTransaction!.signatures[0].signature).not.toBeNull();
     expect(progress.map((event) => event.phase)).toEqual(["preparing", "submitted", "success"]);
+  });
+
+  it("treats an explicit preflight rejection as unbroadcast and retryable", async () => {
+    const source = makeSource(30);
+    const connection = makeConnection({
+      sendRawTransaction: vi.fn(async () => {
+        throw new Error("Transaction simulation failed: insufficient funds");
+      })
+    });
+
+    const [result] = await collectSolFromSources({
+      connection,
+      destination: makeKeypair(31).publicKey,
+      minCollectionLamports: 1n,
+      reserveLamports: 10_000n,
+      sources: [source]
+    });
+
+    expect(result).toMatchObject({
+      message: expect.stringContaining("未广播"),
+      retryable: true,
+      status: "error"
+    });
+    expect(result.signature).toBeUndefined();
+    expect(connection.confirmTransaction).not.toHaveBeenCalled();
   });
 
   it("continues after an item fails and sanitizes the failure message", async () => {

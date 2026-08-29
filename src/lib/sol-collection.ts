@@ -455,6 +455,11 @@ export function getSafeSolCollectionErrorMessage(error: unknown) {
   return "归集失败，请稍后重试";
 }
 
+function isExplicitSolPreflightRejection(error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  return /transaction simulation failed|simulation failed|preflight failure|preflight rejected/i.test(detail);
+}
+
 function getSkipMessage(reason: SolCollectionSkipReason) {
   switch (reason) {
     case "zero-balance": return "余额为 0，已跳过";
@@ -606,7 +611,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
     onProgress,
     pauseControl,
     reserveLamports,
-    sendOptions = { preflightCommitment: "confirmed", skipPreflight: true },
+    sendOptions = { preflightCommitment: "confirmed", skipPreflight: false },
     sources
   } = options;
   const executionSettings = normalizeCollectionExecutionSettings(rawExecutionSettings);
@@ -642,6 +647,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
     let submittedSignature: TransactionSignature | undefined;
     let broadcastAcknowledged = false;
     let chainExecutionFailed = false;
+    let preflightRejected = false;
     let transferLamports = 0n;
 
     emitProgress(onProgress, {
@@ -736,7 +742,13 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
       if (!transaction.signature) throw new SafeSolCollectionError("交易签名失败，已停止处理该项");
       submittedSignature = encodeBase58(transaction.signature);
 
-      const rpcSignature = await connection.sendRawTransaction(transaction.serialize(), sendOptions);
+      let rpcSignature: TransactionSignature;
+      try {
+        rpcSignature = await connection.sendRawTransaction(transaction.serialize(), sendOptions);
+      } catch (error) {
+        preflightRejected = isExplicitSolPreflightRejection(error);
+        throw error;
+      }
       if (rpcSignature !== submittedSignature) {
         throw new SafeSolCollectionError("RPC 返回的交易签名不一致，提交状态需要人工核对");
       }
@@ -793,16 +805,18 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         feeLamports,
         label: source.label,
         line: source.line,
-        message: submittedSignature
-          ? chainExecutionFailed
-            ? "交易已确认执行失败，可直接重试该钱包"
-            : broadcastAcknowledged
-              ? "交易已提交但确认失败，请先查链上状态，勿盲目重发"
-              : "交易已签名且提交状态不确定，请先用交易签名查链上状态，勿盲目重发"
-          : getSafeSolCollectionErrorMessage(error),
+        message: preflightRejected
+          ? "RPC 预检已明确拒绝且交易未广播，可安全重试该钱包"
+          : submittedSignature
+            ? chainExecutionFailed
+              ? "交易已确认执行失败，可直接重试该钱包"
+              : broadcastAcknowledged
+                ? "交易已提交但确认失败，请先查链上状态，勿盲目重发"
+                : "交易已签名且提交状态不确定，请先用交易签名查链上状态，勿盲目重发"
+            : getSafeSolCollectionErrorMessage(error),
         reserveLamports,
-        retryable: chainExecutionFailed || !submittedSignature,
-        signature: submittedSignature,
+        retryable: preflightRejected || chainExecutionFailed || !submittedSignature,
+        ...(submittedSignature && !preflightRejected ? { signature: submittedSignature } : {}),
         status: "error",
         transferLamports
       };
@@ -813,7 +827,7 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
         current: index + 1,
         label: source.label,
         phase: "error",
-        signature: submittedSignature,
+        ...(submittedSignature && !preflightRejected ? { signature: submittedSignature } : {}),
         total: sources.length,
         transferLamports
       });

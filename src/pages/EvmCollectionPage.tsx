@@ -100,17 +100,24 @@ import { getPreferredRpcEndpoint, isRpcEndpoint, rememberRpcEndpoint } from "../
 
 type CollectionStage = "editing" | "scanning" | "ready" | "running" | "complete" | "error";
 
+type NftNativeBalanceByAddress = Record<string, {
+  amount: string;
+  symbol: string;
+}>;
+
 type PendingNftDiscovery = {
   assets: Array<{ contractAddress: string; ownerAddress?: string; tokenId: bigint }>;
   complete: boolean;
   contractAddress: string;
   holdings?: Erc1155CandidateHolding[];
   kind: "candidate-scan" | "enumerable" | "token-range";
+  nativeBalances: NftNativeBalanceByAddress;
   standard: "erc721" | "erc1155";
 };
 
 type PendingNftTokenScan = {
   contractAddress: string;
+  nativeBalances: NftNativeBalanceByAddress;
   ownerAddresses: string[];
   seedAssets: Array<{ contractAddress: string; ownerAddress?: string; tokenId: bigint }>;
   snapshotBlock: bigint;
@@ -326,6 +333,32 @@ function formatBalanceForDisplay(value: bigint, decimals: number) {
   const [whole, fraction = ""] = formatted.split(".");
   const compactFraction = fraction.slice(0, 8).replace(/0+$/u, "");
   return compactFraction ? `${whole}.${compactFraction}` : whole;
+}
+
+async function readNftNativeBalances({
+  accounts,
+  nativeCurrency,
+  publicClient
+}: {
+  accounts: readonly EvmCollectionAccount[];
+  nativeCurrency: EvmNativeCurrency;
+  publicClient: ReturnType<typeof createEvmPublicClient>;
+}): Promise<NftNativeBalanceByAddress> {
+  const balances = await mapWithConcurrency(accounts, 4, async (account) => {
+    try {
+      const balance = await publicClient.getBalance({ address: account.address });
+      return [account.address.toLowerCase(), {
+        amount: formatBalanceForDisplay(balance, nativeCurrency.decimals),
+        symbol: nativeCurrency.symbol
+      }] as const;
+    } catch {
+      return [account.address.toLowerCase(), {
+        amount: "读取失败",
+        symbol: nativeCurrency.symbol
+      }] as const;
+    }
+  });
+  return Object.fromEntries(balances);
 }
 
 function parsePercentageBps(value: string) {
@@ -933,7 +966,7 @@ export function EvmCollectionPage({
 
     const workloadIssues = validateEvmCollectionWorkload({
       accountCount: parsedAccounts.accounts.length,
-      assetCount: tokenAssets.length + (nativeCurrencyEnabled ? 1 : 0),
+      assetCount: tokenAssets.length + 1,
       standard: tokenAssets.length ? "erc20" : "native"
     });
     if (workloadIssues.length) {
@@ -976,10 +1009,15 @@ export function EvmCollectionPage({
 
       const rows = await mapWithConcurrency(parsedAccounts.accounts, 4, async (account): Promise<AddressBalanceRow> => {
         const assets: AddressBalanceAsset[] = [];
-        if (nativeCurrencyEnabled) {
+        try {
           const nativeBalance = await publicClient.getBalance({ address: account.address });
           assets.push({
             amount: formatBalanceForDisplay(nativeBalance, selectedNetwork.nativeCurrency.decimals),
+            symbol: selectedNetwork.nativeCurrency.symbol
+          });
+        } catch {
+          assets.push({
+            amount: "读取失败",
             symbol: selectedNetwork.nativeCurrency.symbol
           });
         }
@@ -1164,17 +1202,24 @@ export function EvmCollectionPage({
       message: discovery.standard === "erc1155"
         ? `已识别 ${recognizedTotal} 个可归集 ERC1155 Token ID，共 ${recognizedUnits} 份`
         : `已识别 ${recognizedTotal} 个可归集 ERC721`,
-      rows: selectedAccounts.map((account) => ({
-        address: account.address,
-        assets: [{
-          amount: discovery.standard === "erc1155"
-            ? `${holdingsByOwner.get(account.address.toLowerCase())?.tokenIds.size || 0} ID / ${holdingsByOwner.get(account.address.toLowerCase())?.units || 0n}`
-            : String(holdingsByOwner.get(account.address.toLowerCase())?.tokenIds.size || 0),
-          contractAddress: getAddress(discovery.contractAddress),
-          symbol: standardLabel
-        }],
-        label: account.label
-      })),
+      rows: selectedAccounts.map((account) => {
+        const accountKey = account.address.toLowerCase();
+        const nativeBalance = discovery.nativeBalances[accountKey] || {
+          amount: "读取失败",
+          symbol: selectedNetwork.nativeCurrency.symbol
+        };
+        return {
+          address: account.address,
+          assets: [nativeBalance, {
+            amount: discovery.standard === "erc1155"
+              ? `${holdingsByOwner.get(accountKey)?.tokenIds.size || 0} ID / ${holdingsByOwner.get(accountKey)?.units || 0n}`
+              : String(holdingsByOwner.get(accountKey)?.tokenIds.size || 0),
+            contractAddress: getAddress(discovery.contractAddress),
+            symbol: standardLabel
+          }],
+          label: account.label
+        };
+      }),
       status: "ready"
     });
     setPendingDiscovery(null);
@@ -1219,6 +1264,7 @@ export function EvmCollectionPage({
       complete: result.complete,
       contractAddress: scan.contractAddress,
       kind: "token-range",
+      nativeBalances: scan.nativeBalances,
       standard: "erc721"
     };
 
@@ -1316,6 +1362,13 @@ export function EvmCollectionPage({
     try {
       const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
       await assertEvmRpcNetwork(publicClient, selectedNetwork);
+      setDiscoveryMessage("正在读取来源钱包的原生币余额…");
+      const nativeBalances = await readNftNativeBalances({
+        accounts: parsedAccounts.accounts,
+        nativeCurrency: selectedNetwork.nativeCurrency,
+        publicClient
+      });
+      if (abortController.signal.aborted) throw new Error("Token ID 识别已停止");
       setDiscoveryMessage("正在识别 NFT 合约标准与名称…");
       const inspection = await inspectNftContract({
         contractAddress: discoveryContract.trim(),
@@ -1363,6 +1416,7 @@ export function EvmCollectionPage({
             complete: enumerableComplete,
             contractAddress: getAddress(discoveryContract.trim()),
             kind: "enumerable",
+            nativeBalances,
             standard: "erc721"
           };
           if (!enumerable.assets.length) {
@@ -1408,6 +1462,7 @@ export function EvmCollectionPage({
         contractAddress: inspection.address,
         holdings: candidateResult.holdings,
         kind: "candidate-scan",
+        nativeBalances,
         standard: inspection.standard
       };
       setDiscoveryIssues([...candidateSourceIssues, ...candidateIssues]);
@@ -1429,6 +1484,7 @@ export function EvmCollectionPage({
       setDiscoveryMessage("索引与事件尚未完成余额对账，正在使用 Token ID 范围做最后兜底…");
       const scan: PendingNftTokenScan = {
         contractAddress: getAddress(discoveryContract.trim()),
+        nativeBalances,
         ownerAddresses,
         seedAssets: candidateResult.assets,
         snapshotBlock: inspection.snapshotBlock,

@@ -53,9 +53,13 @@ describe("planTransferChunks", () => {
 });
 
 describe("assertSolanaRpcNetwork", () => {
-  it("accepts the selected cluster genesis hash", async () => {
-    const connection = { getGenesisHash: vi.fn(async () => solanaGenesisHashes.devnet) };
-    await expect(assertSolanaRpcNetwork(connection as never, "devnet")).resolves.toBeUndefined();
+  it.each([
+    ["mainnet-beta", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"],
+    ["devnet", "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"],
+    ["testnet", "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"]
+  ] as const)("accepts the canonical %s genesis hash", async (networkId, genesisHash) => {
+    const connection = { getGenesisHash: vi.fn(async () => genesisHash) };
+    await expect(assertSolanaRpcNetwork(connection as never, networkId)).resolves.toBeUndefined();
   });
 
   it("blocks a mismatched RPC cluster", async () => {
