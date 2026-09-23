@@ -731,56 +731,13 @@ export function BatchDistributorPage() {
           )}
           title="网络、钱包与清单"
         >
-          <div className="flex min-w-0 flex-col gap-4">
+          <div className="form workbench-form">
             {mixedAmountWarningVisible ? (
               <Alert>
                 <AlertTitle>旧清单金额未导入</AlertTitle>
                 <AlertDescription>已保留收款地址，请重新设置金额。</AlertDescription>
               </Alert>
             ) : null}
-
-            <div className="network-rpc-row" aria-label="网络与 RPC">
-              <Field>
-                <FieldLabel htmlFor="networkId">网络</FieldLabel>
-                <SearchableSelect
-                  disabled={pageControlsLocked}
-                  emptyMessage="未找到匹配的 Solana 网络"
-                  id="networkId"
-                  listboxLabel="Solana 网络"
-                  metaLabel="网络标识"
-                  metaPrefix="Cluster "
-                  onChange={(nextNetworkId) => {
-                    resetForEdit();
-                    setNetworkId(nextNetworkId);
-                    setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
-                  }}
-                  options={solanaNetworkOptions}
-                  searchable={false}
-                  value={networkId}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
-                <Input
-                  aria-invalid={!rpcEndpointValid}
-                  disabled={pageControlsLocked}
-                  id="rpcEndpoint"
-                  onChange={(event) => {
-                    resetForEdit();
-                    setRpcEndpoint(event.target.value);
-                  }}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-              </Field>
-            </div>
-
-            <div className="flex flex-wrap gap-2" aria-label="链路摘要">
-              <Badge title={balanceLookup.message || undefined} variant="outline">
-                余额 {walletBalance}{balanceLookup.status === "error" ? " · 读取失败" : wallet.connected ? " SOL" : ""}
-              </Badge>
-              <Badge variant="outline">预计交易 {transactionCount || 0}</Badge>
-            </div>
 
             {balanceLookup.status === "error" ? (
               <Alert variant="destructive">
@@ -794,18 +751,67 @@ export function BatchDistributorPage() {
               </Alert>
             ) : null}
 
-            <DistributionListGenerator
-              key={`sol-distribution-${generatorRevision}`}
-              addressKind="solana"
-              decimals={9}
-              disabled={controlsLocked}
-              initialAddresses={generatorRevision === 0 ? initialDistribution.addresses : ""}
-              initialFixedAmount={generatorRevision === 0 && initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
-              onDirty={handleGeneratorDirty}
-              onImportingChange={handleListImportingChange}
-              onResultChange={handleGeneratedListChange}
-              symbol="SOL"
-            />
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">收款清单</h3>
+              <DistributionListGenerator
+                key={`sol-distribution-${generatorRevision}`}
+                addressKind="solana"
+                decimals={9}
+                disabled={controlsLocked}
+                initialAddresses={generatorRevision === 0 ? initialDistribution.addresses : ""}
+                initialFixedAmount={generatorRevision === 0 && initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                onDirty={handleGeneratorDirty}
+                onImportingChange={handleListImportingChange}
+                onResultChange={handleGeneratedListChange}
+                symbol="SOL"
+              />
+            </div>
+
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">网络与钱包</h3>
+              <div className="network-rpc-row" aria-label="网络与 RPC">
+                <Field>
+                  <FieldLabel htmlFor="networkId">网络</FieldLabel>
+                  <SearchableSelect
+                    disabled={pageControlsLocked}
+                    emptyMessage="未找到匹配的 Solana 网络"
+                    id="networkId"
+                    listboxLabel="Solana 网络"
+                    metaLabel="网络标识"
+                    metaPrefix="Cluster "
+                    onChange={(nextNetworkId) => {
+                      resetForEdit();
+                      setNetworkId(nextNetworkId);
+                      setRpcEndpoint(getNetworkConfig(nextNetworkId).endpoint);
+                    }}
+                    options={solanaNetworkOptions}
+                    searchable={false}
+                    value={networkId}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
+                  <Input
+                    aria-invalid={!rpcEndpointValid}
+                    disabled={pageControlsLocked}
+                    id="rpcEndpoint"
+                    onChange={(event) => {
+                      resetForEdit();
+                      setRpcEndpoint(event.target.value);
+                    }}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                </Field>
+              </div>
+
+              <div className="flex flex-wrap gap-2" aria-label="链路摘要">
+                <Badge title={balanceLookup.message || undefined} variant="outline">
+                  余额 {walletBalance}{balanceLookup.status === "error" ? " · 读取失败" : wallet.connected ? " SOL" : ""}
+                </Badge>
+                <Badge variant="outline">预计交易 {transactionCount || 0}</Badge>
+              </div>
+            </div>
           </div>
         </WorkbenchPanel>
 

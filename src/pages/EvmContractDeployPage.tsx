@@ -724,62 +724,62 @@ export function EvmContractDeployPage() {
           )}
           title="部署配置"
         >
-          <Tabs
-            aria-label="网络来源"
-            onValueChange={(value) => {
-              if (value === "known" || value === "custom") selectNetworkSource(value);
-            }}
-            value={networkSource}
-          >
-            <TabsList>
-              <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
-              <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
-            </TabsList>
-            <TabsContent value="known">
-              <Field>
-                <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
-                <SearchableSelect
-                  disabled={configurationLocked}
-                  emptyMessage="未找到匹配的 EVM 链"
-                  id="deployKnownNetwork"
-                  listboxLabel="已知 EVM 网络"
-                  metaLabel="Chain ID"
-                  metaPrefix="ID "
-                  onChange={selectKnownNetwork}
-                  options={knownNetworkOptions}
-                  placeholder="搜索链名称或 Chain ID"
-                  searchLabel="搜索已知 EVM 网络"
-                  value={knownNetworkId}
-                />
-              </Field>
-            </TabsContent>
-            <TabsContent value="custom">
-              <Field>
-                <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
-                <Input
-                  autoComplete="off"
-                  disabled={configurationLocked}
-                  id="deployCustomRpcEndpoint"
-                  inputMode="url"
-                  onChange={(event) => {
-                    setRpcEndpoint(event.target.value);
-                    resetDiscoveredNetwork();
-                  }}
-                  placeholder="https://your-evm-rpc.example"
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-              </Field>
-            </TabsContent>
-          </Tabs>
+          <div className="form workbench-form">
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">部署网络</h3>
+            <Tabs
+              aria-label="网络来源"
+              onValueChange={(value) => {
+                if (value === "known" || value === "custom") selectNetworkSource(value);
+              }}
+              value={networkSource}
+            >
+              <TabsList>
+                <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
+                <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
+              </TabsList>
+              <TabsContent value="known">
+                <Field>
+                  <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
+                  <SearchableSelect
+                    disabled={configurationLocked}
+                    emptyMessage="未找到匹配的 EVM 链"
+                    id="deployKnownNetwork"
+                    listboxLabel="已知 EVM 网络"
+                    metaLabel="Chain ID"
+                    metaPrefix="ID "
+                    onChange={selectKnownNetwork}
+                    options={knownNetworkOptions}
+                    placeholder="搜索链名称或 Chain ID"
+                    searchLabel="搜索已知 EVM 网络"
+                    value={knownNetworkId}
+                  />
+                </Field>
+              </TabsContent>
+              <TabsContent value="custom">
+                <Field>
+                  <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
+                  <Input
+                    autoComplete="off"
+                    disabled={configurationLocked}
+                    id="deployCustomRpcEndpoint"
+                    inputMode="url"
+                    onChange={(event) => {
+                      setRpcEndpoint(event.target.value);
+                      resetDiscoveredNetwork();
+                    }}
+                    placeholder="https://your-evm-rpc.example"
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                </Field>
+              </TabsContent>
+            </Tabs>
+            </div>
 
-          <AdvancedSettings disabled={configurationLocked} label="RPC、Gas、浏览器与链元数据">
-            <EvmGasSettings
-              disabled={configurationLocked}
-              gas={gas}
-              onSettingsChange={resetForEdit}
-            />
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">RPC 与 Gas</h3>
             {networkSource === "known" ? (
               <Field>
                 <FieldLabel htmlFor="deployKnownRpcEndpoint">HTTPS RPC</FieldLabel>
@@ -795,6 +795,14 @@ export function EvmContractDeployPage() {
                 />
               </Field>
             ) : null}
+
+            <EvmGasSettings
+              disabled={configurationLocked}
+              gas={gas}
+              onSettingsChange={resetForEdit}
+            />
+
+              <AdvancedSettings disabled={configurationLocked} label="浏览器与链元数据">
             <Field data-invalid={!blockExplorerUrlIsValid || undefined}>
               <FieldLabel htmlFor="deployBlockExplorerUrl">区块浏览器地址</FieldLabel>
               <Input
@@ -953,7 +961,8 @@ export function EvmContractDeployPage() {
                 </div>
               </FieldGroup>
             ) : null}
-          </AdvancedSettings>
+              </AdvancedSettings>
+            </div>
 
           {message ? (
             <Alert variant={status === "error" ? "destructive" : "default"}>
@@ -1028,6 +1037,7 @@ export function EvmContractDeployPage() {
               ) : null}
             </FieldGroup>
           ) : null}
+          </div>
         </WorkbenchPanel>
 
         <ReviewPanel

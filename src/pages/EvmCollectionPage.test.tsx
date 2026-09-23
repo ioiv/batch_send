@@ -335,6 +335,22 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("spinbutton", { name: /单笔最高网络费/ })).toHaveValue(0.01);
   });
 
+  it("groups the form so the two columns hold what they claim to", () => {
+    const { container } = render(<EvmCollectionPage fixedStandard="erc20" />);
+
+    const subject = container.querySelector(".workbench-form__primary");
+    const config = container.querySelector(".workbench-form__secondary");
+    expect(subject).not.toBeNull();
+    expect(config).not.toBeNull();
+    // "归集什么" on one side, "怎么归集" on the other. A field added to the wrong
+    // group renders in the wrong column on a wide screen and fails nothing else.
+    expect(subject).toContainElement(screen.getByRole("textbox", { name: "Token 清单" }));
+    expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标地址" }));
+    expect(config).toContainElement(screen.getByLabelText("网络与 RPC"));
+    expect(config).toContainElement(screen.getByRole("spinbutton", { name: "并发钱包数" }));
+    expect(config).toContainElement(screen.getByLabelText("Gas 设置"));
+  });
+
   it("automatically resolves Token symbols and queries balances for selected source addresses", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);

@@ -98,12 +98,21 @@ async function prepareReadyDeploymentPage() {
 }
 
 describe("EvmContractDeployPage safety", () => {
+  it("keeps RPC and Gas on the surface, as the other tool pages do", () => {
+    render(createElement(EvmContractDeployPage));
+
+    expect(screen.getByRole("textbox", { name: "HTTPS RPC" })).toBeVisible();
+    expect(screen.getByLabelText("Gas 设置")).toBeVisible();
+    // Only the low-frequency metadata stays folded away.
+    expect(screen.getByRole("button", { name: "浏览器与链元数据" })).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "区块浏览器地址" })).not.toBeInTheDocument();
+  });
+
   it("shows live Gas and passes a custom Gas Price into deployment validation", async () => {
     const user = userEvent.setup();
     render(createElement(EvmContractDeployPage));
 
     expect(await screen.findByLabelText("实时 Gas 推荐：慢 1.8 Gwei，中 2 Gwei，快 2.4 Gwei")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "6");
@@ -121,7 +130,6 @@ describe("EvmContractDeployPage safety", () => {
   it("blocks deployment validation while the custom Gas Price is invalid", async () => {
     const user = userEvent.setup();
     render(createElement(EvmContractDeployPage));
-    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
 
@@ -180,7 +188,7 @@ describe("EvmContractDeployPage safety", () => {
     const user = await prepareReadyDeploymentPage();
     expect(screen.getByRole("button", { name: "确认部署" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    await user.click(screen.getByRole("button", { name: "浏览器与链元数据" }));
     const explorerInput = screen.getByRole("textbox", { name: "区块浏览器地址" });
     await user.clear(explorerInput);
     await user.type(explorerInput, "https://explorer.example");
@@ -195,7 +203,6 @@ describe("EvmContractDeployPage safety", () => {
 
   it("invalidates deployment confirmation when the Gas setting changes", async () => {
     const user = await prepareReadyDeploymentPage();
-    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
     await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
 
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
@@ -231,7 +238,7 @@ describe("EvmContractDeployPage safety", () => {
       gasSettings: { mode: "auto" }
     }));
 
-    await user.click(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" }));
+    await user.click(screen.getByRole("button", { name: "浏览器与链元数据" }));
     const explorerInput = screen.getByRole("textbox", { name: "区块浏览器地址" });
     expect(explorerInput).toBeEnabled();
     await user.clear(explorerInput);
@@ -264,7 +271,7 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.getByRole("button", { name: "重新校验" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "校验部署条件" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "RPC、Gas、浏览器与链元数据" })).toHaveAttribute("aria-disabled", "false");
+    expect(screen.getByRole("button", { name: "浏览器与链元数据" })).toHaveAttribute("aria-disabled", "false");
 
     await user.click(screen.getByRole("button", { name: "重新校验" }));
     expect(await screen.findByText("部署记录")).toBeVisible();

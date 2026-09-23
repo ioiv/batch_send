@@ -684,6 +684,19 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toBeVisible();
   });
 
+  it("groups the form so the two columns hold what they claim to", () => {
+    const { container } = render(<SolCollectionPage />);
+    const subject = container.querySelector(".workbench-form__primary");
+    const config = container.querySelector(".workbench-form__secondary");
+    expect(subject).not.toBeNull();
+    expect(config).not.toBeNull();
+    // "归集什么" on one side, "怎么归集" on the other; a field in the wrong group
+    // lands in the wrong column on a wide screen without failing anything else.
+    expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标钱包" }));
+    expect(config).toContainElement(screen.getByRole("textbox", { name: "RPC 地址" }));
+    expect(config).toContainElement(screen.getByRole("spinbutton", { name: "并发钱包数" }));
+  });
+
   it("persists a replacement RPC and uses it on the next mount", async () => {
     const user = userEvent.setup();
     const firstRender = render(<SolCollectionPage />);

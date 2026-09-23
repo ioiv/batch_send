@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   SecretKeyInput,
@@ -1290,323 +1291,328 @@ export function SolCollectionPage() {
           )}
           title="归集设置"
         >
-          <div className="form collection-form">
-            <SecretKeyInput
-              disabled={controlsLocked}
-              mode="solana"
-              onDirty={() => { invalidateTask(); invalidateHoldings(); }}
-              onImportingChange={handleKeyImportingChange}
-              onLineCountChange={setSourceCount}
-              ref={keyInputRef}
-              walletBalances={walletBalances}
-              walletStatuses={walletStatuses}
-            />
+          <div className="form workbench-form">
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">来源与目标</h3>
+              <SecretKeyInput
+                disabled={controlsLocked}
+                mode="solana"
+                onDirty={() => { invalidateTask(); invalidateHoldings(); }}
+                onImportingChange={handleKeyImportingChange}
+                onLineCountChange={setSourceCount}
+                ref={keyInputRef}
+                walletBalances={walletBalances}
+                walletStatuses={walletStatuses}
+              />
 
-            <Field>
-              <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
-              <div className="erc20-token-editor">
-                {tokenInputRows.map((row, index) => {
-                  const parsedRow = parsedTokenMints.rows[index];
-                  const mintAddress = parsedRow?.mintAddress;
-                  const preview = mintAddress ? recognizedTokenByMint.get(mintAddress) : undefined;
-                  const matchedHoldings = mintAddress
-                    ? holdings?.holdings.filter((holding) => holding.mintAddress === mintAddress) || []
-                    : [];
-                  const recognitionLabel = !row.trim()
-                    ? "SPL"
-                    : parsedRow?.status === "invalid"
-                      ? "地址无效"
-                      : parsedRow?.status === "duplicate"
-                        ? "地址重复"
+              <Field>
+                <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
+                <div className="erc20-token-editor">
+                  {tokenInputRows.map((row, index) => {
+                    const parsedRow = parsedTokenMints.rows[index];
+                    const mintAddress = parsedRow?.mintAddress;
+                    const preview = mintAddress ? recognizedTokenByMint.get(mintAddress) : undefined;
+                    const matchedHoldings = mintAddress
+                      ? holdings?.holdings.filter((holding) => holding.mintAddress === mintAddress) || []
+                      : [];
+                    const recognitionLabel = !row.trim()
+                      ? "SPL"
+                      : parsedRow?.status === "invalid"
+                        ? "地址无效"
+                        : parsedRow?.status === "duplicate"
+                          ? "地址重复"
+                          : preview?.status === "ready"
+                            ? preview.program === "token-2022" ? "Token-2022" : "SPL"
+                            : preview?.status === "unsupported"
+                              ? "不支持"
+                              : preview?.status === "unverified"
+                                ? "识别失败"
+                                : tokenRecognition.status === "loading" || holdingsStatus === "loading"
+                            ? "查询中"
+                            : matchedHoldings.length
+                              ? matchedHoldings.some((holding) => holding.program === "token-2022")
+                                ? "Token-2022"
+                                : "SPL"
+                              : holdingsStatus === "ready" ? "无持仓" : "SPL";
+                    const recognitionStatus = !row.trim()
+                      ? "idle"
+                      : parsedRow?.status === "invalid" || parsedRow?.status === "duplicate"
+                        ? "error"
                         : preview?.status === "ready"
-                          ? preview.program === "token-2022" ? "Token-2022" : "SPL"
-                          : preview?.status === "unsupported"
-                            ? "不支持"
-                            : preview?.status === "unverified"
-                              ? "识别失败"
-                              : tokenRecognition.status === "loading" || holdingsStatus === "loading"
-                          ? "查询中"
-                          : matchedHoldings.length
-                            ? matchedHoldings.some((holding) => holding.program === "token-2022")
-                              ? "Token-2022"
-                              : "SPL"
-                            : holdingsStatus === "ready" ? "无持仓" : "SPL";
-                  const recognitionStatus = !row.trim()
-                    ? "idle"
-                    : parsedRow?.status === "invalid" || parsedRow?.status === "duplicate"
-                      ? "error"
-                      : preview?.status === "ready"
-                        ? "ready"
-                        : preview?.status === "unsupported" || preview?.status === "unverified"
-                          ? "error"
-                          : tokenRecognition.status === "loading" || holdingsStatus === "loading"
-                        ? "loading"
-                        : matchedHoldings.length ? "ready" : "idle";
-                  const tokenLocked = preview?.status === "ready";
-                  return (
-                    <div
-                      className="erc20-token-row"
-                      data-locked={tokenLocked || undefined}
-                      data-status={recognitionStatus}
-                      key={index}
-                    >
-                      <Input
-                        aria-describedby={`sol-collection-token-status-${index}`}
-                        aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        disabled={controlsLocked}
-                        id={`sol-collection-token-${index}`}
-                        maxLength={maximumSolTokenMintAddressLength}
-                        onChange={(event) => {
-                          if (tokenLocked) return;
-                          const nextRows = [...tokenInputRows];
-                          nextRows[index] = event.target.value;
-                          updateTokenMintRows(nextRows);
-                        }}
-                        onPaste={(event) => {
-                          if (tokenLocked) {
-                            event.preventDefault();
-                            return;
-                          }
-                          const pastedRows = event.clipboardData.getData("text")
-                            .split(/\r?\n/)
-                            .map((value) => value.trim())
-                            .filter(Boolean);
-                          if (pastedRows.length <= 1) return;
-                          event.preventDefault();
-                          updateTokenMintRows([
-                            ...tokenInputRows.slice(0, index),
-                            ...pastedRows,
-                            ...tokenInputRows.slice(index + 1)
-                          ]);
-                        }}
-                        placeholder="Mint 地址"
-                        readOnly={tokenLocked}
-                        spellCheck={false}
-                        title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
-                        value={row}
-                      />
-                      <span
-                        aria-live="polite"
-                        className="erc20-token-symbol"
+                          ? "ready"
+                          : preview?.status === "unsupported" || preview?.status === "unverified"
+                            ? "error"
+                            : tokenRecognition.status === "loading" || holdingsStatus === "loading"
+                          ? "loading"
+                          : matchedHoldings.length ? "ready" : "idle";
+                    const tokenLocked = preview?.status === "ready";
+                    return (
+                      <div
+                        className="erc20-token-row"
+                        data-locked={tokenLocked || undefined}
                         data-status={recognitionStatus}
-                        id={`sol-collection-token-status-${index}`}
-                        title={parsedRow?.problem || preview?.unsupportedReason
-                          || (preview?.decimals !== null && preview?.decimals !== undefined
-                            ? `${recognitionLabel} · ${preview.decimals} 位小数`
-                            : mintAddress || recognitionLabel)}
+                        key={index}
                       >
-                        {recognitionLabel}
-                      </span>
-                      {tokenInputRows.length > 1 || row.trim() ? (
-                        <Button
-                          aria-label={`删除 Token 地址 ${index + 1}`}
+                        <Input
+                          aria-describedby={`sol-collection-token-status-${index}`}
+                          aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
+                          autoCapitalize="none"
+                          autoComplete="off"
                           disabled={controlsLocked}
-                          onClick={() => updateTokenMintRows(
-                            tokenInputRows.length === 1
-                              ? [""]
-                              : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
-                          )}
-                          size="sm"
-                          type="button"
-                          variant="ghost"
+                          id={`sol-collection-token-${index}`}
+                          maxLength={maximumSolTokenMintAddressLength}
+                          onChange={(event) => {
+                            if (tokenLocked) return;
+                            const nextRows = [...tokenInputRows];
+                            nextRows[index] = event.target.value;
+                            updateTokenMintRows(nextRows);
+                          }}
+                          onPaste={(event) => {
+                            if (tokenLocked) {
+                              event.preventDefault();
+                              return;
+                            }
+                            const pastedRows = event.clipboardData.getData("text")
+                              .split(/\r?\n/)
+                              .map((value) => value.trim())
+                              .filter(Boolean);
+                            if (pastedRows.length <= 1) return;
+                            event.preventDefault();
+                            updateTokenMintRows([
+                              ...tokenInputRows.slice(0, index),
+                              ...pastedRows,
+                              ...tokenInputRows.slice(index + 1)
+                            ]);
+                          }}
+                          placeholder="Mint 地址"
+                          readOnly={tokenLocked}
+                          spellCheck={false}
+                          title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
+                          value={row}
+                        />
+                        <span
+                          aria-live="polite"
+                          className="erc20-token-symbol"
+                          data-status={recognitionStatus}
+                          id={`sol-collection-token-status-${index}`}
+                          title={parsedRow?.problem || preview?.unsupportedReason
+                            || (preview?.decimals !== null && preview?.decimals !== undefined
+                              ? `${recognitionLabel} · ${preview.decimals} 位小数`
+                              : mintAddress || recognitionLabel)}
                         >
-                          删除
-                        </Button>
-                      ) : null}
-                    </div>
-                  );
-                })}
-                <Button
-                  className="erc20-token-add"
-                  disabled={controlsLocked || tokenInputRows.length >= maximumSolTokenMintInputEntries}
-                  onClick={() => {
-                    const nextIndex = tokenInputRows.length;
-                    updateTokenMintRows([...tokenInputRows, ""]);
-                    window.requestAnimationFrame(() => {
-                      document.getElementById(`sol-collection-token-${nextIndex}`)?.focus();
-                    });
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  添加 Token
-                </Button>
-              </div>
-              <FieldDescription>
-                可选；留空则归集 SOL，填写后归集列出的 SPL Token（支持 Token-2022）。
-              </FieldDescription>
-              {tokenRecognition.message ? (
-                <p
-                  aria-live="polite"
-                  className="address-balance-control__status"
-                  data-status={tokenRecognition.status}
-                  role="status"
-                >
-                  {tokenRecognition.message}
-                </p>
-              ) : null}
-              {tokenMintInputMessage || parsedTokenMints.limitIssue ? (
-                <FieldError>{tokenMintInputMessage || parsedTokenMints.limitIssue}</FieldError>
-              ) : null}
-              <div aria-label="地址余额查询" className="address-balance-control">
-                <Button
-                  disabled={controlsLocked || holdingsStatus === "loading" || sourceCount === 0
-                    || !rpcEndpointValid || !parsedTokenMints.valid}
-                  onClick={() => void discoverHoldings()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  {holdingsStatus === "loading" ? "查询中" : "查看地址余额"}
-                </Button>
-                {holdingsMessage ? (
+                          {recognitionLabel}
+                        </span>
+                        {tokenInputRows.length > 1 || row.trim() ? (
+                          <Button
+                            aria-label={`删除 Token 地址 ${index + 1}`}
+                            disabled={controlsLocked}
+                            onClick={() => updateTokenMintRows(
+                              tokenInputRows.length === 1
+                                ? [""]
+                                : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
+                            )}
+                            size="sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            删除
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  <Button
+                    className="erc20-token-add"
+                    disabled={controlsLocked || tokenInputRows.length >= maximumSolTokenMintInputEntries}
+                    onClick={() => {
+                      const nextIndex = tokenInputRows.length;
+                      updateTokenMintRows([...tokenInputRows, ""]);
+                      window.requestAnimationFrame(() => {
+                        document.getElementById(`sol-collection-token-${nextIndex}`)?.focus();
+                      });
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    添加 Token
+                  </Button>
+                </div>
+                <FieldDescription>
+                  可选；留空则归集 SOL，填写后归集列出的 SPL Token（支持 Token-2022）。
+                </FieldDescription>
+                {tokenRecognition.message ? (
                   <p
                     aria-live="polite"
                     className="address-balance-control__status"
-                    data-status={holdingsStatus}
+                    data-status={tokenRecognition.status}
                     role="status"
                   >
-                    {holdingsMessage}
+                    {tokenRecognition.message}
                   </p>
                 ) : null}
+                {tokenMintInputMessage || parsedTokenMints.limitIssue ? (
+                  <FieldError>{tokenMintInputMessage || parsedTokenMints.limitIssue}</FieldError>
+                ) : null}
+                <div aria-label="地址余额查询" className="address-balance-control">
+                  <Button
+                    disabled={controlsLocked || holdingsStatus === "loading" || sourceCount === 0
+                      || !rpcEndpointValid || !parsedTokenMints.valid}
+                    onClick={() => void discoverHoldings()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {holdingsStatus === "loading" ? "查询中" : "查看地址余额"}
+                  </Button>
+                  {holdingsMessage ? (
+                    <p
+                      aria-live="polite"
+                      className="address-balance-control__status"
+                      data-status={holdingsStatus}
+                      role="status"
+                    >
+                      {holdingsMessage}
+                    </p>
+                  ) : null}
+                </div>
+                {holdingsIssues.length ? (
+                  <Alert variant={holdingsStatus === "error" ? "destructive" : "default"}>
+                    <AlertDescription>
+                      <ul>{holdingsIssues.slice(0, 8).map((issue) => <li key={issue}>{issue}</li>)}</ul>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+              </Field>
+
+              <Field data-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}>
+                <FieldLabel htmlFor="sol-collection-target">目标钱包</FieldLabel>
+                <Input
+                  aria-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  disabled={controlsLocked}
+                  id="sol-collection-target"
+                  onChange={(event) => { setTargetAddress(event.target.value); invalidateTask(); }}
+                  placeholder="Solana 地址"
+                  spellCheck={false}
+                  value={targetAddress}
+                />
+                {targetAddress.trim() && !normalizedTarget ? <FieldError>请输入有效的 Solana 地址</FieldError> : null}
+                {targetAddress.trim() && normalizedTarget && !splTargetValid ? (
+                  <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
+                ) : null}
+              </Field>
+            </div>
+
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">归集配置</h3>
+
+              <div className="network-rpc-row" aria-label="网络与 RPC">
+                <Field>
+                  <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
+                  <SearchableSelect
+                    disabled={controlsLocked}
+                    id="sol-collection-network"
+                    listboxLabel="Solana 归集网络"
+                    onChange={(value) => {
+                      const nextNetwork = getNetworkConfig(value);
+                      setNetworkId(value);
+                      setRpcEndpoint(getPreferredRpcEndpoint("solana", value, nextNetwork.endpoint));
+                      invalidateTask();
+                      invalidateHoldings();
+                    }}
+                    options={networkOptions}
+                    searchable={false}
+                    triggerLabel="选择 Solana 网络"
+                    value={networkId}
+                  />
+                </Field>
+                <Field data-invalid={!rpcEndpointValid ? true : undefined}>
+                  <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
+                  <Input
+                    aria-invalid={!rpcEndpointValid ? true : undefined}
+                    disabled={controlsLocked}
+                    id="sol-collection-rpc"
+                    onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
+                    onChange={(event) => {
+                      setRpcEndpoint(event.target.value);
+                      invalidateTask();
+                      invalidateHoldings();
+                    }}
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                  {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+                </Field>
               </div>
-              {holdingsIssues.length ? (
-                <Alert variant={holdingsStatus === "error" ? "destructive" : "default"}>
+
+              {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                <FieldLabel>归集数量</FieldLabel>
+                <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
+                  <TabsList aria-label="SOL 归集数量模式">
+                    {Object.entries(amountModeLabels).map(([value, label]) => (
+                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                {amountMode === "percentage" ? (
+                  <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
+                ) : amountMode === "fixed" ? (
+                  <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
+                ) : amountMode === "random" ? (
+                  <div className="amount-grid">
+                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
+                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                  </div>
+                ) : null}
+                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+              </Field> : (
+                <Alert>
+                  <AlertTitle>SPL Token 数量</AlertTitle>
                   <AlertDescription>
-                    <ul>{holdingsIssues.slice(0, 8).map((issue) => <li key={issue}>{issue}</li>)}</ul>
+                    每个已选 Token Account 归集执行时的全部可用余额；来源 SOL 仅用于网络费和必要的目标 ATA 租金。
                   </AlertDescription>
                 </Alert>
-              ) : null}
-            </Field>
+              )}
 
-            <Field data-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}>
-              <FieldLabel htmlFor="sol-collection-target">目标钱包</FieldLabel>
-              <Input
-                aria-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}
-                autoCapitalize="none"
-                autoComplete="off"
-                disabled={controlsLocked}
-                id="sol-collection-target"
-                onChange={(event) => { setTargetAddress(event.target.value); invalidateTask(); }}
-                placeholder="Solana 地址"
-                spellCheck={false}
-                value={targetAddress}
-              />
-              {targetAddress.trim() && !normalizedTarget ? <FieldError>请输入有效的 Solana 地址</FieldError> : null}
-              {targetAddress.trim() && normalizedTarget && !splTargetValid ? (
-                <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
-              ) : null}
-            </Field>
-
-            <h3 className="collection-config-heading">归集配置</h3>
-
-            <div className="network-rpc-row" aria-label="网络与 RPC">
-            <Field>
-              <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
-              <SearchableSelect
-                disabled={controlsLocked}
-                id="sol-collection-network"
-                listboxLabel="Solana 归集网络"
-                onChange={(value) => {
-                  const nextNetwork = getNetworkConfig(value);
-                  setNetworkId(value);
-                  setRpcEndpoint(getPreferredRpcEndpoint("solana", value, nextNetwork.endpoint));
-                  invalidateTask();
-                  invalidateHoldings();
-                }}
-                options={networkOptions}
-                searchable={false}
-                triggerLabel="选择 Solana 网络"
-                value={networkId}
-              />
-            </Field>
-            <Field data-invalid={!rpcEndpointValid ? true : undefined}>
-              <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
-              <Input
-                aria-invalid={!rpcEndpointValid ? true : undefined}
-                disabled={controlsLocked}
-                id="sol-collection-rpc"
-                onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
-                onChange={(event) => {
-                  setRpcEndpoint(event.target.value);
-                  invalidateTask();
-                  invalidateHoldings();
-                }}
-                spellCheck={false}
-                type="url"
-                value={rpcEndpoint}
-              />
-              {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
-            </Field>
-            </div>
-
-            {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
-              <FieldLabel>归集数量</FieldLabel>
-              <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
-                <TabsList aria-label="SOL 归集数量模式">
-                  {Object.entries(amountModeLabels).map(([value, label]) => (
-                    <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              {amountMode === "percentage" ? (
-                <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
-              ) : amountMode === "fixed" ? (
-                <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
-              ) : amountMode === "random" ? (
-                <div className="amount-grid">
-                  <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
-                  <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
-                </div>
-              ) : null}
-              {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
-            </Field> : (
-              <Alert>
-                <AlertTitle>SPL Token 数量</AlertTitle>
-                <AlertDescription>
-                  每个已选 Token Account 归集执行时的全部可用余额；来源 SOL 仅用于网络费和必要的目标 ATA 租金。
-                </AlertDescription>
-              </Alert>
-            )}
-
-            <div className="field-row execution-settings-row">
-              <Field>
-                <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
-                <Input disabled={controlsLocked} id="sol-collection-concurrency" inputMode="numeric" max="20" min="1" onChange={(event) => { setConcurrency(event.target.value); invalidateTask(); }} step="1" type="number" value={concurrency} />
-              </Field>
-              <Field>
-                <FieldLabel>随机延迟（秒）</FieldLabel>
-                <div className="amount-grid compact-range">
-                  <div className="compact-range__slot">
-                    <span aria-hidden="true" className="compact-range__label">最小</span>
-                    <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
+              <div className="field-row execution-settings-row">
+                <Field>
+                  <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
+                  <Input disabled={controlsLocked} id="sol-collection-concurrency" inputMode="numeric" max="20" min="1" onChange={(event) => { setConcurrency(event.target.value); invalidateTask(); }} step="1" type="number" value={concurrency} />
+                </Field>
+                <Field>
+                  <FieldLabel>随机延迟（秒）</FieldLabel>
+                  <div className="compact-range">
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最小</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
+                    </InputGroup>
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最大</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
+                    </InputGroup>
                   </div>
-                  <div className="compact-range__slot">
-                    <span aria-hidden="true" className="compact-range__label">最大</span>
-                    <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
-                  </div>
-                </div>
-              </Field>
-            </div>
-            {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
+                </Field>
+              </div>
+              {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
-            {assetMode === "native" ? (
-              <AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
-                <div className="field-row">
-                  <Field>
-                    <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
-                    <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
-                    <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
-                  </Field>
-                </div>
-              </AdvancedSettings>
-            ) : null}
+              {assetMode === "native" ? (
+                <AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
+                  <div className="field-row">
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
+                      <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
+                      <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                    </Field>
+                  </div>
+                </AdvancedSettings>
+              ) : null}
+            </div>
 
             {issues.length ? (
               <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
