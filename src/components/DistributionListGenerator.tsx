@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { DistributionListEditor } from "./DistributionListEditor";
+import { ConfirmActionDialog } from "./WorkbenchPrimitives";
 import { getDuplicateAddressKey, type AddressKind } from "../lib/address";
 import {
   dedupeDistributionAddresses,
@@ -329,15 +330,19 @@ export function DistributionListGenerator({
             onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind))}
             variant="outline"
           >去重</Button>
-          <Button
+          <ConfirmActionDialog
+            confirmLabel="确认清空"
+            description={`将删除当前 ${result.validCount} 个有效地址及全部已填写内容，无法撤销。`}
             disabled={controlsDisabled || !addresses.trim()}
-            type="button"
-            onClick={() => {
+            onConfirm={() => {
               updateAddresses("");
               setRandomEntropies(new Map());
             }}
-            variant="destructive"
-          >清空</Button>
+            title="清空收款清单？"
+            triggerClassName="action-group__destructive"
+            triggerLabel="清空"
+            triggerVariant="destructive"
+          />
         </div>
       </div>
 

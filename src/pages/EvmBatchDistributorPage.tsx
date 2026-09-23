@@ -947,8 +947,9 @@ export function EvmBatchDistributorPage() {
                   disabled={sending || preflighting || listImporting}
                   onConfirm={startNewDistribution}
                   title="清空 EVM 分发工作台？"
+                  triggerClassName="workbench-reset-trigger action-group__destructive"
                   triggerLabel="清空清单"
-                  triggerVariant="destructive"
+                  triggerVariant="ghost"
                 />
               </div>
             </div>

@@ -180,6 +180,8 @@ const emptyAddressBalanceState: AddressBalanceState = {
 
 const maximumAutomaticTokenMetadata = 50;
 
+const maximumArchivedRounds = 10;
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -601,11 +603,12 @@ export function EvmCollectionPage({
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
-  const [archivedRound, setArchivedRound] = useState<ArchivedCollectionRound | null>(null);
+  const [archivedRounds, setArchivedRounds] = useState<ArchivedCollectionRound[]>([]);
   const [roundSequence, setRoundSequence] = useState(1);
   const [tokenRecognition, setTokenRecognition] = useState<TokenRecognitionState>(emptyTokenRecognitionState);
   const [addressBalances, setAddressBalances] = useState<AddressBalanceState>(emptyAddressBalanceState);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
+  const nftAssetInputsRef = useRef(nftAssetInputs);
   const assetImportingRef = useRef(false);
   const balanceRequestRef = useRef(0);
   const keyImportingRef = useRef(false);
@@ -629,12 +632,22 @@ export function EvmCollectionPage({
     : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
   const assetInput = fixedStandard === "erc20" ? erc20AssetInput : nftAssetInputs[nftStandard];
+  // Mirrored eagerly so asynchronous discovery reads the inventory that is
+  // already committed instead of the value captured by its own render.
+  const writeNftAssetInput = (standard: "erc721" | "erc1155", value: string) => {
+    nftAssetInputsRef.current = { ...nftAssetInputsRef.current, [standard]: value };
+    setNftAssetInputs(nftAssetInputsRef.current);
+  };
+  const clearNftAssetInputs = () => {
+    nftAssetInputsRef.current = { erc721: "", erc1155: "" };
+    setNftAssetInputs(nftAssetInputsRef.current);
+  };
   const setCurrentAssetInput = (value: string) => {
     if (fixedStandard === "erc20") {
       setErc20AssetInput(value);
       return;
     }
-    setNftAssetInputs((current) => ({ ...current, [nftStandard]: value }));
+    writeNftAssetInput(nftStandard, value);
   };
   const parsedAssetCount = useMemo(
     () => parseEvmCollectionAssets(assetInput, standard).validAssets.length,
@@ -664,6 +677,11 @@ export function EvmCollectionPage({
   const hasSubmittedHash = results.some((result) => Boolean(result.hash));
   const controlsLocked = running;
   const workbenchStatus = getEvmCollectionWorkbenchStatus(stage, results);
+  const roundIsTerminal = stage === "complete" || stage === "error";
+  const currentRoundRequiresAcknowledgement = roundIsTerminal
+    && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
+  const acknowledgementRequired = currentRoundRequiresAcknowledgement
+    || archivedRounds.some((round) => round.requiresAcknowledgement);
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
@@ -846,11 +864,10 @@ export function EvmCollectionPage({
 
   const parseMaximumFee = () => maximumFeeAmount;
 
-  const archiveCurrentRound = (removeSettledNfts = false) => {
+  const archiveCurrentRound = () => {
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
-    const requiresAcknowledgement = workbenchStatus === "uncertain"
-      || results.some((result) => result.uncertain);
-    setArchivedRound({
+    const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
+    setArchivedRounds((current) => [{
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -858,16 +875,26 @@ export function EvmCollectionPage({
         message: sanitizeRoundArchiveText(result.message)
       })),
       sequence: roundSequence
-    });
-    if (removeSettledNfts && fixedStandard === "nft") {
+    }, ...current].slice(0, maximumArchivedRounds));
+    if (fixedStandard === "nft") {
+      // Only assets that actually left the wallet are dropped; failed and
+      // uncertain Token ID stay in the list so the next round can pick them up.
       const settledAssetKeys = getSettledNftAssetKeys(results);
       if (settledAssetKeys.size) {
-        const nextNftInput = removeValidNftInventoryAssets(assetInput, nftStandard, settledAssetKeys);
-        setNftAssetInputs((current) => ({ ...current, [nftStandard]: nextNftInput }));
+        const nextNftInput = removeValidNftInventoryAssets(
+          nftAssetInputsRef.current[nftStandard],
+          nftStandard,
+          settledAssetKeys
+        );
+        writeNftAssetInput(nftStandard, nextNftInput);
+        const remaining = parseEvmCollectionAssets(nextNftInput, nftStandard).validAssets.length;
+        setNftFixedAmount((current) => {
+          const fixedTotal = parseErc721CollectionLimit(current);
+          return fixedTotal !== null && fixedTotal <= remaining
+            ? current
+            : String(Math.max(1, remaining));
+        });
       }
-    }
-    if (fixedStandard === "nft") {
-      setNftAssetInputs({ erc721: "", erc1155: "" });
       setDiscoveryComplete(false);
     }
     balanceRequestRef.current += 1;
@@ -878,6 +905,15 @@ export function EvmCollectionPage({
     setRoundSequence((current) => current + 1);
     setStage("editing");
     return true;
+  };
+
+  // Finishing a round must not depend on the user finding a setting to edit.
+  const startNewRound = () => {
+    if (operationRef.current || running || !archiveCurrentRound()) return;
+    setIssues([]);
+    setMessage("");
+    setDiscoveryMessage("");
+    setDiscoveryIssues([]);
   };
 
   const invalidatePlan = (
@@ -920,7 +956,7 @@ export function EvmCollectionPage({
     setDiscoveryComplete(false);
     setContractInspection(null);
     if (fixedStandard === "nft") {
-      setNftAssetInputs({ erc721: "", erc1155: "" });
+      clearNftAssetInputs();
       setAddressBalances(emptyAddressBalanceState);
     }
     rememberPreferredEvmDistributionNetwork(value);
@@ -1128,16 +1164,19 @@ export function EvmCollectionPage({
     if (!discovery.complete && !allowPartial) return false;
     if (!discovery.complete && !discovery.assets.length) return false;
 
+    // Reconcile against the inventory that is already on screen so rows added
+    // for other contracts survive a scan of this one.
+    const inventoryBase = nftAssetInputsRef.current[discovery.standard];
     const nextInventory = discovery.complete
       ? reconcileNftContractInventory({
-          assetInput: "",
+          assetInput: inventoryBase,
           contractAddress: discovery.contractAddress,
           standard: discovery.standard,
           tokenIds: discovery.assets.map((asset) => asset.tokenId)
         })
       : {
           ...mergeNftAssetInput(
-            "",
+            inventoryBase,
             discovery.contractAddress,
             discovery.assets.map((asset) => asset.tokenId.toString()).join(","),
             { standard: discovery.standard }
@@ -1189,13 +1228,17 @@ export function EvmCollectionPage({
     setStage("editing");
     setResults([]);
     setNftStandard(discovery.standard);
-    setNftAssetInputs((current) => ({ ...current, [discovery.standard]: nextInventory.serialized }));
+    writeNftAssetInput(discovery.standard, nextInventory.serialized);
     if (discovery.standard === "erc721") {
+      const inventoryTotal = parseEvmCollectionAssets(
+        nextInventory.serialized,
+        discovery.standard
+      ).validAssets.length;
       setNftFixedAmount((current) => {
         const fixedTotal = parseErc721CollectionLimit(current);
-        return fixedTotal !== null && fixedTotal <= recognizedTotal
+        return fixedTotal !== null && fixedTotal <= inventoryTotal
           ? current
-          : String(Math.max(1, recognizedTotal));
+          : String(Math.max(1, inventoryTotal));
       });
     }
     setAddressBalances({
@@ -1299,7 +1342,7 @@ export function EvmCollectionPage({
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current
       || running || fixedStandard !== "nft") return;
 
-    archiveCurrentRound(true);
+    archiveCurrentRound();
     planRef.current = [];
     retryPlanRef.current = [];
     setResults([]);
@@ -1815,7 +1858,7 @@ export function EvmCollectionPage({
     planRef.current = [];
     retryPlanRef.current = [];
     setErc20AssetInput("");
-    setNftAssetInputs({ erc721: "", erc1155: "" });
+    clearNftAssetInputs();
     setDiscoveryContract("");
     setPendingDiscovery(null);
     setPendingTokenScan(null);
@@ -1840,7 +1883,7 @@ export function EvmCollectionPage({
     setMinimumDelay("0");
     setMaximumDelay("0");
     setResults([]);
-    setArchivedRound(null);
+    setArchivedRounds([]);
     setRoundSequence(1);
     setAddressBalances(emptyAddressBalanceState);
     setTokenRecognition(emptyTokenRecognitionState);
@@ -1868,7 +1911,7 @@ export function EvmCollectionPage({
   const canStart = targetIsValid && sourceKeyLineCount > 0 && executableAssetCount > 0
     && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
     && executionSettingsValid && rpcEndpointValid && !running
-    && !archivedRound?.requiresAcknowledgement;
+    && !acknowledgementRequired;
   const parsedTokenRangeStart = /^\d+$/.test(tokenRangeStart.trim())
     ? BigInt(tokenRangeStart.trim())
     : null;
@@ -1896,14 +1939,16 @@ export function EvmCollectionPage({
           <Badge variant="outline">{selectedNetwork.label}</Badge>
           <ConfirmActionDialog
             confirmLabel="确认清空"
-            description={hasSubmittedHash || archivedRound?.results.some((result) => Boolean(result.hash))
+            description={hasSubmittedHash
+              || archivedRounds.some((round) => round.results.some((result) => Boolean(result.hash)))
               ? "当前记录包含已提交的交易哈希。清空前请先核对链上状态；清空后无法恢复。"
               : "来源密钥、持仓识别结果、归集设置和历史记录将从页面清除。"}
             disabled={running}
             onConfirm={clearWorkbench}
             title="清空归集工作台？"
+            triggerClassName="workbench-reset-trigger"
             triggerLabel="清空工作台"
-            triggerVariant="destructive"
+            triggerVariant="ghost"
           />
         </>
       )}
@@ -1975,22 +2020,31 @@ export function EvmCollectionPage({
                   paused={paused}
                   total={results.length}
                 />
-              ) : retryableCount ? (
-                <ConfirmActionDialog
-                  confirmLabel={`重试 ${retryableCount} 个失败项`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : results.length && (stage === "complete" || stage === "error") ? (
-                <span className="hint" role="status">
-                  {workbenchStatus === "uncertain"
-                    ? "可继续编辑或识别；原交易需先核对，新的写入任务会在归档确认后开放。"
-                    : "可直接修改设置或再次识别，当前结果会自动移入下方记录。"}
-                </span>
+              ) : results.length && roundIsTerminal ? (
+                <>
+                  {retryableCount ? (
+                    <ConfirmActionDialog
+                      confirmLabel={`重试 ${retryableCount} 个失败项`}
+                      description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                      disabled={running}
+                      onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
+                      title="确认重试失败项？"
+                      triggerLabel={`重试失败项 (${retryableCount})`}
+                      triggerVariant="outline"
+                    />
+                  ) : null}
+                  <Button
+                    disabled={running}
+                    onClick={startNewRound}
+                    type="button"
+                    variant={retryableCount ? "outline" : "default"}
+                  >开始新一轮归集</Button>
+                  <span className="hint" role="status">
+                    {currentRoundRequiresAcknowledgement
+                      ? "本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。"
+                      : "本轮结果会移入下方记录；也可以直接修改设置或再次识别继续。"}
+                  </span>
+                </>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -2053,8 +2107,6 @@ export function EvmCollectionPage({
                   setPendingTokenScan(null);
                   setTokenRangeStart("");
                   setTokenRangeEnd("");
-                  setDiscoveryComplete(false);
-                  setNftAssetInputs({ erc721: "", erc1155: "" });
                   setAddressBalances(emptyAddressBalanceState);
                   invalidatePlan();
                 }}
@@ -2399,8 +2451,6 @@ export function EvmCollectionPage({
                   }}
                   onContractAddressChange={(value) => {
                     setDiscoveryContract(value);
-                    setNftAssetInputs({ erc721: "", erc1155: "" });
-                    setAddressBalances(emptyAddressBalanceState);
                     setPendingDiscovery(null);
                     setPendingTokenScan(null);
                     setTokenRangeStart("");
@@ -2482,12 +2532,7 @@ export function EvmCollectionPage({
                     setPendingTokenScan(null);
                     setTokenRangeStart("");
                     setTokenRangeEnd("");
-                    setDiscoveryComplete(false);
                     setContractInspection(null);
-                    if (fixedStandard === "nft") {
-                      setNftAssetInputs({ erc721: "", erc1155: "" });
-                      setAddressBalances(emptyAddressBalanceState);
-                    }
                     invalidatePlan();
                   }}
                   spellCheck={false}
@@ -2629,8 +2674,14 @@ export function EvmCollectionPage({
               <Field>
                 <FieldLabel>随机延迟（秒）</FieldLabel>
                 <div className="amount-grid compact-range">
-                  <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
-                  <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
+                  <div className="compact-range__slot">
+                      <span aria-hidden="true" className="compact-range__label">最小</span>
+                      <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
+                    </div>
+                  <div className="compact-range__slot">
+                      <span aria-hidden="true" className="compact-range__label">最大</span>
+                      <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
+                    </div>
                 </div>
               </Field>
             </div>
@@ -2691,40 +2742,51 @@ export function EvmCollectionPage({
 
           </div>
         </WorkbenchPanel>
-        {archivedRound ? (
+        {archivedRounds.length ? (
           <ReviewPanel
-            actions={archivedRound.requiresAcknowledgement ? (
+            actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已通过交易哈希核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
+                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
+                  ...round,
                   requiresAcknowledgement: false
-                } : current)}
+                })))}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
             ) : null}
             className="collection-round-archive"
-            stateKey={archivedRound.sequence}
+            stateKey={archivedRounds[0].sequence}
             summary={(
               <span>
-                成功 {archivedRound.results.filter((result) => result.status === "success").length}
-                {" · "}需处理 {archivedRound.results.filter((result) => (
-                  result.status === "error" || result.status === "skipped"
-                )).length}
+                {archivedRounds.length} 轮
+                {" · "}成功 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => result.status === "success").length
+                ), 0)}
+                {" · "}需处理 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => (
+                    result.status === "error" || result.status === "skipped"
+                  )).length
+                ), 0)}
               </span>
             )}
             title="归集记录"
           >
-            <p className="collection-round-archive__message">{archivedRound.message}</p>
-            <CollectionResults
-              embedded
-              exportFilename={`${currentToolId}-records.csv`}
-              results={archivedRound.results}
-              title="交易明细"
-            />
+            {archivedRounds.map((round) => (
+              <section className="collection-round-archive__round" key={round.sequence}>
+                <p className="collection-round-archive__message">
+                  第 {round.sequence} 轮 · {round.message}
+                </p>
+                <CollectionResults
+                  embedded
+                  exportFilename={`${currentToolId}-round-${round.sequence}.csv`}
+                  results={round.results}
+                  title="交易明细"
+                />
+              </section>
+            ))}
           </ReviewPanel>
         ) : null}
       </div>

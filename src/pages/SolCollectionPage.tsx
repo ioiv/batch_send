@@ -72,6 +72,8 @@ type SolTokenRecognitionState = {
   status: "error" | "idle" | "loading" | "ready";
 };
 
+const maximumArchivedRounds = 10;
+
 type ArchivedSolCollectionRound = {
   message: string;
   requiresAcknowledgement: boolean;
@@ -404,7 +406,7 @@ export function SolCollectionPage() {
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
-  const [archivedRound, setArchivedRound] = useState<ArchivedSolCollectionRound | null>(null);
+  const [archivedRounds, setArchivedRounds] = useState<ArchivedSolCollectionRound[]>([]);
   const [roundSequence, setRoundSequence] = useState(1);
   const [keyImporting, setKeyImporting] = useState(false);
   const [holdings, setHoldings] = useState<SolanaHoldingsResult | null>(null);
@@ -431,9 +433,15 @@ export function SolCollectionPage() {
   const taskRunning = stage === "running";
   const running = taskRunning || keyImporting;
   const hasSubmittedHash = results.some((result) => Boolean(result.hash));
-  const hasRecordedHash = hasSubmittedHash || Boolean(archivedRound?.results.some((result) => result.hash));
+  const hasRecordedHash = hasSubmittedHash
+    || archivedRounds.some((round) => round.results.some((result) => result.hash));
   const controlsLocked = running;
   const workbenchStatus = getSolCollectionWorkbenchStatus(stage, results);
+  const roundIsTerminal = stage === "complete" || stage === "error";
+  const currentRoundRequiresAcknowledgement = roundIsTerminal
+    && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
+  const acknowledgementRequired = currentRoundRequiresAcknowledgement
+    || archivedRounds.some((round) => round.requiresAcknowledgement);
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
@@ -618,9 +626,8 @@ export function SolCollectionPage() {
 
   const archiveCurrentRound = () => {
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
-    const requiresAcknowledgement = workbenchStatus === "uncertain"
-      || results.some((result) => result.uncertain);
-    setArchivedRound({
+    const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
+    setArchivedRounds((current) => [{
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -628,13 +635,20 @@ export function SolCollectionPage() {
         message: sanitizeRoundArchiveText(result.message)
       })),
       sequence: roundSequence
-    });
+    }, ...current].slice(0, maximumArchivedRounds));
     retrySourcesRef.current = [];
     retryTokenJobsRef.current = [];
     setResults([]);
     setRoundSequence((current) => current + 1);
     setStage("editing");
     return true;
+  };
+
+  // Finishing a round must not depend on the user finding a setting to edit.
+  const startNewRound = () => {
+    if (operationRef.current || running || !archiveCurrentRound()) return;
+    setMessage("");
+    setIssues([]);
   };
 
   const invalidateTask = (clearResults = true) => {
@@ -1161,7 +1175,7 @@ export function SolCollectionPage() {
     setHoldingsMessage("");
     setHoldingsIssues([]);
     setResults([]);
-    setArchivedRound(null);
+    setArchivedRounds([]);
     setRoundSequence(1);
     setIssues([]);
     setMessage("");
@@ -1182,7 +1196,7 @@ export function SolCollectionPage() {
       : splTargetValid && parsedTokenMints.valid && parsedTokenMints.mintAddresses.length > 0
         && !knownTokenInventoryUnavailable)
     && executionSettingsValid && !running
-    && !archivedRound?.requiresAcknowledgement);
+    && !acknowledgementRequired);
 
   return (
     <ToolPageLayout
@@ -1197,13 +1211,15 @@ export function SolCollectionPage() {
             disabled={running}
             onConfirm={resetTask}
             title="清空 SOL / SPL Token 归集工作台？"
+            triggerClassName="workbench-reset-trigger"
             triggerLabel="清空工作台"
-            triggerVariant="destructive"
+            triggerVariant="ghost"
           />
         </>
       )}
       className="collection-shell collection-page"
       currentToolId="sol-collection"
+      stickyActions
       status={workbenchStatus}
       statusLabel={solStatusLabels[workbenchStatus]}
       title="SOL / SPL Token 归集"
@@ -1221,22 +1237,31 @@ export function SolCollectionPage() {
                   paused={paused}
                   total={results.length}
                 />
-              ) : retryableCount ? (
-                <ConfirmActionDialog
-                  confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(true)}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : results.length && (stage === "complete" || stage === "error") ? (
-                <p className="collection-terminal-hint">
-                  {workbenchStatus === "uncertain"
-                    ? "可直接编辑设置；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
-                    : "任务已结束。直接修改任一设置即可继续，当前结果会移入下方记录。"}
-                </p>
+              ) : results.length && roundIsTerminal ? (
+                <>
+                  {retryableCount ? (
+                    <ConfirmActionDialog
+                      confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
+                      description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                      disabled={running}
+                      onConfirm={() => executeCollection(true)}
+                      title="确认重试失败项？"
+                      triggerLabel={`重试失败项 (${retryableCount})`}
+                      triggerVariant="outline"
+                    />
+                  ) : null}
+                  <Button
+                    disabled={running}
+                    onClick={startNewRound}
+                    type="button"
+                    variant={retryableCount ? "outline" : "default"}
+                  >开始新一轮归集</Button>
+                  <p className="collection-terminal-hint">
+                    {currentRoundRequiresAcknowledgement
+                      ? "本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。"
+                      : "本轮结果会移入下方记录；也可以直接修改设置继续。"}
+                  </p>
+                </>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -1478,6 +1503,7 @@ export function SolCollectionPage() {
 
             <h3 className="collection-config-heading">归集配置</h3>
 
+            <div className="network-rpc-row" aria-label="网络与 RPC">
             <Field>
               <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
               <SearchableSelect
@@ -1497,6 +1523,25 @@ export function SolCollectionPage() {
                 value={networkId}
               />
             </Field>
+            <Field data-invalid={!rpcEndpointValid ? true : undefined}>
+              <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
+              <Input
+                aria-invalid={!rpcEndpointValid ? true : undefined}
+                disabled={controlsLocked}
+                id="sol-collection-rpc"
+                onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
+                onChange={(event) => {
+                  setRpcEndpoint(event.target.value);
+                  invalidateTask();
+                  invalidateHoldings();
+                }}
+                spellCheck={false}
+                type="url"
+                value={rpcEndpoint}
+              />
+              {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+            </Field>
+            </div>
 
             {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
               <FieldLabel>归集数量</FieldLabel>
@@ -1527,53 +1572,41 @@ export function SolCollectionPage() {
               </Alert>
             )}
 
-            <AdvancedSettings
-              disabled={controlsLocked}
-              label={assetMode === "spl" ? "RPC 与执行设置" : "RPC、保留金额与执行设置"}
-            >
-              <Field data-invalid={!rpcEndpointValid ? true : undefined}>
-                <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
-                <Input
-                  aria-invalid={!rpcEndpointValid ? true : undefined}
-                  disabled={controlsLocked}
-                  id="sol-collection-rpc"
-                  onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
-                  onChange={(event) => {
-                    setRpcEndpoint(event.target.value);
-                    invalidateTask();
-                    invalidateHoldings();
-                  }}
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-                {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+            <div className="field-row execution-settings-row">
+              <Field>
+                <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
+                <Input disabled={controlsLocked} id="sol-collection-concurrency" inputMode="numeric" max="20" min="1" onChange={(event) => { setConcurrency(event.target.value); invalidateTask(); }} step="1" type="number" value={concurrency} />
               </Field>
-              {assetMode === "native" ? <div className="field-row">
-                <Field>
-                  <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
-                  <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
-                  <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
-                </Field>
-              </div> : null}
-              <div className="field-row execution-settings-row">
-                <Field>
-                  <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
-                  <Input disabled={controlsLocked} id="sol-collection-concurrency" inputMode="numeric" max="20" min="1" onChange={(event) => { setConcurrency(event.target.value); invalidateTask(); }} step="1" type="number" value={concurrency} />
-                </Field>
-                <Field>
-                  <FieldLabel>随机延迟（秒）</FieldLabel>
-                  <div className="amount-grid compact-range">
+              <Field>
+                <FieldLabel>随机延迟（秒）</FieldLabel>
+                <div className="amount-grid compact-range">
+                  <div className="compact-range__slot">
+                    <span aria-hidden="true" className="compact-range__label">最小</span>
                     <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
+                  </div>
+                  <div className="compact-range__slot">
+                    <span aria-hidden="true" className="compact-range__label">最大</span>
                     <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
                   </div>
-                </Field>
-              </div>
-              {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
-            </AdvancedSettings>
+                </div>
+              </Field>
+            </div>
+            {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
+
+            {assetMode === "native" ? (
+              <AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
+                <div className="field-row">
+                  <Field>
+                    <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
+                    <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
+                    <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                  </Field>
+                </div>
+              </AdvancedSettings>
+            ) : null}
 
             {issues.length ? (
               <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
@@ -1585,40 +1618,51 @@ export function SolCollectionPage() {
             ) : null}
           </div>
         </WorkbenchPanel>
-        {archivedRound ? (
+        {archivedRounds.length ? (
           <ReviewPanel
-            actions={archivedRound.requiresAcknowledgement ? (
+            actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
+                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
+                  ...round,
                   requiresAcknowledgement: false
-                } : current)}
+                })))}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
             ) : null}
             className="collection-round-archive"
-            stateKey={archivedRound.sequence}
+            stateKey={archivedRounds[0].sequence}
             summary={(
               <span>
-                成功 {archivedRound.results.filter((result) => result.status === "success").length}
-                {" · "}需处理 {archivedRound.results.filter((result) => (
-                  result.status === "error" || result.status === "skipped"
-                )).length}
+                {archivedRounds.length} 轮
+                {" · "}成功 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => result.status === "success").length
+                ), 0)}
+                {" · "}需处理 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => (
+                    result.status === "error" || result.status === "skipped"
+                  )).length
+                ), 0)}
               </span>
             )}
             title="归集记录"
           >
-            <p className="collection-round-archive__message">{archivedRound.message}</p>
-            <CollectionResults
-              embedded
-              exportFilename="sol-collection-records.csv"
-              results={archivedRound.results}
-              title="交易明细"
-            />
+            {archivedRounds.map((round) => (
+              <section className="collection-round-archive__round" key={round.sequence}>
+                <p className="collection-round-archive__message">
+                  第 {round.sequence} 轮 · {round.message}
+                </p>
+                <CollectionResults
+                  embedded
+                  exportFilename={`sol-collection-round-${round.sequence}.csv`}
+                  results={round.results}
+                  title="交易明细"
+                />
+              </section>
+            ))}
           </ReviewPanel>
         ) : null}
       </div>

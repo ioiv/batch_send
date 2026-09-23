@@ -602,6 +602,23 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByText("归集记录")).toBeVisible();
   });
 
+  it("starts another round without forcing an unrelated edit", async () => {
+    solMocks.collect.mockResolvedValueOnce([result({})]);
+    const user = await prepareSolPage();
+    await confirmExecution(user);
+    await screen.findByText(/归集完成：1 笔成功/);
+
+    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开始新一轮归集" }));
+
+    expect(screen.getByText("归集记录")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "目标钱包" })).toHaveValue(targetAddress);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+
+    await confirmExecution(user);
+    await waitFor(() => expect(solMocks.collect).toHaveBeenCalledTimes(2));
+  });
+
   it("offers retry for safe failures and retries only those wallets", async () => {
     solMocks.parseSources.mockReturnValue({
       duplicates: [],
@@ -659,10 +676,17 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
+  it("keeps RPC and execution settings on the surface, as the EVM page does", () => {
+    render(<SolCollectionPage />);
+    expect(screen.getByRole("textbox", { name: "RPC 地址" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "并发钱包数" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最小秒数" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toBeVisible();
+  });
+
   it("persists a replacement RPC and uses it on the next mount", async () => {
     const user = userEvent.setup();
     const firstRender = render(<SolCollectionPage />);
-    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
     const rpc = screen.getByRole("textbox", { name: "RPC 地址" });
     await user.clear(rpc);
     await user.type(rpc, "https://custom.sol.example/rpc");
@@ -670,7 +694,6 @@ describe("SolCollectionPage workbench", () => {
     firstRender.unmount();
 
     render(<SolCollectionPage />);
-    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
     expect(screen.getByRole("textbox", { name: "RPC 地址" })).toHaveValue("https://custom.sol.example/rpc");
   });
 

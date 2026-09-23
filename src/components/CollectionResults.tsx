@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -194,6 +194,7 @@ export function CollectionResults({
   results: CollectionDisplayResult[];
   title?: string;
 }) {
+  const titleId = useId();
   const resultSetIdentity = useMemo(() => getCollectionResultSetIdentity(results), [results]);
   const reviewResults = useMemo(
     () => results.filter((result) => result.status === "error" || result.status === "skipped"),
@@ -205,7 +206,7 @@ export function CollectionResults({
     <>
       <div className="panel-header collection-results-header">
         <div>
-          <Heading className="panel-title" id="collection-results-title">{title}</Heading>
+          <Heading className="panel-title" id={titleId}>{title}</Heading>
           {description ? <p className="sr-only">{description}</p> : null}
         </div>
         <div className="action-group">
@@ -229,14 +230,14 @@ export function CollectionResults({
 
   if (embedded) {
     return (
-      <section aria-labelledby="collection-results-title" className="collection-results is-embedded">
+      <section aria-labelledby={titleId} className="collection-results is-embedded">
         {content}
       </section>
     );
   }
 
   return (
-    <Card aria-labelledby="collection-results-title" className="collection-results" role="region">
+    <Card aria-labelledby={titleId} className="collection-results" role="region">
       {content}
     </Card>
   );

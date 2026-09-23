@@ -657,6 +657,7 @@ export function BatchDistributorPage() {
       actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="page-distributor"
       currentToolId="sol-distribution"
+      stickyActions
       status={pageStatus}
       statusLabel={pageStatusLabel}
       title="SOL 批量分发"
@@ -721,8 +722,9 @@ export function BatchDistributorPage() {
                   disabled={sending || preflighting || listImporting}
                   onConfirm={startNewDistribution}
                   title="清空 SOL 分发工作台？"
+                  triggerClassName="workbench-reset-trigger action-group__destructive"
                   triggerLabel="清空清单"
-                  triggerVariant="destructive"
+                  triggerVariant="ghost"
                 />
               </div>
             </div>

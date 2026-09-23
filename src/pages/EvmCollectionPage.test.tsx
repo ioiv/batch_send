@@ -1412,6 +1412,185 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
   });
 
+  it("starts another round without forcing an unrelated edit", async () => {
+    evmMocks.execute.mockResolvedValueOnce([{
+      address: planItem.address,
+      amount: planItem.amount,
+      asset: planItem.asset,
+      hash: transactionHash,
+      id: planItem.id,
+      label: planItem.label,
+      message: "已确认",
+      retryable: false,
+      status: "success"
+    }]);
+    const user = await prepareReadyErc20Page();
+    await confirmEvmExecution(user);
+
+    const startNextRound = await screen.findByRole("button", { name: "开始新一轮归集" });
+    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
+    await user.click(startNextRound);
+
+    expect(screen.getByText("归集记录")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "目标地址" })).toHaveValue(targetAddress);
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveValue(tokenAddress);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+
+    await confirmEvmExecution(user);
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(2));
+    await user.click(await screen.findByRole("button", { name: "开始新一轮归集" }));
+    expect(screen.getByText(/2 轮/)).toBeVisible();
+  });
+
+  it("keeps unsettled Token ID in the inventory after a round is archived", async () => {
+    const firstAsset = {
+      contractAddress: tokenAddress,
+      key: `erc721:${tokenAddress.toLowerCase()}:1`,
+      ownerAddress: signerAccount.address,
+      standard: "erc721" as const,
+      tokenId: 1n
+    };
+    const secondAsset = {
+      ...firstAsset,
+      key: `erc721:${tokenAddress.toLowerCase()}:2`,
+      tokenId: 2n
+    };
+    evmMocks.discoverEnumerable.mockResolvedValueOnce({
+      assets: [firstAsset, secondAsset],
+      issues: [],
+      owners: [{
+        balance: 2n,
+        discovered: 2,
+        ownerAddress: sourceAddress,
+        scanned: 2,
+        status: "complete"
+      }],
+      rpcRequests: 8,
+      snapshotBlock: 100n
+    });
+    const nftPlan = [firstAsset, secondAsset].map((asset, index) => ({
+      account: signerAccount,
+      address: signerAccount.address,
+      amount: 1n,
+      asset,
+      id: `nft-plan-${index + 1}`,
+      label: "来源一",
+      message: "已确认 NFT 所有权",
+      status: "ready" as const
+    })) satisfies EvmCollectionPlanItem[];
+    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.execute.mockResolvedValueOnce([
+      {
+        address: signerAccount.address,
+        amount: 1n,
+        asset: firstAsset,
+        hash: transactionHash,
+        id: nftPlan[0].id,
+        label: "来源一",
+        message: "已确认",
+        retryable: false,
+        status: "success"
+      },
+      {
+        address: signerAccount.address,
+        amount: 1n,
+        asset: secondAsset,
+        hash: null,
+        id: nftPlan[1].id,
+        label: "来源一",
+        message: "网络费不足",
+        retryable: false,
+        status: "failed"
+      }
+    ]);
+
+    const user = await discoverNft();
+    await screen.findByText(/共有 2 个可归集 ERC721/);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await confirmEvmExecution(user);
+    await screen.findByText(/归集完成：1 项确认成功，1 项失败/);
+
+    await user.click(screen.getByRole("button", { name: "开始新一轮归集" }));
+    expect(screen.getByText("归集记录")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
+    expect(within(dialog).getByText("1 个 Token ID")).toBeVisible();
+  });
+
+  it("does not overwrite a manual inventory edit made right after a round", async () => {
+    const firstAsset = {
+      contractAddress: tokenAddress,
+      key: `erc721:${tokenAddress.toLowerCase()}:1`,
+      ownerAddress: signerAccount.address,
+      standard: "erc721" as const,
+      tokenId: 1n
+    };
+    evmMocks.discoverEnumerable.mockResolvedValueOnce({
+      assets: [firstAsset],
+      issues: [],
+      owners: [{
+        balance: 1n,
+        discovered: 1,
+        ownerAddress: sourceAddress,
+        scanned: 1,
+        status: "complete"
+      }],
+      rpcRequests: 4,
+      snapshotBlock: 100n
+    });
+    const nftPlan = [{
+      account: signerAccount,
+      address: signerAccount.address,
+      amount: 1n,
+      asset: firstAsset,
+      id: "nft-plan-1",
+      label: "来源一",
+      message: "已确认 NFT 所有权",
+      status: "ready" as const
+    }] satisfies EvmCollectionPlanItem[];
+    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.execute.mockResolvedValueOnce([{
+      address: signerAccount.address,
+      amount: 1n,
+      asset: firstAsset,
+      hash: transactionHash,
+      id: nftPlan[0].id,
+      label: "来源一",
+      message: "已确认",
+      retryable: false,
+      status: "success"
+    }]);
+
+    const user = await discoverNft();
+    await screen.findByText(/共有 1 个可归集 ERC721/);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await confirmEvmExecution(user);
+    await screen.findByText(/归集完成：1 项确认成功/);
+
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    await user.type(screen.getByLabelText("Token ID / 区间"), "7");
+    await user.click(screen.getByRole("button", { name: "加入清单" }));
+
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
+    expect(within(dialog).getByText("1 个 Token ID")).toBeVisible();
+  });
+
+  it("keeps identified Token ID when only the RPC endpoint changes", async () => {
+    const user = await discoverNft();
+    await screen.findByText(/共有 1 个可归集 ERC721/);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+
+    const rpc = screen.getByRole("textbox", { name: "RPC" });
+    await user.clear(rpc);
+    await user.type(rpc, "https://rpc.example.test");
+
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
+    expect(within(dialog).getByText("1 个 Token ID")).toBeVisible();
+  });
+
   it("exposes the complete status mapping, including hash uncertainty", () => {
     const failedWithHash = [{
       address: sourceAddress,

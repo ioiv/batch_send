@@ -55,6 +55,31 @@ describe("DistributionListEditor interactions", () => {
     expect(document.querySelector('input[type="file"]')).toHaveAttribute("hidden");
   });
 
+  it("asks before discarding a filled address list", async () => {
+    const user = userEvent.setup();
+    render(
+      <DistributionListGenerator
+        addressKind="solana"
+        decimals={9}
+        onResultChange={() => undefined}
+        symbol="SOL"
+      />
+    );
+
+    const addresses = screen.getByRole("textbox", { name: "收款地址" });
+    await user.type(addresses, "11111111111111111111111111111111");
+
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    expect(addresses).toHaveValue("11111111111111111111111111111111");
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    expect(addresses).toHaveValue("11111111111111111111111111111111");
+
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    await user.click(screen.getByRole("button", { name: "确认清空" }));
+    expect(addresses).toHaveValue("");
+  });
+
   it("controls the shared address and fixed/random amount fields", async () => {
     const user = userEvent.setup();
     render(<ControlledEditor />);

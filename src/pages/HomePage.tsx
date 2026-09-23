@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -71,6 +71,7 @@ export function HomePage() {
                             <CardAction>
                               <Badge variant="outline">{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</Badge>
                             </CardAction>
+                            <CardDescription className="home-tool-summary">{tool.description}</CardDescription>
                           </CardHeader>
                           <CardContent>
                             <span className="home-tool-icon"><ToolIcon name={tool.icon} /></span>

@@ -661,13 +661,15 @@ export function EvmContractDeployPage() {
             disabled={busy}
             onConfirm={clearWorkbench}
             title="清空 CreateX 部署工作台？"
+            triggerClassName="workbench-reset-trigger"
             triggerLabel="清空工作台"
-            triggerVariant="destructive"
+            triggerVariant="ghost"
           />
         </>
       )}
       className="page-deploy"
       currentToolId="evm-contract-deploy"
+      stickyActions
       status={workbenchStatus}
       statusLabel={workbenchStatusLabel}
       title="CreateX 合约部署"
