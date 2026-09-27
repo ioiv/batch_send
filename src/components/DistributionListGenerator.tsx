@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -136,22 +135,6 @@ export function DistributionListGenerator({
   }), [addressKind, addresses, decimals, fixedAmount, maxAmount, minAmount, mode, randomBigInt, validateAddress]);
   const fixedStep = formatStepUnits(getDistributionAmountStep(fixedAmount, decimals), decimals);
   const randomStep = formatStepUnits(getDistributionAmountStep(minAmount, maxAmount, decimals), decimals);
-  const statusLabel = unavailableMessage
-    ? "等待资产精度"
-    : result.invalid > 0
-    ? `${result.invalid} 处需修正`
-    : result.duplicates > 0
-      ? `${result.duplicates} 个重复地址`
-      : result.validCount > 0
-        ? `${result.validCount} 个地址已就绪`
-        : "等待地址";
-  const statusClassName = unavailableMessage
-    ? ""
-    : result.invalid > 0 || result.duplicates > 0
-      ? " error"
-      : result.validCount > 0
-        ? " ready"
-        : "";
 
   useEffect(() => {
     onResultChange(result);
@@ -270,9 +253,6 @@ export function DistributionListGenerator({
           type="button"
           variant="outline"
         >导入 TXT/CSV</Button>
-        <Badge className={`generator-status${statusClassName}`} aria-live="polite" variant="outline">
-          {statusLabel}
-        </Badge>
       </div>
 
       {importMessage ? <p className="hint generator-import-message" role="status">{importMessage}</p> : null}

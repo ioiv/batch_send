@@ -338,13 +338,6 @@ export function EvmContractDeployPage() {
     clearDeploymentState();
   };
 
-  const clearWorkbench = () => {
-    terminalArchivedRef.current = false;
-    setArchivedRound(null);
-    setRoundSequence(1);
-    clearDeploymentState();
-  };
-
   const resetDiscoveredNetwork = () => {
     setNetworkDiscovery(null);
     setManualMetadataOverride(false);
@@ -653,18 +646,6 @@ export function EvmContractDeployPage() {
         <>
           <EvmGasBadge gas={gas} />
           <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hash || archivedRound?.hash
-              ? "当前或历史记录包含已提交的交易哈希。清空只会删除本页记录，无法撤销链上交易，且清空后无法恢复。"
-              : "当前部署校验、网络识别结果和历史记录将被清除，网络选择会保留。"}
-            disabled={busy}
-            onConfirm={clearWorkbench}
-            title="清空 CreateX 部署工作台？"
-            triggerClassName="workbench-reset-trigger"
-            triggerLabel="清空工作台"
-            triggerVariant="ghost"
-          />
         </>
       )}
       className="page-deploy"
@@ -680,7 +661,7 @@ export function EvmContractDeployPage() {
           className="deploy-panel"
           footer={(
             <div className="actions">
-              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : status === "ready" ? "部署参数已就绪" : ""}</span>
+              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : ""}</span>
               <div className="action-group">
                 {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
                   <Button disabled={!canValidate} onClick={() => void runValidation()} type="button">
@@ -712,12 +693,8 @@ export function EvmContractDeployPage() {
                     <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
                   </>
                 ) : null}
-                {deploymentComplete || submittedButUncertain ? (
-                  <span className="collection-terminal-hint">
-                    {submittedButUncertain
-                      ? "可直接编辑或重新校验；当前结果会移入下方记录。核对交易状态后才可再次部署。"
-                      : "任务已结束，直接编辑任一配置即可继续，当前结果会移入下方记录。"}
-                  </span>
+                {submittedButUncertain ? (
+                  <span className="collection-terminal-hint">核对交易状态后才可再次部署。</span>
                 ) : null}
               </div>
             </div>

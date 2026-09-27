@@ -104,6 +104,7 @@ type CollectionStage = "editing" | "scanning" | "ready" | "running" | "complete"
 type NftNativeBalanceByAddress = Record<string, {
   amount: string;
   symbol: string;
+  zero?: boolean;
 }>;
 
 type PendingNftDiscovery = {
@@ -153,6 +154,7 @@ type AddressBalanceAsset = {
   amount: string;
   contractAddress?: Address;
   symbol: string;
+  zero?: boolean;
 };
 
 type AddressBalanceRow = {
@@ -352,7 +354,8 @@ async function readNftNativeBalances({
       const balance = await publicClient.getBalance({ address: account.address });
       return [account.address.toLowerCase(), {
         amount: formatBalanceForDisplay(balance, nativeCurrency.decimals),
-        symbol: nativeCurrency.symbol
+        symbol: nativeCurrency.symbol,
+        zero: balance === 0n
       }] as const;
     } catch {
       return [account.address.toLowerCase(), {
@@ -598,7 +601,6 @@ export function EvmCollectionPage({
   const [maximumDelay, setMaximumDelay] = useState("0");
   const [maxFeeAmount, setMaxFeeAmount] = useState(() => getDefaultEvmCollectionFeeCap(initialNetwork));
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
-  const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
   const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState("");
@@ -670,12 +672,10 @@ export function EvmCollectionPage({
   const sourceKeysReady = sourceKeyLineCount > 0;
   const discoverySourceReady = sourceKeysReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
-  const defaultMaximumFeeAmount = getDefaultEvmCollectionFeeCap(selectedNetwork);
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const transactionRunning = stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
   const running = operationRunning || assetImporting || keyImporting;
-  const hasSubmittedHash = results.some((result) => Boolean(result.hash));
   const controlsLocked = running;
   const workbenchStatus = getEvmCollectionWorkbenchStatus(stage, results);
   const roundIsTerminal = stage === "complete" || stage === "error";
@@ -920,7 +920,7 @@ export function EvmCollectionPage({
   const invalidatePlan = (
     clearResults = true,
     preserveDiscovery = false,
-    clearAddressBalances = true
+    clearAddressBalances = false
   ) => {
     if (operationRef.current || transactionRunning) return;
     const archived = archiveCurrentRound();
@@ -942,7 +942,7 @@ export function EvmCollectionPage({
 
   const updateErc20TokenRows = (rows: string[]) => {
     setErc20AssetInput(rows.length ? rows.join("\n") : "");
-    invalidatePlan();
+    invalidatePlan(true, false, true);
   };
 
   const selectNetwork = (value: EvmDistributionNetworkId) => {
@@ -961,7 +961,15 @@ export function EvmCollectionPage({
       setAddressBalances(emptyAddressBalanceState);
     }
     rememberPreferredEvmDistributionNetwork(value);
-    invalidatePlan();
+    invalidatePlan(true, false, true);
+  };
+
+  const removeAddressBalances = (addresses: readonly string[]) => {
+    const removed = new Set(addresses.map((address) => address.toLowerCase()));
+    setAddressBalances((current) => ({
+      ...current,
+      rows: current.rows.filter((row) => !removed.has(row.address.toLowerCase()))
+    }));
   };
 
   const viewAddressBalances = async () => {
@@ -1050,7 +1058,8 @@ export function EvmCollectionPage({
           const nativeBalance = await publicClient.getBalance({ address: account.address });
           assets.push({
             amount: formatBalanceForDisplay(nativeBalance, selectedNetwork.nativeCurrency.decimals),
-            symbol: selectedNetwork.nativeCurrency.symbol
+            symbol: selectedNetwork.nativeCurrency.symbol,
+            zero: nativeBalance === 0n
           });
         } catch {
           assets.push({
@@ -1070,7 +1079,8 @@ export function EvmCollectionPage({
               return {
                 amount: formatBalanceForDisplay(balance, token.decimals),
                 contractAddress: token.contractAddress,
-                symbol: token.symbol
+                symbol: token.symbol,
+                zero: balance === 0n
               } satisfies AddressBalanceAsset;
             } catch {
               return {
@@ -1201,6 +1211,9 @@ export function EvmCollectionPage({
         { tokenIds: new Set<string>(), units: 0n }
       ])
     );
+    // A count of 0 only means "holds none" when every recognized Token has an
+    // owner; after a partial scan it may just mean "not found yet".
+    let ownersFullyKnown = discovery.complete;
     if (discovery.standard === "erc1155" && discovery.holdings?.length) {
       discovery.holdings.forEach((holding) => {
         const summary = holdingsByOwner.get(holding.ownerAddress.toLowerCase());
@@ -1213,7 +1226,10 @@ export function EvmCollectionPage({
         const ownerAddress = asset.ownerAddress
           || (selectedAccounts.length === 1 ? selectedAccounts[0].address : "");
         const summary = holdingsByOwner.get(ownerAddress.toLowerCase());
-        if (!summary) return;
+        if (!summary) {
+          if (!asset.ownerAddress) ownersFullyKnown = false;
+          return;
+        }
         summary.tokenIds.add(asset.tokenId.toString());
         if (discovery.standard === "erc721") summary.units += 1n;
       });
@@ -1259,7 +1275,8 @@ export function EvmCollectionPage({
               ? `${holdingsByOwner.get(accountKey)?.tokenIds.size || 0} ID / ${holdingsByOwner.get(accountKey)?.units || 0n}`
               : String(holdingsByOwner.get(accountKey)?.tokenIds.size || 0),
             contractAddress: getAddress(discovery.contractAddress),
-            symbol: standardLabel
+            symbol: standardLabel,
+            zero: ownersFullyKnown && !holdingsByOwner.get(accountKey)?.tokenIds.size
           }],
           label: account.label
         };
@@ -1847,50 +1864,11 @@ export function EvmCollectionPage({
       operationRef.current = false;
       pauseControllerRef.current.resume();
       setPaused(false);
+      // The round moved funds, so the balances read before it no longer hold;
+      // left on screen they would feed "select zero balance" stale numbers.
+      balanceRequestRef.current += 1;
+      setAddressBalances(emptyAddressBalanceState);
     }
-  };
-
-  const clearWorkbench = () => {
-    pauseControllerRef.current.resume();
-    setPaused(false);
-    keyInputRef.current?.clear();
-    balanceRequestRef.current += 1;
-    tokenRecognitionRequestRef.current += 1;
-    planRef.current = [];
-    retryPlanRef.current = [];
-    setErc20AssetInput("");
-    clearNftAssetInputs();
-    setDiscoveryContract("");
-    setPendingDiscovery(null);
-    setPendingTokenScan(null);
-    setTokenRangeStart("");
-    setTokenRangeEnd("");
-    setDiscoveryComplete(false);
-    setContractInspection(null);
-    setDiscoveryIssues([]);
-    setDiscoveryMessage("");
-    setNftStandard("erc721");
-    setNftInputResetNonce((current) => current + 1);
-    setTargetAddress("");
-    setMaxFeeAmount(defaultMaximumFeeAmount);
-    setAmountMode("all");
-    setPercentageAmount("100");
-    setFixedAmount("0.1");
-    setRandomMinimum("0.01");
-    setRandomMaximum("0.1");
-    setNftAmountMode("all");
-    setNftFixedAmount("1");
-    setConcurrency("3");
-    setMinimumDelay("0");
-    setMaximumDelay("0");
-    setResults([]);
-    setArchivedRounds([]);
-    setRoundSequence(1);
-    setAddressBalances(emptyAddressBalanceState);
-    setTokenRecognition(emptyTokenRecognitionState);
-    setIssues([]);
-    setMessage("");
-    setStage("editing");
   };
 
   const parsedNftFixedAmount = parseErc721CollectionLimit(nftFixedAmount);
@@ -1938,19 +1916,6 @@ export function EvmCollectionPage({
         <>
           <EvmGasBadge gas={gas} />
           <Badge variant="outline">{selectedNetwork.label}</Badge>
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hasSubmittedHash
-              || archivedRounds.some((round) => round.results.some((result) => Boolean(result.hash)))
-              ? "当前记录包含已提交的交易哈希。清空前请先核对链上状态；清空后无法恢复。"
-              : "来源密钥、持仓识别结果、归集设置和历史记录将从页面清除。"}
-            disabled={running}
-            onConfirm={clearWorkbench}
-            title="清空归集工作台？"
-            triggerClassName="workbench-reset-trigger"
-            triggerLabel="清空工作台"
-            triggerVariant="ghost"
-          />
         </>
       )}
       className="collection-shell collection-page"
@@ -2040,11 +2005,11 @@ export function EvmCollectionPage({
                     type="button"
                     variant={retryableCount ? "outline" : "default"}
                   >开始新一轮归集</Button>
-                  <span className="hint" role="status">
-                    {currentRoundRequiresAcknowledgement
-                      ? "本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。"
-                      : "本轮结果会移入下方记录；也可以直接修改设置或再次识别继续。"}
-                  </span>
+                  {currentRoundRequiresAcknowledgement ? (
+                    <span className="hint" role="status">
+                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。
+                    </span>
+                  ) : null}
                 </>
               ) : (
                 <ConfirmActionDialog
@@ -2083,14 +2048,9 @@ export function EvmCollectionPage({
                 <SecretKeyInput
                   disabled={controlsLocked || assetImporting}
                   mode="evm"
-                  onDirty={(reason, address) => {
-                    if (reason === "remove" && address) {
-                      setAddressBalances((current) => ({
-                        ...current,
-                        rows: current.rows.filter((row) => row.address.toLowerCase() !== address.toLowerCase())
-                      }));
-                    }
-                    invalidatePlan(true, false, reason !== "remove");
+                  onDirty={(reason, addresses) => {
+                    if (reason === "remove" && addresses?.length) removeAddressBalances(addresses);
+                    invalidatePlan();
                   }}
                   onImportingChange={handleKeyImportingChange}
                   onLineCountChange={setSourceKeyLineCount}
@@ -2105,12 +2065,12 @@ export function EvmCollectionPage({
                   compactStatuses
                   disabled={controlsLocked || assetImporting}
                   mode="evm"
-                  onDirty={() => {
+                  onDirty={(reason, addresses) => {
                     setPendingDiscovery(null);
                     setPendingTokenScan(null);
                     setTokenRangeStart("");
                     setTokenRangeEnd("");
-                    setAddressBalances(emptyAddressBalanceState);
+                    if (reason === "remove" && addresses?.length) removeAddressBalances(addresses);
                     invalidatePlan();
                   }}
                   onImportingChange={handleKeyImportingChange}
@@ -2188,7 +2148,9 @@ export function EvmCollectionPage({
                                   ...tokenInputRows.slice(index + 1)
                                 ]);
                               }}
-                              placeholder="0x…"
+                              placeholder={index === 0 && nativeCurrencyEnabled
+                                ? `0x…（留空归集 ${selectedNetwork.nativeCurrency.symbol}）`
+                                : "0x…"}
                               readOnly={tokenLocked}
                               spellCheck={false}
                               title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
@@ -2239,11 +2201,9 @@ export function EvmCollectionPage({
                         添加 Token
                       </Button>
                     </div>
-                    <FieldDescription>
-                      {nativeCurrencyEnabled
-                        ? `可选；留空则归集 ${selectedNetwork.nativeCurrency.symbol}，填写后归集列出的 ERC20 Token。`
-                        : "当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。"}
-                    </FieldDescription>
+                    {!nativeCurrencyEnabled ? (
+                      <FieldDescription>当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。</FieldDescription>
+                    ) : null}
                     <div aria-label="地址余额查询" className="address-balance-control">
                       <Button
                         disabled={controlsLocked
@@ -2298,9 +2258,9 @@ export function EvmCollectionPage({
                         <div className="nft-discovery-card__bar">
                           <div className="nft-discovery-card__title">
                             <h4 id="nft-discovery-title">持仓识别</h4>
-                            <Badge variant="outline">
-                              {discoveryComplete ? `${parsedAssetCount} 个 ${nftStandard.toUpperCase()} Token ID` : "OpenSea + RPC 复核"}
-                            </Badge>
+                            {discoveryComplete ? (
+                              <Badge variant="outline">{parsedAssetCount} 个 {nftStandard.toUpperCase()} Token ID</Badge>
+                            ) : null}
                           </div>
                           <Button
                             disabled={!discoveryRunning && (controlsLocked || !discoveryContractIsValid || !discoverySourceReady)}
@@ -2375,9 +2335,6 @@ export function EvmCollectionPage({
                                   />
                                 </Field>
                               </div>
-                              <FieldDescription>
-                                范围命中全部来源余额后会自动停止；找不全时只展示已验证结果，不会删除旧清单项。
-                              </FieldDescription>
                               {!tokenRangeValid ? (
                                 <FieldError>请输入有效范围，且单轮 ownerOf 调用不能超过 {tokenRangeRpcLimit.toLocaleString()} 次</FieldError>
                               ) : null}
@@ -2447,13 +2404,15 @@ export function EvmCollectionPage({
                     contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
                     defaultMode="auto"
                     disabled={controlsLocked || keyImporting}
-                    key={nftInputResetNonce}
                     onChange={(value) => {
                       setCurrentAssetInput(value);
                       invalidatePlan();
                     }}
                     onContractAddressChange={(value) => {
                       setDiscoveryContract(value);
+                      // Per-wallet counts describe the previous contract; the
+                      // recognized Token IDs themselves stay in the inventory.
+                      setAddressBalances(emptyAddressBalanceState);
                       setPendingDiscovery(null);
                       setPendingTokenScan(null);
                       setTokenRangeStart("");
@@ -2600,16 +2559,8 @@ export function EvmCollectionPage({
               {fixedStandard === "nft" ? (
                 nftStandard === "erc1155" ? (
                   <Field>
-                    <div className="flex w-fit items-center gap-1">
-                      <FieldLabel>归集数量</FieldLabel>
-                      <HelpTooltip label="归集数量说明">
-                        归集每个已选来源钱包中、每个已列出 Token ID 的全部实时余额。余额会在提交前重新读取。
-                      </HelpTooltip>
-                    </div>
+                    <FieldLabel>归集数量</FieldLabel>
                     <Badge variant="outline">归集全部余额</Badge>
-                    <FieldDescription>
-                      ERC1155 暂不提供“指定总数量”，避免在多个钱包和 Token ID 之间产生不明确的份数分配。
-                    </FieldDescription>
                   </Field>
                 ) : (
                   <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
@@ -2656,14 +2607,7 @@ export function EvmCollectionPage({
 
               <div className="field-row execution-settings-row">
                 <Field>
-                  <div className="flex w-fit items-center gap-1">
-                    <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
-                    {fixedStandard === "nft" ? (
-                      <HelpTooltip label="并发钱包数说明">
-                        可按 RPC 承载能力自行设置；高于已选钱包数时只执行现有钱包，不会产生额外任务。
-                      </HelpTooltip>
-                    ) : null}
-                  </div>
+                  <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
                   <Input
                     disabled={controlsLocked}
                     id="evm-collection-concurrency"
@@ -2717,9 +2661,6 @@ export function EvmCollectionPage({
                     type="number"
                     value={maxFeeAmount}
                   />
-                  <FieldDescription>
-                    预计单笔网络费超过此值时停止提交；当前网络默认 {defaultMaximumFeeAmount} {selectedNetwork.nativeCurrency.symbol}。
-                  </FieldDescription>
                   {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
                 </Field>
               </AdvancedSettings>

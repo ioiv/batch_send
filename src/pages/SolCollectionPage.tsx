@@ -3,13 +3,14 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   SecretKeyInput,
   type SecretKeyInputHandle,
+  type WalletBalanceItem,
   type WalletExecutionItem
 } from "../components/SecretKeyInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -262,13 +263,16 @@ function solTokenExecutionLabel({
 }
 
 function buildSolWalletBalances(holdings: SolanaHoldingsResult | null) {
-  const rows: Record<string, Array<{ amount: string; contractAddress?: string; symbol: string }>> = {};
+  const rows: Record<string, WalletBalanceItem[]> = {};
   holdings?.wallets.forEach((wallet) => {
-    const balances: Array<{ amount: string; contractAddress?: string; symbol: string }> = [{
+    // Without the full Token inventory an empty list is not an empty wallet.
+    const inventoryComplete = wallet.tokenInventoryStatus === "complete";
+    const balances: WalletBalanceItem[] = [{
       amount: wallet.nativeBalanceLamports === null
         ? "读取失败"
         : formatLamportsForDisplay(wallet.nativeBalanceLamports, 4),
-      symbol: "SOL"
+      symbol: "SOL",
+      zero: inventoryComplete && wallet.nativeBalanceLamports === 0n
     }];
     const grouped = new Map<string, { amount: bigint; decimals: number | null; holding: SolTokenAssetHolding }>();
     wallet.tokenAccounts.forEach((holding) => {
@@ -283,12 +287,14 @@ function buildSolWalletBalances(holdings: SolanaHoldingsResult | null) {
         ? `${entry.amount.toString()} 原始单位`
         : formatSolTokenAmount(entry.amount, entry.decimals),
       contractAddress: key,
-      symbol: solTokenAssetLabel(entry.holding)
+      symbol: solTokenAssetLabel(entry.holding),
+      zero: inventoryComplete && entry.amount === 0n
     }));
     if (grouped.size > 8) balances.push({
       amount: `+${grouped.size - 8}`,
       contractAddress: "additional-sol-token-holdings",
-      symbol: "更多清单内 Token"
+      symbol: "更多清单内 Token",
+      zero: inventoryComplete && [...grouped.values()].slice(8).every((entry) => entry.amount === 0n)
     });
     rows[wallet.address.toLowerCase()] = balances;
   });
@@ -411,6 +417,7 @@ export function SolCollectionPage() {
   const [roundSequence, setRoundSequence] = useState(1);
   const [keyImporting, setKeyImporting] = useState(false);
   const [holdings, setHoldings] = useState<SolanaHoldingsResult | null>(null);
+  const [balanceSnapshot, setBalanceSnapshot] = useState<SolanaHoldingsResult | null>(null);
   const [holdingsStatus, setHoldingsStatus] = useState<SolHoldingsStatus>("idle");
   const [holdingsMessage, setHoldingsMessage] = useState("");
   const [holdingsIssues, setHoldingsIssues] = useState<string[]>([]);
@@ -433,9 +440,6 @@ export function SolCollectionPage() {
   const normalizedTarget = validatePublicKey(targetAddress.trim());
   const taskRunning = stage === "running";
   const running = taskRunning || keyImporting;
-  const hasSubmittedHash = results.some((result) => Boolean(result.hash));
-  const hasRecordedHash = hasSubmittedHash
-    || archivedRounds.some((round) => round.results.some((result) => result.hash));
   const controlsLocked = running;
   const workbenchStatus = getSolCollectionWorkbenchStatus(stage, results);
   const roundIsTerminal = stage === "complete" || stage === "error";
@@ -448,7 +452,7 @@ export function SolCollectionPage() {
   )).length;
   const retryableCount = retrySourcesRef.current.length + retryTokenJobsRef.current.length;
   const walletStatuses = useMemo(() => groupWalletStatuses(results), [results]);
-  const walletBalances = useMemo(() => buildSolWalletBalances(holdings), [holdings]);
+  const walletBalances = useMemo(() => buildSolWalletBalances(balanceSnapshot), [balanceSnapshot]);
   const recognizedTokenByMint = useMemo(() => new Map(
     tokenRecognition.items.map((item) => [item.mintAddress, item] as const)
   ), [tokenRecognition.items]);
@@ -467,9 +471,12 @@ export function SolCollectionPage() {
     setKeyImporting(importing);
   }, []);
 
-  const invalidateHoldings = useCallback(() => {
+  // Editing the wallet list changes which wallets the holdings gate speaks for,
+  // not what the remaining ones hold, so their balances stay on screen.
+  const invalidateHoldings = useCallback((keepWalletBalances = false) => {
     holdingsRequestRef.current += 1;
     setHoldings(null);
+    if (!keepWalletBalances) setBalanceSnapshot(null);
     setHoldingsStatus("idle");
     setHoldingsMessage("");
     setHoldingsIssues([]);
@@ -478,6 +485,7 @@ export function SolCollectionPage() {
   const expireHoldingsSnapshot = useCallback(() => {
     holdingsRequestRef.current += 1;
     setHoldings(null);
+    setBalanceSnapshot(null);
     setHoldingsStatus("idle");
     setHoldingsIssues([]);
     setHoldingsMessage("余额快照已因执行而失效；可再次查看，下一轮执行仍会即时重读");
@@ -495,6 +503,7 @@ export function SolCollectionPage() {
       retryTokenJobsRef.current = [];
       holdingsRequestRef.current += 1;
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("idle");
       setHoldingsMessage("");
       setHoldingsIssues([]);
@@ -732,6 +741,7 @@ export function SolCollectionPage() {
       : validateSolCollectionWorkload(parsedSources.sources.length)));
     if (nextIssues.length) {
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("error");
       setHoldingsIssues(nextIssues);
       setHoldingsMessage("请先修正来源钱包或 RPC 设置");
@@ -742,6 +752,7 @@ export function SolCollectionPage() {
     const requestId = holdingsRequestRef.current + 1;
     holdingsRequestRef.current = requestId;
     setHoldings(null);
+    setBalanceSnapshot(null);
     setHoldingsStatus("loading");
     setHoldingsIssues([]);
     setHoldingsMessage(assetMode === "spl"
@@ -757,6 +768,7 @@ export function SolCollectionPage() {
       }), parsedTokenMints.mintAddresses);
       if (holdingsRequestRef.current !== requestId) return;
       setHoldings(discovered);
+      setBalanceSnapshot(discovered);
       setHoldingsStatus("ready");
       setHoldingsIssues([
         ...discovered.issues,
@@ -777,6 +789,7 @@ export function SolCollectionPage() {
     } catch (error) {
       if (holdingsRequestRef.current !== requestId) return;
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("error");
       setHoldingsIssues([]);
       setHoldingsMessage(error instanceof Error && error.message.includes("RPC 网络不匹配")
@@ -1014,6 +1027,7 @@ export function SolCollectionPage() {
           throw new Error("Token 持仓清单读取不完整，请更换或检查 RPC 后重试");
         }
         setHoldings(scopedHoldings);
+        setBalanceSnapshot(scopedHoldings);
         setHoldingsStatus("ready");
         setHoldingsIssues([
           ...scopedHoldings.issues,
@@ -1151,38 +1165,6 @@ export function SolCollectionPage() {
     assetMode === "spl" ? executeTokenCollection(retryOnly) : executeNativeCollection(retryOnly)
   );
 
-  const resetTask = () => {
-    pauseControllerRef.current.resume();
-    setPaused(false);
-    keyInputRef.current?.clear();
-    retrySourcesRef.current = [];
-    retryTokenJobsRef.current = [];
-    holdingsRequestRef.current += 1;
-    setTokenMintInput("");
-    setTokenMintInputMessage("");
-    setTargetAddress("");
-    setAmountMode("all");
-    setPercentageAmount("100");
-    setFixedAmount("0.1");
-    setRandomMinimum("0.01");
-    setRandomMaximum("0.1");
-    setReserveAmount("0");
-    setMinimumAmount("0");
-    setConcurrency("3");
-    setMinimumDelay("0");
-    setMaximumDelay("0");
-    setHoldings(null);
-    setHoldingsStatus("idle");
-    setHoldingsMessage("");
-    setHoldingsIssues([]);
-    setResults([]);
-    setArchivedRounds([]);
-    setRoundSequence(1);
-    setIssues([]);
-    setMessage("");
-    setStage("editing");
-  };
-
   const amountPolicyValid = getAmountPolicy() !== null;
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(rpcEndpoint);
@@ -1201,23 +1183,7 @@ export function SolCollectionPage() {
 
   return (
     <ToolPageLayout
-      actions={(
-        <>
-          <Badge variant="outline">{selectedNetwork.label}</Badge>
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hasRecordedHash
-              ? "当前钱包行包含已提交的交易。清空前请先核对链上状态；清空后本页记录无法恢复。"
-              : "来源密钥、目标地址、当前执行状态和历史记录将从页面清除。"}
-            disabled={running}
-            onConfirm={resetTask}
-            title="清空 SOL / SPL Token 归集工作台？"
-            triggerClassName="workbench-reset-trigger"
-            triggerLabel="清空工作台"
-            triggerVariant="ghost"
-          />
-        </>
-      )}
+      actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="collection-shell collection-page"
       currentToolId="sol-collection"
       stickyActions
@@ -1257,11 +1223,11 @@ export function SolCollectionPage() {
                     type="button"
                     variant={retryableCount ? "outline" : "default"}
                   >开始新一轮归集</Button>
-                  <p className="collection-terminal-hint">
-                    {currentRoundRequiresAcknowledgement
-                      ? "本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。"
-                      : "本轮结果会移入下方记录；也可以直接修改设置继续。"}
-                  </p>
+                  {currentRoundRequiresAcknowledgement ? (
+                    <p className="collection-terminal-hint">
+                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。
+                    </p>
+                  ) : null}
                 </>
               ) : (
                 <ConfirmActionDialog
@@ -1297,7 +1263,7 @@ export function SolCollectionPage() {
               <SecretKeyInput
                 disabled={controlsLocked}
                 mode="solana"
-                onDirty={() => { invalidateTask(); invalidateHoldings(); }}
+                onDirty={() => { invalidateTask(); invalidateHoldings(true); }}
                 onImportingChange={handleKeyImportingChange}
                 onLineCountChange={setSourceCount}
                 ref={keyInputRef}
@@ -1384,7 +1350,7 @@ export function SolCollectionPage() {
                               ...tokenInputRows.slice(index + 1)
                             ]);
                           }}
-                          placeholder="Mint 地址"
+                          placeholder={index === 0 ? "Mint 地址（留空归集 SOL）" : "Mint 地址"}
                           readOnly={tokenLocked}
                           spellCheck={false}
                           title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
@@ -1438,9 +1404,6 @@ export function SolCollectionPage() {
                     添加 Token
                   </Button>
                 </div>
-                <FieldDescription>
-                  可选；留空则归集 SOL，填写后归集列出的 SPL Token（支持 Token-2022）。
-                </FieldDescription>
                 {tokenRecognition.message ? (
                   <p
                     aria-live="polite"
@@ -1538,7 +1501,7 @@ export function SolCollectionPage() {
                     onChange={(event) => {
                       setRpcEndpoint(event.target.value);
                       invalidateTask();
-                      invalidateHoldings();
+                      invalidateHoldings(true);
                     }}
                     spellCheck={false}
                     type="url"
@@ -1569,12 +1532,10 @@ export function SolCollectionPage() {
                 ) : null}
                 {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
               </Field> : (
-                <Alert>
-                  <AlertTitle>SPL Token 数量</AlertTitle>
-                  <AlertDescription>
-                    每个已选 Token Account 归集执行时的全部可用余额；来源 SOL 仅用于网络费和必要的目标 ATA 租金。
-                  </AlertDescription>
-                </Alert>
+                <Field>
+                  <FieldLabel>归集数量</FieldLabel>
+                  <Badge variant="outline">归集全部余额</Badge>
+                </Field>
               )}
 
               <div className="field-row execution-settings-row">

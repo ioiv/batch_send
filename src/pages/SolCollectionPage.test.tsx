@@ -213,7 +213,8 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("textbox", { name: "Token 清单" })).toBeVisible();
     expect(screen.getByRole("button", { name: "添加 Token" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看地址余额" })).toBeVisible();
-    expect(screen.getByText(/可选；留空则归集 SOL，填写后归集列出的 SPL Token/)).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveAttribute("placeholder", "Mint 地址（留空归集 SOL）");
+    expect(screen.queryByText(/留空则归集 SOL，填写后归集/)).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "SOL" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "SPL Token" })).not.toBeInTheDocument();
 
@@ -347,6 +348,26 @@ describe("SolCollectionPage workbench", () => {
       mintAddresses: [token2022Mint]
     })));
     expect(await screen.findByText(/清单内发现 1 个非零 Token 账户/)).toBeVisible();
+  });
+
+  it("keeps read balances through selection changes and selects a wallet holding nothing", async () => {
+    solMocks.discoverHoldings.mockResolvedValueOnce(holdingsResult([], 0n));
+    const user = userEvent.setup();
+    render(<SolCollectionPage />);
+
+    await importSolSecret(user);
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+    const balanceLabel = new RegExp(`来源一.*${firstSourceAddress}.*余额`);
+    expect(await screen.findByLabelText(balanceLabel)).toBeVisible();
+
+    const walletCheckbox = screen.getByRole("checkbox", { name: new RegExp(firstSourceAddress) });
+    await user.click(walletCheckbox);
+    expect(walletCheckbox).not.toBeChecked();
+    expect(screen.getByLabelText(balanceLabel)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    expect(walletCheckbox).toBeChecked();
+    expect(screen.getByLabelText(balanceLabel)).toBeVisible();
   });
 
   it("shows selection, four amount modes and direct confirmation without a preflight section", () => {

@@ -279,13 +279,12 @@ describe("EvmContractDeployPage safety", () => {
     expect(deployButton).toBeDisabled();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
 
-    const clearTrigger = screen.getByRole("button", { name: "清空工作台" });
-    await user.click(clearTrigger);
-    const clearDialog = screen.getByRole("alertdialog", { name: "清空 CreateX 部署工作台？" });
-    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeVisible();
-    await user.click(within(clearDialog).getByRole("button", { name: "确认清空" }));
-    await waitFor(() => expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "editing"));
-    expect(screen.queryByTitle(transactionHash)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "校验部署条件" })).toBeEnabled();
+    // Acknowledging is the only way on: nothing wipes the unverified record.
+    expect(screen.queryByRole("button", { name: "清空工作台" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "已核对，开始新任务" }));
+    const acknowledgement = screen.getByRole("alertdialog", { name: "已核对记录中的链上状态？" });
+    await user.click(within(acknowledgement).getByRole("button", { name: "确认已核对" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "确认部署" })).toBeEnabled());
+    expect(screen.getByText("部署记录")).toBeVisible();
   });
 });

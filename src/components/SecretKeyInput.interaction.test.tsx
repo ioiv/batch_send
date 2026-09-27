@@ -48,7 +48,8 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     expect(removeButton).toHaveClass("imported-wallet-remove");
     await user.click(removeButton);
     expect(inputRef.current?.read()).toBe("");
-    expect(screen.getByText("导入后将在这里显示钱包地址，可勾选或删除。")).toBeVisible();
+    expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入钱包" })).toBeVisible();
 
     await importWallets(user, sentinel);
     inputRef.current?.clear();
@@ -203,6 +204,65 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     });
   });
 
+  it("deletes the selected wallets in one confirmed step", async () => {
+    const user = userEvent.setup();
+    const inputRef = createRef<SecretKeyInputHandle>();
+    const onDirty = vi.fn();
+    const secrets = ["51", "52", "53"].map((byte) => (`0x${byte.repeat(32)}`) as `0x${string}`);
+    const addresses = secrets.map((secret) => privateKeyToAccount(secret).address);
+    render(<SecretKeyInput mode="evm" onDirty={onDirty} ref={inputRef} />);
+    await importWallets(user, secrets.join("\n"));
+
+    await user.click(screen.getByRole("checkbox", { name: new RegExp(addresses[2], "i") }));
+    await user.click(screen.getByRole("button", { name: "删除选中 (2)" }));
+    let dialog = screen.getByRole("alertdialog", { name: "删除 2 个已选钱包？" });
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+
+    onDirty.mockClear();
+    await user.click(screen.getByRole("button", { name: "删除选中 (2)" }));
+    dialog = screen.getByRole("alertdialog", { name: "删除 2 个已选钱包？" });
+    await user.click(within(dialog).getByRole("button", { name: "删除 2 个钱包" }));
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByTitle(addresses[2])).toBeVisible();
+    expect(screen.getByText("已选择 0 / 1")).toBeVisible();
+    expect(screen.getByRole("button", { name: "删除选中" })).toBeDisabled();
+    expect(onDirty).toHaveBeenCalledWith("remove", [addresses[0], addresses[1]]);
+    expect(inputRef.current?.read()).toBe("");
+    await user.click(screen.getByRole("checkbox", { name: new RegExp(addresses[2], "i") }));
+    expect(inputRef.current?.read()).toBe(secrets[2]);
+  });
+
+  it("selects only wallets whose every read balance is exactly zero", async () => {
+    const user = userEvent.setup();
+    const inputRef = createRef<SecretKeyInputHandle>();
+    const onDirty = vi.fn();
+    const secrets = ["61", "62", "63", "64", "65"].map((byte) => (`0x${byte.repeat(32)}`) as `0x${string}`);
+    // The fifth wallet was never queried and has no balances at all.
+    const [empty, tokenOnly, dust, unread] = secrets.map((secret) => (
+      privateKeyToAccount(secret).address.toLowerCase()
+    ));
+    const walletBalances = {
+      [empty]: [{ amount: "0", symbol: "ETH", zero: true }, { amount: "0", symbol: "TOK", zero: true }],
+      [tokenOnly]: [{ amount: "0", symbol: "ETH", zero: true }, { amount: "5", symbol: "TOK", zero: false }],
+      // Rounds to "0" on screen but holds dust: only the raw flag counts.
+      [dust]: [{ amount: "0", symbol: "ETH" }],
+      [unread]: [{ amount: "读取失败", symbol: "ETH" }]
+    };
+    const { rerender } = render(<SecretKeyInput mode="evm" onDirty={onDirty} ref={inputRef} />);
+    await importWallets(user, secrets.join("\n"));
+    expect(screen.getByRole("button", { name: "选中余额为零" })).toBeDisabled();
+
+    rerender(<SecretKeyInput mode="evm" onDirty={onDirty} ref={inputRef} walletBalances={walletBalances} />);
+    onDirty.mockClear();
+    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+
+    expect(screen.getByText("已选择 1 / 5")).toBeVisible();
+    expect(inputRef.current?.read()).toBe(secrets[0]);
+    expect(onDirty).toHaveBeenCalledWith("selection");
+  });
+
   it("imports a large pasted batch and incrementally renders wallets while scrolling", async () => {
     const user = userEvent.setup();
     render(<SecretKeyInput mode="evm" />);
@@ -216,7 +276,7 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     fireEvent.input(draft, { target: { value: secrets.join("\n") } });
 
     expect(within(dialog).getByText("85 / 1,000")).toBeVisible();
-    expect(within(dialog).getByText("85 个钱包待解析")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toHaveTextContent("导入 85 个钱包");
     await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 
     const walletBrowser = screen.getByLabelText("已导入来源钱包");
@@ -229,7 +289,7 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     expect(within(walletList).getAllByRole("listitem")).toHaveLength(80);
 
     fireEvent.scroll(walletList);
-    expect(within(walletBrowser).getByText("已显示 85 / 85")).toBeVisible();
+    expect(within(walletBrowser).queryByText(/已显示/)).not.toBeInTheDocument();
     expect(within(walletList).getAllByRole("listitem")).toHaveLength(85);
     expect(within(walletBrowser).queryByRole("button", { name: "加载更多钱包" })).not.toBeInTheDocument();
   });

@@ -6,6 +6,7 @@ import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DistributionListGenerator } from "../components/DistributionListGenerator";
+import { DistributionSummary } from "../components/DistributionSummary";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
@@ -187,7 +188,6 @@ export function EvmBatchDistributorPage() {
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [listImporting, setListImporting] = useState(false);
-  const [generatorRevision, setGeneratorRevision] = useState(0);
   const listImportingRef = useRef(false);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
@@ -350,7 +350,7 @@ export function EvmBatchDistributorPage() {
               ? `请先处理 ${duplicateCount} 个重复地址`
               : parsed.validRows.length === 0
                 ? "请先添加至少 1 个有效收款地址"
-                : "清单可预检";
+                : "";
   const pageStatus = safetyState.workbenchStatus;
   const pageStatusLabel = unresolvedSubmission
     ? "已提交，待核对"
@@ -863,17 +863,6 @@ export function EvmBatchDistributorPage() {
     }
   };
 
-  const startNewDistribution = () => {
-    terminalArchivedRef.current = false;
-    setGeneratorRevision((value) => value + 1);
-    setGeneratedInput("");
-    setGeneratedList(initialGeneratedList);
-    setMixedAmountWarningVisible(false);
-    setArchivedRound(null);
-    setRoundSequence(1);
-    resetConfirmation();
-  };
-
   return (
     <ToolPageLayout
       actions={(
@@ -895,7 +884,7 @@ export function EvmBatchDistributorPage() {
           className="input-panel"
           footer={(
             <div className="actions">
-              <span className="hint" role="status">{readinessMessage}</span>
+              <span className="hint" role="status">{sending || sendComplete || sendFailed ? "" : readinessMessage}</span>
               <div className="action-group">
                 {!sendComplete && !sendFailed && !sending ? (
                   <Button
@@ -933,24 +922,17 @@ export function EvmBatchDistributorPage() {
                   />
                 ) : null}
                 {sendComplete || sendFailed ? (
-                  <span className="collection-terminal-hint">
-                    {unresolvedSubmission
-                      ? "可直接编辑；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
-                      : "任务已结束，直接编辑任一设置即可继续，当前结果会移入下方记录。"}
-                  </span>
+                  <>
+                    {unresolvedSubmission ? (
+                      <span className="collection-terminal-hint">
+                        核对链上状态后才可开始新的写入任务。
+                      </span>
+                    ) : null}
+                    {/* Ending a round must not depend on finding a setting to edit;
+                        the list stays for the next round. */}
+                    <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
+                  </>
                 ) : null}
-                <ConfirmActionDialog
-                  confirmLabel="确认清空"
-                  description={sendState.signatures.length > 0 || Boolean(archivedRound?.transactions.length)
-                    ? "当前或历史记录包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
-                    : "收款清单、当前执行状态和历史记录将从页面清除。"}
-                  disabled={sending || preflighting || listImporting}
-                  onConfirm={startNewDistribution}
-                  title="清空 EVM 分发工作台？"
-                  triggerClassName="workbench-reset-trigger action-group__destructive"
-                  triggerLabel="清空清单"
-                  triggerVariant="ghost"
-                />
               </div>
             </div>
           )}
@@ -972,24 +954,15 @@ export function EvmBatchDistributorPage() {
             ) : null}
 
             <div className="workbench-form__primary">
-              <div className="workbench-form__group-row">
-                <h3 className="workbench-form__group">收款清单</h3>
-                <div className="action-group" aria-label="分发统计">
-                  <Badge variant="outline">有效 {parsed.validRows.length}</Badge>
-                  <Badge variant="outline">合计 {parsed.total} {assetSymbol}</Badge>
-                  <Badge variant={invalidCount > 0 ? "destructive" : "outline"}>需修正 {invalidCount}</Badge>
-                  <Badge variant={duplicateCount > 0 ? "destructive" : "outline"}>重复 {duplicateCount}</Badge>
-                </div>
-              </div>
+              <h3 className="workbench-form__group">收款清单</h3>
 
               <DistributionListGenerator
-                key={`evm-distribution-${generatorRevision}`}
                 addressKind="evm"
                 decimals={assetDecimals}
                 disabled={controlsLocked}
                 generationDisabled={Boolean(generatorUnavailableMessage)}
-                initialAddresses={generatorRevision === 0 ? initialDistribution.addresses : ""}
-                initialFixedAmount={generatorRevision === 0 && initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                initialAddresses={initialDistribution.addresses}
+                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
                 onDirty={handleGeneratorDirty}
                 onImportingChange={handleListImportingChange}
                 onResultChange={handleGeneratedListChange}
@@ -1132,9 +1105,23 @@ export function EvmBatchDistributorPage() {
 
               <EvmGasSettings
                 disabled={pageControlsLocked}
-                feeEstimate={preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "预检后显示"}
                 gas={gas}
                 onSettingsChange={resetForEdit}
+              />
+
+              <DistributionSummary
+                rows={[
+                  { label: "有效地址", value: parsed.validRows.length },
+                  { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
+                  { alert: invalidCount > 0, label: "需修正", value: invalidCount },
+                  { alert: duplicateCount > 0, label: "重复地址", value: duplicateCount },
+                  {
+                    label: "预估网络费",
+                    value: preflightState.result
+                      ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
+                      : "—"
+                  }
+                ]}
               />
             </div>
           </div>

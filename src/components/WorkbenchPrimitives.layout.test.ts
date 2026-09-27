@@ -33,4 +33,23 @@ describe("workbench layout CSS contract", () => {
     expect(readRule('.generator-amount-grid[data-mode="fixed"]'))
       .toContain("grid-template-columns: minmax(0, 1fr)");
   });
+
+  it("gives a wallet's execution status its own line instead of overlapping the address", () => {
+    // In the two-column form the wallet list is about 34rem wide; a status block
+    // squeezed beside the address collapsed the address column to 0px under it.
+    expect(readRule(".imported-wallet-row")).toContain("grid-template-columns: auto minmax(10rem, 1fr)");
+    expect(readRule(".imported-wallet-statuses,\n.imported-wallet-status-summary"))
+      .toContain("grid-column: 2 / -1");
+    expect(readRule(".imported-wallet-statuses")).not.toMatch(/min-width:\s*min\(/);
+    // Explicit tracks: a row without balances must not slide its status into
+    // the balance column.
+    expect(readRule(".imported-wallet-balances")).toContain("grid-area: 1 / 3");
+    expect(readRule(".imported-wallet-remove")).toContain("grid-area: 1 / 4");
+    // The row answers to the list's width, not the viewport's.
+    expect(readRule(".imported-wallet-browser")).toContain("container: imported-wallets / inline-size");
+  });
+
+  it("caps the pasted address list so it cannot outgrow the settings column", () => {
+    expect(appCss).toMatch(/\.address-only-input \{\s*max-height: min\(22rem, 50dvh\);\s*overflow-y: auto;/);
+  });
 });

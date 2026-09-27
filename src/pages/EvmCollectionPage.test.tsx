@@ -290,11 +290,11 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     const tokenList = screen.getByRole("textbox", { name: "Token 清单" });
-    expect(tokenList).toHaveAttribute("placeholder", "0x…");
+    expect(tokenList).toHaveAttribute("placeholder", "0x…（留空归集 ETH）");
     expect(screen.getByText("ERC20")).toBeVisible();
     expect(screen.getByRole("button", { name: "添加 Token" })).toBeVisible();
     expect(screen.queryByText("Token 识别")).not.toBeInTheDocument();
-    expect(screen.getByText("可选；留空则归集 ETH，填写后归集列出的 ERC20 Token。")).toBeVisible();
+    expect(screen.queryByText(/留空则归集 ETH，填写后归集/)).not.toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await importEvmSecret(user);
@@ -430,6 +430,62 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.queryByRole("textbox", { name: "Token 地址 2" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveAttribute("readonly");
     expect(evmMocks.readMetadata).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps read balances through selection and settings edits and selects the empty wallets", async () => {
+    evmMocks.getBalance.mockImplementation(async ({ address }: { address: string }) => (
+      address === signerAccount.address ? 0n : 3_000_000_000_000_000_000n
+    ));
+    evmMocks.readContract.mockImplementation(async ({ args }: { args: readonly string[] }) => (
+      args[0] === signerAccount.address ? 0n : 2_000_000_000_000_000_000n
+    ));
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+    await importEvmSecret(user);
+    await importEvmSecret(user, secondPrivateKey);
+    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    const secondBalances = await within(walletList).findByLabelText(`${secondSignerAccount.address} 余额`);
+    expect(within(secondBalances).getByText("3")).toBeVisible();
+
+    await user.click(within(walletList).getByRole("button", { name: "选中余额为零 (1)" }));
+    expect(within(walletList).getByRole("checkbox", { name: new RegExp(signerAccount.address, "i") })).toBeChecked();
+    expect(within(walletList).getByRole("checkbox", { name: new RegExp(secondSignerAccount.address, "i") })).not.toBeChecked();
+    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 余额`)).toBeVisible();
+
+    const concurrency = screen.getByRole("spinbutton", { name: "并发钱包数" });
+    await user.clear(concurrency);
+    await user.type(concurrency, "5");
+    expect(within(walletList).getByLabelText(`${signerAccount.address} 余额`)).toBeVisible();
+    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 余额`)).toBeVisible();
+  });
+
+  it("drops balances read before a round once the round has moved funds", async () => {
+    evmMocks.execute.mockResolvedValueOnce([{
+      address: planItem.address,
+      amount: planItem.amount,
+      asset: planItem.asset,
+      hash: transactionHash,
+      id: planItem.id,
+      label: planItem.label,
+      message: "已确认",
+      retryable: false,
+      status: "success"
+    }]);
+    const user = await prepareReadyErc20Page();
+    await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    expect(await within(walletList).findByLabelText(`${signerAccount.address} 余额`)).toBeVisible();
+
+    await confirmEvmExecution(user);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "开始新一轮归集" })).toBeEnabled());
+    expect(within(walletList).queryByLabelText(`${signerAccount.address} 余额`)).not.toBeInTheDocument();
+    expect(within(walletList).getByRole("button", { name: "选中余额为零" })).toBeDisabled();
   });
 
   it("keeps remaining inline balances when one imported address is deleted", async () => {
@@ -649,7 +705,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(concurrencyInput, "9");
     expect(concurrencyInput).toHaveValue(9);
 
-    expect(screen.getByLabelText("并发钱包数说明")).toHaveTextContent("?");
+    expect(screen.queryByLabelText("并发钱包数说明")).not.toBeInTheDocument();
   });
 
   it("keeps NFT holdings when one wallet's native balance lookup fails", async () => {
@@ -1096,7 +1152,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("ETH")).toBeVisible();
   });
 
-  it("cancels direct execution, preserves edits, and confirms clearing", async () => {
+  it("cancels direct execution and preserves edits without offering to clear them", async () => {
     const user = await prepareReadyErc20Page();
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const executeDialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
@@ -1109,23 +1165,8 @@ describe("EvmCollectionPage workbench", () => {
     await user.type(target, targetAddress);
     expect(screen.getByText("编辑中")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
-
-    const clearTrigger = screen.getByRole("button", { name: "清空工作台" });
-    await user.click(clearTrigger);
-    let clearDialog = screen.getByRole("alertdialog", { name: "清空归集工作台？" });
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("button", { name: "清空工作台" })).not.toBeInTheDocument();
     expect(target).toHaveValue(targetAddress);
-
-    await user.click(clearTrigger);
-    clearDialog = screen.getByRole("alertdialog", { name: "清空归集工作台？" });
-    await user.click(within(clearDialog).getByRole("button", { name: "确认清空" }));
-    expect(target).toHaveValue("");
-    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveValue("");
-
-    await user.type(target, targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
-    await importEvmSecret(user);
-    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
 
   it("maps a submitted hash followed by interruption to uncertain without locking edits", async () => {
@@ -1161,11 +1202,13 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "清空工作台" }));
-    const clearDialog = screen.getByRole("alertdialog", { name: "清空归集工作台？" });
-    expect(within(clearDialog).getByText(/包含已提交的交易哈希/)).toBeInTheDocument();
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
+    // Acknowledging is the only way on; nothing can wipe the unverified record.
+    expect(screen.queryByRole("button", { name: "清空工作台" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "已核对，开始新任务" }));
+    const acknowledgement = screen.getByRole("alertdialog", { name: "已核对记录中的链上状态？" });
+    await user.click(within(acknowledgement).getByRole("button", { name: "确认已核对" }));
     expect(screen.getByText("归集记录")).toBeVisible();
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   });
 
   it("supports fixed amounts and passes execution settings without a preflight call", async () => {

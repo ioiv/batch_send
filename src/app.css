@@ -814,17 +814,6 @@
   text-align: start;
 }
 
-/* A workbench reset stays reachable without outshouting the primary action. */
-.workbench-reset-trigger {
-  color: color-mix(in oklab, var(--destructive) 72%, var(--muted-foreground));
-}
-
-.workbench-reset-trigger:hover,
-.workbench-reset-trigger:focus-visible {
-  background: color-mix(in oklab, var(--destructive) 14%, transparent);
-  color: var(--destructive);
-}
-
 /* Keeps a destructive button from sharing an edge with the benign one next
    to it, so a near-miss click cannot discard the list. */
 .action-group__destructive {
@@ -983,17 +972,6 @@
   font-weight: var(--weight-strong);
   letter-spacing: 0.06em;
   line-height: var(--leading-tight);
-}
-
-/* A group label and the numbers that summarise it belong on one line; as its
-   own row the summary read as a floating strip of badges. */
-.workbench-form__group-row {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-2xs) var(--space-sm);
 }
 
 .workbench-form__group {
@@ -1421,6 +1399,14 @@
   overflow-wrap: anywhere;
 }
 
+/* Grows with what is pasted up to about the height of the settings beside it,
+   then scrolls; unbounded, one long paste stretched the list column far past
+   a settings column that stops a third of the way down. */
+.address-only-input {
+  max-height: min(22rem, 50dvh);
+  overflow-y: auto;
+}
+
 .collection-asset-textarea {
   min-height: 4.5rem;
   max-height: 9rem;
@@ -1449,24 +1435,6 @@
   justify-content: flex-start;
 }
 
-.generator-status {
-  width: fit-content;
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: var(--space-3xs) var(--space-2xs);
-  background: color-mix(in oklab, var(--input) 45%, transparent);
-  color: var(--muted-foreground);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-medium);
-}
-
-.generator-status.ready {
-  border-color: color-mix(in oklab, var(--primary) 35%, var(--border));
-  color: var(--primary);
-}
-
 .hint {
   color: var(--muted-foreground);
   font-size: var(--text-caption);
@@ -1475,8 +1443,7 @@
 
 .hint.error,
 .error,
-.invalid-list,
-.generator-status.error {
+.invalid-list {
   color: var(--destructive);
 }
 
@@ -1484,10 +1451,11 @@
   padding: var(--space-xs) var(--space-sm);
 }
 
+/* The five execution counts read as one row, not three and a gap. */
 .metric-grid {
   align-items: stretch;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .metric,
@@ -1504,6 +1472,19 @@
   display: flex;
   justify-content: space-between;
   gap: var(--space-sm);
+}
+
+/* A long value wraps under itself; it must not squeeze its label down to one
+   character per line, as a full address did to 目标地址 in the confirm dialog. */
+.summary-list > div > span:first-child {
+  flex: none;
+  white-space: nowrap;
+}
+
+.summary-list > div > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .review-item {
@@ -1650,6 +1631,55 @@
   font-size: var(--text-caption);
 }
 
+.distribution-summary {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.distribution-summary dl {
+  min-width: 0;
+  display: grid;
+  margin: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--muted) 30%, transparent);
+}
+
+.distribution-summary dl > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.distribution-summary dl > div + div {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.distribution-summary dt {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: var(--text-label);
+}
+
+.distribution-summary dd {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.distribution-summary [data-alert] dd {
+  color: var(--destructive);
+}
+
 .collection-results-body {
   min-width: 0;
   display: grid;
@@ -1764,21 +1794,10 @@
   gap: var(--space-sm);
 }
 
-.secret-empty-state {
-  min-height: 4.25rem;
-  display: grid;
-  place-items: center;
-  margin: 0;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--muted-foreground);
-  font-size: var(--text-caption);
-  text-align: center;
-}
-
 .imported-wallet-list {
   min-width: 0;
   display: grid;
+  align-content: start;
   gap: var(--space-2xs);
   max-height: min(24rem, 52vh);
   overflow-y: auto;
@@ -1787,17 +1806,45 @@
   scrollbar-gutter: stable;
 }
 
+/* Rows lay out against the list's own width. In the two-column form the list
+   is half a column on a wide screen, where no viewport breakpoint ever fires. */
 .imported-wallet-browser {
   min-width: 0;
   display: grid;
   gap: var(--space-2xs);
+  container: imported-wallets / inline-size;
 }
 
 .imported-wallet-toolbar {
-  padding: var(--space-3xs) var(--space-3xs);
+  flex-wrap: wrap;
 }
 
-.imported-wallet-toolbar > span {
+.imported-wallet-toolbar__actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: var(--space-3xs);
+}
+
+/* Everything starts selected, so a red "delete selected" would sit there
+   shouting; it only turns red when the pointer or focus is on it. */
+.imported-wallet-toolbar__delete:not(:disabled) {
+  color: color-mix(in oklab, var(--destructive) 72%, var(--muted-foreground));
+}
+
+.imported-wallet-toolbar__delete:not(:disabled):hover,
+.imported-wallet-toolbar__delete:not(:disabled):focus-visible {
+  background: color-mix(in oklab, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+.imported-wallet-toolbar__more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-left: auto;
+}
+
+.imported-wallet-toolbar__more > span {
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--text-micro);
@@ -1807,76 +1854,97 @@
 .imported-wallet-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) minmax(12rem, 0.8fr) auto;
+  grid-template-columns: auto minmax(10rem, 1fr) minmax(0, max-content) auto;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-2xs) var(--space-sm);
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: color-mix(in oklab, var(--card) 94%, var(--muted));
 }
 
-.imported-wallet-row[data-compact-status="true"] {
-  grid-template-columns: auto minmax(10rem, 1fr) minmax(0, auto) minmax(0, auto) auto;
-  gap: var(--space-xs);
-  min-height: 3.25rem;
-  padding: var(--space-2xs) var(--space-xs);
+/* Placed explicitly, so a row without balances cannot slide its status into the
+   balance track. The wallet, its balances and delete share the first line;
+   whatever the collection reports gets a line of its own underneath. */
+.imported-wallet-row > [data-slot="checkbox"] {
+  grid-area: 1 / 1;
+}
+
+.imported-wallet-identity {
+  grid-area: 1 / 2;
+}
+
+.imported-wallet-balances {
+  grid-area: 1 / 3;
 }
 
 .imported-wallet-remove {
-  grid-column: 5;
+  grid-area: 1 / 4;
   justify-self: end;
 }
 
+.imported-wallet-statuses,
+.imported-wallet-status-summary {
+  grid-column: 2 / -1;
+}
+
 .imported-wallet-statuses {
-  min-width: min(28rem, 42vw);
+  min-width: 0;
   display: grid;
-  gap: var(--space-2xs);
+  gap: var(--space-3xs);
 }
 
 .imported-wallet-status {
   min-width: 0;
-  display: grid;
-  gap: var(--space-3xs);
-  padding: var(--space-2xs) var(--space-xs);
-  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3xs) var(--space-2xs);
   border-radius: var(--radius-md);
+  padding: var(--space-3xs) var(--space-2xs);
   background: color-mix(in oklab, var(--muted) 38%, transparent);
+  font-size: var(--text-micro);
 }
 
 .imported-wallet-status[data-status="error"] {
-  border-color: color-mix(in oklab, var(--destructive) 38%, var(--border));
+  background: color-mix(in oklab, var(--destructive) 10%, transparent);
 }
 
-.imported-wallet-status__heading {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2xs);
+.imported-wallet-status > [data-slot="badge"],
+.imported-wallet-status > a {
+  flex: none;
 }
 
-.imported-wallet-status__heading strong,
-.imported-wallet-status > span {
+.imported-wallet-status > strong {
   min-width: 0;
   overflow: hidden;
+  font-family: var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.imported-wallet-status__heading strong {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
+/* Takes what is left of the line, and moves to a line of its own when that is
+   too little to read. */
+.imported-wallet-status__message {
+  min-width: 0;
+  flex: 1 1 8rem;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.imported-wallet-status__heading a,
-.imported-wallet-status > span {
+/* A failure reason is the one message worth reading in full. */
+.imported-wallet-status[data-status="error"] .imported-wallet-status__message {
+  color: color-mix(in oklab, var(--destructive) 78%, var(--foreground));
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.imported-wallet-status > a,
+.imported-wallet-status-summary > a {
   color: var(--muted-foreground);
   font-size: var(--text-micro);
-}
-
-.imported-wallet-status__heading a {
-  flex: 0 0 auto;
   text-decoration: underline;
   text-underline-offset: 0.15rem;
 }
@@ -1885,13 +1953,16 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--space-2xs);
+}
+
+.imported-wallet-status-summary > [data-slot="badge"],
+.imported-wallet-status-summary > a {
+  flex: none;
 }
 
 .imported-wallet-status-summary > strong {
   min-width: 0;
-  max-width: 11rem;
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--text-micro);
@@ -1899,14 +1970,8 @@
   white-space: nowrap;
 }
 
-.imported-wallet-status-summary > a {
-  color: var(--muted-foreground);
-  font-size: var(--text-micro);
-  text-decoration: underline;
-  text-underline-offset: 0.15rem;
-}
-
 .imported-wallet-status-summary__details {
+  margin-left: auto;
   color: var(--muted-foreground);
 }
 
@@ -2086,6 +2151,15 @@
 .imported-wallet-balances small {
   color: var(--muted-foreground);
   font-size: var(--text-micro);
+}
+
+/* Too narrow for balances beside the address: they drop under it. After the
+   base rules, which a container query does not outrank. */
+@container imported-wallets (max-width: 30rem) {
+  .imported-wallet-balances {
+    grid-area: auto / 2 / auto / -1;
+    justify-content: flex-start;
+  }
 }
 
 .erc20-token-editor {
@@ -2720,9 +2794,12 @@
   .field-row,
   .amount-grid,
   .generator-amount-grid,
-  .nft-asset-builder-fields,
-  .metric-grid {
+  .nft-asset-builder-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .nft-token-scan__range,
@@ -2796,45 +2873,10 @@
     flex-direction: column;
   }
 
-  .imported-wallet-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .secret-import-file-row > button,
 
   .address-balance-control__status {
     text-align: left;
-  }
-
-  .imported-wallet-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .imported-wallet-row > button {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .imported-wallet-remove {
-    grid-column: 3;
-  }
-
-  .imported-wallet-balances {
-    grid-column: 2 / 4;
-    grid-row: 2;
-    justify-content: flex-start;
-  }
-
-  .imported-wallet-statuses,
-  .imported-wallet-status-summary {
-    min-width: 0;
-    grid-column: 2 / 4;
-    grid-row: 3;
-  }
-
-  .imported-wallet-status-summary {
-    justify-content: flex-start;
   }
 
   .address-only-input {
