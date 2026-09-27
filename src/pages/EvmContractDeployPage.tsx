@@ -338,13 +338,6 @@ export function EvmContractDeployPage() {
     clearDeploymentState();
   };
 
-  const clearWorkbench = () => {
-    terminalArchivedRef.current = false;
-    setArchivedRound(null);
-    setRoundSequence(1);
-    clearDeploymentState();
-  };
-
   const resetDiscoveredNetwork = () => {
     setNetworkDiscovery(null);
     setManualMetadataOverride(false);
@@ -653,21 +646,11 @@ export function EvmContractDeployPage() {
         <>
           <EvmGasBadge gas={gas} />
           <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hash || archivedRound?.hash
-              ? "当前或历史记录包含已提交的交易哈希。清空只会删除本页记录，无法撤销链上交易，且清空后无法恢复。"
-              : "当前部署校验、网络识别结果和历史记录将被清除，网络选择会保留。"}
-            disabled={busy}
-            onConfirm={clearWorkbench}
-            title="清空 CreateX 部署工作台？"
-            triggerLabel="清空工作台"
-            triggerVariant="destructive"
-          />
         </>
       )}
       className="page-deploy"
       currentToolId="evm-contract-deploy"
+      stickyActions
       status={workbenchStatus}
       statusLabel={workbenchStatusLabel}
       title="CreateX 合约部署"
@@ -678,7 +661,7 @@ export function EvmContractDeployPage() {
           className="deploy-panel"
           footer={(
             <div className="actions">
-              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : status === "ready" ? "部署参数已就绪" : ""}</span>
+              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : ""}</span>
               <div className="action-group">
                 {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
                   <Button disabled={!canValidate} onClick={() => void runValidation()} type="button">
@@ -710,74 +693,70 @@ export function EvmContractDeployPage() {
                     <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
                   </>
                 ) : null}
-                {deploymentComplete || submittedButUncertain ? (
-                  <span className="collection-terminal-hint">
-                    {submittedButUncertain
-                      ? "可直接编辑或重新校验；当前结果会移入下方记录。核对交易状态后才可再次部署。"
-                      : "任务已结束，直接编辑任一配置即可继续，当前结果会移入下方记录。"}
-                  </span>
+                {submittedButUncertain ? (
+                  <span className="collection-terminal-hint">核对交易状态后才可再次部署。</span>
                 ) : null}
               </div>
             </div>
           )}
           title="部署配置"
         >
-          <Tabs
-            aria-label="网络来源"
-            onValueChange={(value) => {
-              if (value === "known" || value === "custom") selectNetworkSource(value);
-            }}
-            value={networkSource}
-          >
-            <TabsList>
-              <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
-              <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
-            </TabsList>
-            <TabsContent value="known">
-              <Field>
-                <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
-                <SearchableSelect
-                  disabled={configurationLocked}
-                  emptyMessage="未找到匹配的 EVM 链"
-                  id="deployKnownNetwork"
-                  listboxLabel="已知 EVM 网络"
-                  metaLabel="Chain ID"
-                  metaPrefix="ID "
-                  onChange={selectKnownNetwork}
-                  options={knownNetworkOptions}
-                  placeholder="搜索链名称或 Chain ID"
-                  searchLabel="搜索已知 EVM 网络"
-                  value={knownNetworkId}
-                />
-              </Field>
-            </TabsContent>
-            <TabsContent value="custom">
-              <Field>
-                <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
-                <Input
-                  autoComplete="off"
-                  disabled={configurationLocked}
-                  id="deployCustomRpcEndpoint"
-                  inputMode="url"
-                  onChange={(event) => {
-                    setRpcEndpoint(event.target.value);
-                    resetDiscoveredNetwork();
-                  }}
-                  placeholder="https://your-evm-rpc.example"
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-              </Field>
-            </TabsContent>
-          </Tabs>
+          <div className="form workbench-form">
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">部署网络</h3>
+            <Tabs
+              aria-label="网络来源"
+              onValueChange={(value) => {
+                if (value === "known" || value === "custom") selectNetworkSource(value);
+              }}
+              value={networkSource}
+            >
+              <TabsList>
+                <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
+                <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
+              </TabsList>
+              <TabsContent value="known">
+                <Field>
+                  <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
+                  <SearchableSelect
+                    disabled={configurationLocked}
+                    emptyMessage="未找到匹配的 EVM 链"
+                    id="deployKnownNetwork"
+                    listboxLabel="已知 EVM 网络"
+                    metaLabel="Chain ID"
+                    metaPrefix="ID "
+                    onChange={selectKnownNetwork}
+                    options={knownNetworkOptions}
+                    placeholder="搜索链名称或 Chain ID"
+                    searchLabel="搜索已知 EVM 网络"
+                    value={knownNetworkId}
+                  />
+                </Field>
+              </TabsContent>
+              <TabsContent value="custom">
+                <Field>
+                  <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
+                  <Input
+                    autoComplete="off"
+                    disabled={configurationLocked}
+                    id="deployCustomRpcEndpoint"
+                    inputMode="url"
+                    onChange={(event) => {
+                      setRpcEndpoint(event.target.value);
+                      resetDiscoveredNetwork();
+                    }}
+                    placeholder="https://your-evm-rpc.example"
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                </Field>
+              </TabsContent>
+            </Tabs>
+            </div>
 
-          <AdvancedSettings disabled={configurationLocked} label="RPC、Gas、浏览器与链元数据">
-            <EvmGasSettings
-              disabled={configurationLocked}
-              gas={gas}
-              onSettingsChange={resetForEdit}
-            />
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">RPC 与 Gas</h3>
             {networkSource === "known" ? (
               <Field>
                 <FieldLabel htmlFor="deployKnownRpcEndpoint">HTTPS RPC</FieldLabel>
@@ -793,6 +772,14 @@ export function EvmContractDeployPage() {
                 />
               </Field>
             ) : null}
+
+            <EvmGasSettings
+              disabled={configurationLocked}
+              gas={gas}
+              onSettingsChange={resetForEdit}
+            />
+
+              <AdvancedSettings disabled={configurationLocked} label="浏览器与链元数据">
             <Field data-invalid={!blockExplorerUrlIsValid || undefined}>
               <FieldLabel htmlFor="deployBlockExplorerUrl">区块浏览器地址</FieldLabel>
               <Input
@@ -951,7 +938,8 @@ export function EvmContractDeployPage() {
                 </div>
               </FieldGroup>
             ) : null}
-          </AdvancedSettings>
+              </AdvancedSettings>
+            </div>
 
           {message ? (
             <Alert variant={status === "error" ? "destructive" : "default"}>
@@ -1026,6 +1014,7 @@ export function EvmContractDeployPage() {
               ) : null}
             </FieldGroup>
           ) : null}
+          </div>
         </WorkbenchPanel>
 
         <ReviewPanel

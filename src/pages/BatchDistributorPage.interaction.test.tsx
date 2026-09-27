@@ -199,7 +199,7 @@ describe("BatchDistributorPage network safety", () => {
       "mainnet-beta"
     );
     expect(solanaMocks.getBalance).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("链路摘要")).not.toHaveTextContent("余额 99 SOL");
+    expect(screen.getByRole("region", { name: "清单摘要" })).not.toHaveTextContent("99 SOL");
   });
 
   it("shows a blocking preflight error when the wallet cannot cover amount and fees", async () => {
@@ -302,7 +302,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(solanaMocks.signTransaction).not.toHaveBeenCalled();
   });
 
-  it("completes a distribution, preserves the hash until confirmed clear, and starts blank", async () => {
+  it("completes a distribution and starts the next round from the kept list", async () => {
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
 
@@ -316,17 +316,17 @@ describe("BatchDistributorPage network safety", () => {
 
     expect(await screen.findByText(/已完成 1 笔交易确认/)).toBeVisible();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toHaveAttribute("href", expect.stringContaining("solana-signature-1"));
-    await user.click(screen.getByRole("button", { name: "清空清单" }));
-    const clearDialog = await screen.findByRole("alertdialog", { name: "清空 SOL 分发工作台？" });
-    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeVisible();
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
-    expect(editor).toHaveValue("11111111111111111111111111111111");
+    expect(screen.queryByRole("button", { name: "清空清单" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "清空清单" }));
-    await user.click(within(await screen.findByRole("alertdialog", { name: "清空 SOL 分发工作台？" }))
+    await user.click(screen.getByRole("button", { name: "开始新一轮分发" }));
+    expect(editor).toHaveValue("11111111111111111111111111111111");
+    expect(screen.getByText("分发记录")).toBeVisible();
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    await user.click(within(await screen.findByRole("alertdialog", { name: "清空收款清单？" }))
       .getByRole("button", { name: "确认清空" }));
     expect(screen.getByRole("textbox", { name: "收款地址" })).toHaveValue("");
-    expect(screen.queryByRole("link", { name: /交易 1:/ })).not.toBeInTheDocument();
   });
 
   it("unlocks an interrupted task for editing but requires acknowledgement before restart", async () => {

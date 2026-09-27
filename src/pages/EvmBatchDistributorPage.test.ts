@@ -152,7 +152,11 @@ describe("EvmBatchDistributorPage safety", () => {
 
     const gasSettings = screen.getByLabelText("Gas 设置");
     expect(gasSettings).toBeVisible();
-    expect(within(gasSettings).getByLabelText("预估网络费 预检后显示")).toBeVisible();
+    // The fee sits with the list it pays for, in the summary under the settings.
+    const summary = screen.getByRole("region", { name: "清单摘要" });
+    const summaryValue = (label: string) => within(summary).getByText(label).nextElementSibling;
+    expect(summaryValue("预估网络费")).toHaveTextContent("—");
+    expect(gasSettings.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     expect(gasSettings.closest(".workbench-panel")).toBe(preflightButton.closest(".workbench-panel"));
     expect(gasSettings.compareDocumentPosition(preflightButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -168,6 +172,8 @@ describe("EvmBatchDistributorPage safety", () => {
         mode: "custom"
       }
     }));
+    expect(summaryValue("有效地址")).toHaveTextContent("1");
+    expect(summaryValue("预估网络费")).toHaveTextContent("0.0001 ETH");
   });
 
   it("blocks preflight while the custom Gas Price is invalid", async () => {
@@ -339,8 +345,15 @@ describe("EvmBatchDistributorPage safety", () => {
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
     expect(await screen.findByText("分发完成")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "清空清单" }));
-    dialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
+    // The finished round has its own way forward, and it keeps the list.
+    const addressInput = screen.getByRole("textbox", { name: "收款地址" });
+    await user.click(screen.getByRole("button", { name: "开始新一轮分发" }));
+    expect(screen.getByText("分发记录")).toBeVisible();
+    expect(addressInput).toHaveValue(`${recipient}\n${secondRecipient}`);
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    dialog = screen.getByRole("alertdialog", { name: "清空收款清单？" });
     await user.click(within(dialog).getByRole("button", { name: "确认清空" }));
 
     expect(await screen.findByRole("textbox", { name: "收款地址" })).toHaveValue("");
@@ -416,33 +429,23 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(addressInput).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
-    const clearTrigger = screen.getByRole("button", { name: "清空清单" });
-    expect(clearTrigger).toBeEnabled();
+    // Nothing wipes an unverified submission; acknowledging it is the only way on.
+    expect(screen.queryByRole("button", { name: "清空清单" })).not.toBeInTheDocument();
+    expect(screen.getByText("核对链上状态后才可开始新的写入任务。")).toBeVisible();
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);
     expect(pageMocks.ensureNetwork).toHaveBeenCalledTimes(1);
-
-    await user.click(clearTrigger);
-    let clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
-    expect(within(clearDialog).getByText(/无法撤销链上交易.*清空后无法恢复/)).toBeInTheDocument();
-    await user.click(within(clearDialog).getByRole("button", { name: "取消" }));
-    expect(addressInput).toBeEnabled();
-    expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
 
     await user.type(addressInput, "\n0x00000000000000000000000000000000000000b2");
     expect(screen.getByText("分发记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: /运行预检|重新预检/ })).toBeDisabled();
 
-    await user.click(clearTrigger);
-    clearDialog = screen.getByRole("alertdialog", { name: "清空 EVM 分发工作台？" });
-    await user.click(within(clearDialog).getByRole("button", { name: "确认清空" }));
+    await user.click(screen.getByRole("button", { name: "已核对，开始新任务" }));
+    const acknowledgement = screen.getByRole("alertdialog", { name: "已核对记录中的链上状态？" });
+    await user.click(within(acknowledgement).getByRole("button", { name: "确认已核对" }));
 
-    const freshAddressInput = await screen.findByRole("textbox", { name: "收款地址" });
-    expect(freshAddressInput).toBeEnabled();
-    expect(freshAddressInput).toHaveValue("");
-    expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "editing");
     expect(screen.queryByText("不可安全整批重试")).not.toBeInTheDocument();
-    await user.type(freshAddressInput, recipient);
+    expect(addressInput).toHaveValue(`${recipient}\n0x00000000000000000000000000000000000000b2`);
     await waitFor(() => expect(screen.getByRole("button", { name: "运行预检" })).toBeEnabled());
   });
 });

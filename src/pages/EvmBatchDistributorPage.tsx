@@ -6,6 +6,7 @@ import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DistributionListGenerator } from "../components/DistributionListGenerator";
+import { DistributionSummary } from "../components/DistributionSummary";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
@@ -187,7 +188,6 @@ export function EvmBatchDistributorPage() {
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [listImporting, setListImporting] = useState(false);
-  const [generatorRevision, setGeneratorRevision] = useState(0);
   const listImportingRef = useRef(false);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
@@ -350,7 +350,7 @@ export function EvmBatchDistributorPage() {
               ? `请先处理 ${duplicateCount} 个重复地址`
               : parsed.validRows.length === 0
                 ? "请先添加至少 1 个有效收款地址"
-                : "清单可预检";
+                : "";
   const pageStatus = safetyState.workbenchStatus;
   const pageStatusLabel = unresolvedSubmission
     ? "已提交，待核对"
@@ -863,17 +863,6 @@ export function EvmBatchDistributorPage() {
     }
   };
 
-  const startNewDistribution = () => {
-    terminalArchivedRef.current = false;
-    setGeneratorRevision((value) => value + 1);
-    setGeneratedInput("");
-    setGeneratedList(initialGeneratedList);
-    setMixedAmountWarningVisible(false);
-    setArchivedRound(null);
-    setRoundSequence(1);
-    resetConfirmation();
-  };
-
   return (
     <ToolPageLayout
       actions={(
@@ -895,7 +884,7 @@ export function EvmBatchDistributorPage() {
           className="input-panel"
           footer={(
             <div className="actions">
-              <span className="hint" role="status">{readinessMessage}</span>
+              <span className="hint" role="status">{sending || sendComplete || sendFailed ? "" : readinessMessage}</span>
               <div className="action-group">
                 {!sendComplete && !sendFailed && !sending ? (
                   <Button
@@ -933,200 +922,209 @@ export function EvmBatchDistributorPage() {
                   />
                 ) : null}
                 {sendComplete || sendFailed ? (
-                  <span className="collection-terminal-hint">
-                    {unresolvedSubmission
-                      ? "可直接编辑；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
-                      : "任务已结束，直接编辑任一设置即可继续，当前结果会移入下方记录。"}
-                  </span>
+                  <>
+                    {unresolvedSubmission ? (
+                      <span className="collection-terminal-hint">
+                        核对链上状态后才可开始新的写入任务。
+                      </span>
+                    ) : null}
+                    {/* Ending a round must not depend on finding a setting to edit;
+                        the list stays for the next round. */}
+                    <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
+                  </>
                 ) : null}
-                <ConfirmActionDialog
-                  confirmLabel="确认清空"
-                  description={sendState.signatures.length > 0 || Boolean(archivedRound?.transactions.length)
-                    ? "当前或历史记录包含已提交的交易哈希。清空只会移除本页记录，无法撤销链上交易，且清空后无法恢复。"
-                    : "收款清单、当前执行状态和历史记录将从页面清除。"}
-                  disabled={sending || preflighting || listImporting}
-                  onConfirm={startNewDistribution}
-                  title="清空 EVM 分发工作台？"
-                  triggerLabel="清空清单"
-                  triggerVariant="destructive"
-                />
               </div>
             </div>
           )}
           title="分发配置"
         >
-          {mixedAmountWarningVisible ? (
-            <Alert>
-              <AlertTitle>旧清单金额未导入</AlertTitle>
-              <AlertDescription>已保留收款地址，请重新设置金额。</AlertDescription>
-            </Alert>
-          ) : null}
+          <div className="form workbench-form">
+            {mixedAmountWarningVisible ? (
+              <Alert>
+                <AlertTitle>旧清单金额未导入</AlertTitle>
+                <AlertDescription>已保留收款地址，请重新设置金额。</AlertDescription>
+              </Alert>
+            ) : null}
 
-          <div className="evm-network-row" aria-label="网络与 RPC">
-            <Field>
-              <div className="evm-network-label-row">
-                <FieldLabel htmlFor="networkId">网络</FieldLabel>
-                <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
-              </div>
-              <SearchableSelect
-                disabled={pageControlsLocked}
-                emptyMessage="未找到匹配的 EVM 链"
-                id="networkId"
-                listboxLabel="EVM 链"
-                metaLabel="Chain ID"
-                metaPrefix="ID "
-                onChange={(nextNetworkId) => {
-                  resetForEdit();
-                  const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
-                  setNetworkId(nextNetworkId);
-                  setRpcEndpoint(nextNetwork.rpcEndpoint);
-                  if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
-                  setTokenLookup(initialTokenLookupState);
-                  rememberPreferredEvmDistributionNetwork(nextNetworkId);
-                }}
-                options={networkOptions}
-                placeholder="搜索链名称或 Chain ID"
-                searchLabel="搜索 EVM 链名称或 Chain ID"
-                value={networkId}
+            {!nativeCurrencyEnabled ? (
+              <Alert>
+                <AlertTitle>仅开放 Token 分发</AlertTitle>
+                <AlertDescription>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">收款清单</h3>
+
+              <DistributionListGenerator
+                addressKind="evm"
+                decimals={assetDecimals}
+                disabled={controlsLocked}
+                generationDisabled={Boolean(generatorUnavailableMessage)}
+                initialAddresses={initialDistribution.addresses}
+                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                onDirty={handleGeneratorDirty}
+                onImportingChange={handleListImportingChange}
+                onResultChange={handleGeneratedListChange}
+                symbol={assetSymbol}
+                unavailableMessage={generatorUnavailableMessage}
+                validateAddress={isValidEvmAddress}
               />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
-              <Input
-                autoComplete="off"
-                disabled={pageControlsLocked}
-                id="rpcEndpoint"
-                onChange={(event) => {
+            </div>
+
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">网络、资产与费用</h3>
+              <div className="evm-network-row" aria-label="网络与 RPC">
+                <Field>
+                  <div className="evm-network-label-row">
+                    <FieldLabel htmlFor="networkId">网络</FieldLabel>
+                    <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
+                  </div>
+                  <SearchableSelect
+                    disabled={pageControlsLocked}
+                    emptyMessage="未找到匹配的 EVM 链"
+                    id="networkId"
+                    listboxLabel="EVM 链"
+                    metaLabel="Chain ID"
+                    metaPrefix="ID "
+                    onChange={(nextNetworkId) => {
+                      resetForEdit();
+                      const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
+                      setNetworkId(nextNetworkId);
+                      setRpcEndpoint(nextNetwork.rpcEndpoint);
+                      if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
+                      setTokenLookup(initialTokenLookupState);
+                      rememberPreferredEvmDistributionNetwork(nextNetworkId);
+                    }}
+                    options={networkOptions}
+                    placeholder="搜索链名称或 Chain ID"
+                    searchLabel="搜索 EVM 链名称或 Chain ID"
+                    value={networkId}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
+                  <Input
+                    autoComplete="off"
+                    disabled={pageControlsLocked}
+                    id="rpcEndpoint"
+                    onChange={(event) => {
+                      resetForEdit();
+                      setRpcEndpoint(event.target.value);
+                      setTokenLookup(initialTokenLookupState);
+                    }}
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                </Field>
+              </div>
+
+              <Tabs
+                aria-label="资产类型"
+                onValueChange={(nextMode) => {
+                  if (nextMode !== "native" && nextMode !== "token") return;
+                  if (nextMode === "native" && !nativeCurrencyEnabled) return;
                   resetForEdit();
-                  setRpcEndpoint(event.target.value);
+                  setAssetMode(nextMode);
                   setTokenLookup(initialTokenLookupState);
                 }}
-                spellCheck={false}
-                type="url"
-                value={rpcEndpoint}
-              />
-            </Field>
-          </div>
+                value={assetMode}
+              >
+                <TabsList>
+                  <TabsTrigger disabled={pageControlsLocked || !nativeCurrencyEnabled} value="native">原生币</TabsTrigger>
+                  <TabsTrigger disabled={pageControlsLocked} value="token">Token</TabsTrigger>
+                </TabsList>
+                <TabsContent value="native">
+                  <div className="summary-list" aria-label="原生币余额">
+                    <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
+                  </div>
+                  {nativeBalanceLookup.status === "error" ? (
+                    <Alert variant="destructive">
+                      <AlertTitle>钱包余额读取失败</AlertTitle>
+                      <AlertDescription>{nativeBalanceLookup.message}</AlertDescription>
+                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
+                    </Alert>
+                  ) : null}
+                </TabsContent>
+                <TabsContent value="token">
+                  <Field data-invalid={tokenLookup.status === "error" || undefined}>
+                    <FieldLabel htmlFor="tokenAddress">Token 合约地址</FieldLabel>
+                    <Input
+                      aria-invalid={tokenLookup.status === "error" || undefined}
+                      autoComplete="off"
+                      disabled={pageControlsLocked}
+                      id="tokenAddress"
+                      onChange={(event) => {
+                        resetForEdit();
+                        setTokenAddress(event.target.value);
+                        setTokenLookup(initialTokenLookupState);
+                      }}
+                      placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+                      spellCheck={false}
+                      type="text"
+                      value={tokenAddress}
+                    />
+                    {tokenLookup.status === "error" ? <FieldError>{tokenLookup.message}</FieldError> : null}
+                  </Field>
+                  {tokenDetails ? (
+                    <div className="summary-list" aria-label="Token 信息">
+                      <div><span>{tokenDetails.name}</span><strong>{tokenDetails.symbol} · {tokenDetails.decimals} decimals</strong></div>
+                      <div><span>钱包余额</span><strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong></div>
+                    </div>
+                  ) : null}
+                  {tokenLookup.status === "error" ? (
+                    <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
+                  ) : null}
+                  {tokenDetails && tokenBalanceLookup.status === "error" ? (
+                    <Alert variant="destructive">
+                      <AlertTitle>Token 余额读取失败</AlertTitle>
+                      <AlertDescription>{tokenBalanceLookup.message}</AlertDescription>
+                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
+                    </Alert>
+                  ) : null}
+                </TabsContent>
+              </Tabs>
 
-          {!nativeCurrencyEnabled ? (
-            <Alert>
-              <AlertTitle>仅开放 Token 分发</AlertTitle>
-              <AlertDescription>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></AlertDescription>
-            </Alert>
-          ) : null}
-
-          <Tabs
-            aria-label="资产类型"
-            onValueChange={(nextMode) => {
-              if (nextMode !== "native" && nextMode !== "token") return;
-              if (nextMode === "native" && !nativeCurrencyEnabled) return;
-              resetForEdit();
-              setAssetMode(nextMode);
-              setTokenLookup(initialTokenLookupState);
-            }}
-            value={assetMode}
-          >
-            <TabsList>
-              <TabsTrigger disabled={pageControlsLocked || !nativeCurrencyEnabled} value="native">原生币</TabsTrigger>
-              <TabsTrigger disabled={pageControlsLocked} value="token">Token</TabsTrigger>
-            </TabsList>
-            <TabsContent value="native">
-              <div className="summary-list" aria-label="原生币余额">
-                <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
-              </div>
-              {nativeBalanceLookup.status === "error" ? (
-                <Alert variant="destructive">
-                  <AlertTitle>钱包余额读取失败</AlertTitle>
-                  <AlertDescription>{nativeBalanceLookup.message}</AlertDescription>
-                  <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                </Alert>
-              ) : null}
-            </TabsContent>
-            <TabsContent value="token">
-              <Field data-invalid={tokenLookup.status === "error" || undefined}>
-                <FieldLabel htmlFor="tokenAddress">Token 合约地址</FieldLabel>
-                <Input
-                  aria-invalid={tokenLookup.status === "error" || undefined}
-                  autoComplete="off"
+              {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
+                <ConfirmActionDialog
+                  confirmLabel="移除链配置"
+                  description={(
+                    <div className="summary-list">
+                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
+                    </div>
+                  )}
                   disabled={pageControlsLocked}
-                  id="tokenAddress"
-                  onChange={(event) => {
-                    resetForEdit();
-                    setTokenAddress(event.target.value);
-                    setTokenLookup(initialTokenLookupState);
-                  }}
-                  placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-                  spellCheck={false}
-                  type="text"
-                  value={tokenAddress}
+                  onConfirm={removeSelectedVerifiedNetwork}
+                  title="移除此链配置"
+                  triggerLabel="移除此链配置"
+                  triggerVariant="destructive"
                 />
-                {tokenLookup.status === "error" ? <FieldError>{tokenLookup.message}</FieldError> : null}
-              </Field>
-              {tokenDetails ? (
-                <div className="summary-list" aria-label="Token 信息">
-                  <div><span>{tokenDetails.name}</span><strong>{tokenDetails.symbol} · {tokenDetails.decimals} decimals</strong></div>
-                  <div><span>钱包余额</span><strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong></div>
-                </div>
               ) : null}
-              {tokenLookup.status === "error" ? (
-                <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
-              ) : null}
-              {tokenDetails && tokenBalanceLookup.status === "error" ? (
-                <Alert variant="destructive">
-                  <AlertTitle>Token 余额读取失败</AlertTitle>
-                  <AlertDescription>{tokenBalanceLookup.message}</AlertDescription>
-                  <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                </Alert>
-              ) : null}
-            </TabsContent>
-          </Tabs>
 
-          <DistributionListGenerator
-            key={`evm-distribution-${generatorRevision}`}
-            addressKind="evm"
-            decimals={assetDecimals}
-            disabled={controlsLocked}
-            generationDisabled={Boolean(generatorUnavailableMessage)}
-            initialAddresses={generatorRevision === 0 ? initialDistribution.addresses : ""}
-            initialFixedAmount={generatorRevision === 0 && initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
-            onDirty={handleGeneratorDirty}
-            onImportingChange={handleListImportingChange}
-            onResultChange={handleGeneratedListChange}
-            symbol={assetSymbol}
-            unavailableMessage={generatorUnavailableMessage}
-            validateAddress={isValidEvmAddress}
-          />
+              <EvmGasSettings
+                disabled={pageControlsLocked}
+                gas={gas}
+                onSettingsChange={resetForEdit}
+              />
 
-          <div className="action-group" aria-label="分发统计">
-            <Badge variant="outline">有效 {parsed.validRows.length}</Badge>
-            <Badge variant="outline">合计 {parsed.total} {assetSymbol}</Badge>
-            <Badge variant={invalidCount > 0 ? "destructive" : "outline"}>需修正 {invalidCount}</Badge>
-            <Badge variant={duplicateCount > 0 ? "destructive" : "outline"}>重复 {duplicateCount}</Badge>
+              <DistributionSummary
+                rows={[
+                  { label: "有效地址", value: parsed.validRows.length },
+                  { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
+                  { alert: invalidCount > 0, label: "需修正", value: invalidCount },
+                  { alert: duplicateCount > 0, label: "重复地址", value: duplicateCount },
+                  {
+                    label: "预估网络费",
+                    value: preflightState.result
+                      ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
+                      : "—"
+                  }
+                ]}
+              />
+            </div>
           </div>
-
-          {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
-            <ConfirmActionDialog
-              confirmLabel="移除链配置"
-              description={(
-                <div className="summary-list">
-                  <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                  <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
-                </div>
-              )}
-              disabled={pageControlsLocked}
-              onConfirm={removeSelectedVerifiedNetwork}
-              title="移除此链配置"
-              triggerLabel="移除此链配置"
-              triggerVariant="destructive"
-            />
-          ) : null}
-
-          <EvmGasSettings
-            disabled={pageControlsLocked}
-            feeEstimate={preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "预检后显示"}
-            gas={gas}
-            onSettingsChange={resetForEdit}
-          />
         </WorkbenchPanel>
 
         <ReviewPanel

@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
@@ -103,6 +104,7 @@ type CollectionStage = "editing" | "scanning" | "ready" | "running" | "complete"
 type NftNativeBalanceByAddress = Record<string, {
   amount: string;
   symbol: string;
+  zero?: boolean;
 }>;
 
 type PendingNftDiscovery = {
@@ -152,6 +154,7 @@ type AddressBalanceAsset = {
   amount: string;
   contractAddress?: Address;
   symbol: string;
+  zero?: boolean;
 };
 
 type AddressBalanceRow = {
@@ -179,6 +182,8 @@ const emptyAddressBalanceState: AddressBalanceState = {
 };
 
 const maximumAutomaticTokenMetadata = 50;
+
+const maximumArchivedRounds = 10;
 
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -349,7 +354,8 @@ async function readNftNativeBalances({
       const balance = await publicClient.getBalance({ address: account.address });
       return [account.address.toLowerCase(), {
         amount: formatBalanceForDisplay(balance, nativeCurrency.decimals),
-        symbol: nativeCurrency.symbol
+        symbol: nativeCurrency.symbol,
+        zero: balance === 0n
       }] as const;
     } catch {
       return [account.address.toLowerCase(), {
@@ -595,17 +601,17 @@ export function EvmCollectionPage({
   const [maximumDelay, setMaximumDelay] = useState("0");
   const [maxFeeAmount, setMaxFeeAmount] = useState(() => getDefaultEvmCollectionFeeCap(initialNetwork));
   const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
-  const [nftInputResetNonce, setNftInputResetNonce] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
   const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
-  const [archivedRound, setArchivedRound] = useState<ArchivedCollectionRound | null>(null);
+  const [archivedRounds, setArchivedRounds] = useState<ArchivedCollectionRound[]>([]);
   const [roundSequence, setRoundSequence] = useState(1);
   const [tokenRecognition, setTokenRecognition] = useState<TokenRecognitionState>(emptyTokenRecognitionState);
   const [addressBalances, setAddressBalances] = useState<AddressBalanceState>(emptyAddressBalanceState);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
+  const nftAssetInputsRef = useRef(nftAssetInputs);
   const assetImportingRef = useRef(false);
   const balanceRequestRef = useRef(0);
   const keyImportingRef = useRef(false);
@@ -629,12 +635,22 @@ export function EvmCollectionPage({
     : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
   const assetInput = fixedStandard === "erc20" ? erc20AssetInput : nftAssetInputs[nftStandard];
+  // Mirrored eagerly so asynchronous discovery reads the inventory that is
+  // already committed instead of the value captured by its own render.
+  const writeNftAssetInput = (standard: "erc721" | "erc1155", value: string) => {
+    nftAssetInputsRef.current = { ...nftAssetInputsRef.current, [standard]: value };
+    setNftAssetInputs(nftAssetInputsRef.current);
+  };
+  const clearNftAssetInputs = () => {
+    nftAssetInputsRef.current = { erc721: "", erc1155: "" };
+    setNftAssetInputs(nftAssetInputsRef.current);
+  };
   const setCurrentAssetInput = (value: string) => {
     if (fixedStandard === "erc20") {
       setErc20AssetInput(value);
       return;
     }
-    setNftAssetInputs((current) => ({ ...current, [nftStandard]: value }));
+    writeNftAssetInput(nftStandard, value);
   };
   const parsedAssetCount = useMemo(
     () => parseEvmCollectionAssets(assetInput, standard).validAssets.length,
@@ -656,14 +672,17 @@ export function EvmCollectionPage({
   const sourceKeysReady = sourceKeyLineCount > 0;
   const discoverySourceReady = sourceKeysReady;
   const maximumFeeAmount = parsePositiveFeeAmount(maxFeeAmount, selectedNetwork.nativeCurrency.decimals);
-  const defaultMaximumFeeAmount = getDefaultEvmCollectionFeeCap(selectedNetwork);
   const nativeCurrencyEnabled = isEvmNativeCurrencyEnabled(selectedNetwork);
   const transactionRunning = stage === "running";
   const operationRunning = transactionRunning || discoveryRunning;
   const running = operationRunning || assetImporting || keyImporting;
-  const hasSubmittedHash = results.some((result) => Boolean(result.hash));
   const controlsLocked = running;
   const workbenchStatus = getEvmCollectionWorkbenchStatus(stage, results);
+  const roundIsTerminal = stage === "complete" || stage === "error";
+  const currentRoundRequiresAcknowledgement = roundIsTerminal
+    && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
+  const acknowledgementRequired = currentRoundRequiresAcknowledgement
+    || archivedRounds.some((round) => round.requiresAcknowledgement);
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
@@ -846,11 +865,10 @@ export function EvmCollectionPage({
 
   const parseMaximumFee = () => maximumFeeAmount;
 
-  const archiveCurrentRound = (removeSettledNfts = false) => {
+  const archiveCurrentRound = () => {
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
-    const requiresAcknowledgement = workbenchStatus === "uncertain"
-      || results.some((result) => result.uncertain);
-    setArchivedRound({
+    const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
+    setArchivedRounds((current) => [{
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -858,16 +876,26 @@ export function EvmCollectionPage({
         message: sanitizeRoundArchiveText(result.message)
       })),
       sequence: roundSequence
-    });
-    if (removeSettledNfts && fixedStandard === "nft") {
+    }, ...current].slice(0, maximumArchivedRounds));
+    if (fixedStandard === "nft") {
+      // Only assets that actually left the wallet are dropped; failed and
+      // uncertain Token ID stay in the list so the next round can pick them up.
       const settledAssetKeys = getSettledNftAssetKeys(results);
       if (settledAssetKeys.size) {
-        const nextNftInput = removeValidNftInventoryAssets(assetInput, nftStandard, settledAssetKeys);
-        setNftAssetInputs((current) => ({ ...current, [nftStandard]: nextNftInput }));
+        const nextNftInput = removeValidNftInventoryAssets(
+          nftAssetInputsRef.current[nftStandard],
+          nftStandard,
+          settledAssetKeys
+        );
+        writeNftAssetInput(nftStandard, nextNftInput);
+        const remaining = parseEvmCollectionAssets(nextNftInput, nftStandard).validAssets.length;
+        setNftFixedAmount((current) => {
+          const fixedTotal = parseErc721CollectionLimit(current);
+          return fixedTotal !== null && fixedTotal <= remaining
+            ? current
+            : String(Math.max(1, remaining));
+        });
       }
-    }
-    if (fixedStandard === "nft") {
-      setNftAssetInputs({ erc721: "", erc1155: "" });
       setDiscoveryComplete(false);
     }
     balanceRequestRef.current += 1;
@@ -880,10 +908,19 @@ export function EvmCollectionPage({
     return true;
   };
 
+  // Finishing a round must not depend on the user finding a setting to edit.
+  const startNewRound = () => {
+    if (operationRef.current || running || !archiveCurrentRound()) return;
+    setIssues([]);
+    setMessage("");
+    setDiscoveryMessage("");
+    setDiscoveryIssues([]);
+  };
+
   const invalidatePlan = (
     clearResults = true,
     preserveDiscovery = false,
-    clearAddressBalances = true
+    clearAddressBalances = false
   ) => {
     if (operationRef.current || transactionRunning) return;
     const archived = archiveCurrentRound();
@@ -905,7 +942,7 @@ export function EvmCollectionPage({
 
   const updateErc20TokenRows = (rows: string[]) => {
     setErc20AssetInput(rows.length ? rows.join("\n") : "");
-    invalidatePlan();
+    invalidatePlan(true, false, true);
   };
 
   const selectNetwork = (value: EvmDistributionNetworkId) => {
@@ -920,11 +957,19 @@ export function EvmCollectionPage({
     setDiscoveryComplete(false);
     setContractInspection(null);
     if (fixedStandard === "nft") {
-      setNftAssetInputs({ erc721: "", erc1155: "" });
+      clearNftAssetInputs();
       setAddressBalances(emptyAddressBalanceState);
     }
     rememberPreferredEvmDistributionNetwork(value);
-    invalidatePlan();
+    invalidatePlan(true, false, true);
+  };
+
+  const removeAddressBalances = (addresses: readonly string[]) => {
+    const removed = new Set(addresses.map((address) => address.toLowerCase()));
+    setAddressBalances((current) => ({
+      ...current,
+      rows: current.rows.filter((row) => !removed.has(row.address.toLowerCase()))
+    }));
   };
 
   const viewAddressBalances = async () => {
@@ -1013,7 +1058,8 @@ export function EvmCollectionPage({
           const nativeBalance = await publicClient.getBalance({ address: account.address });
           assets.push({
             amount: formatBalanceForDisplay(nativeBalance, selectedNetwork.nativeCurrency.decimals),
-            symbol: selectedNetwork.nativeCurrency.symbol
+            symbol: selectedNetwork.nativeCurrency.symbol,
+            zero: nativeBalance === 0n
           });
         } catch {
           assets.push({
@@ -1033,7 +1079,8 @@ export function EvmCollectionPage({
               return {
                 amount: formatBalanceForDisplay(balance, token.decimals),
                 contractAddress: token.contractAddress,
-                symbol: token.symbol
+                symbol: token.symbol,
+                zero: balance === 0n
               } satisfies AddressBalanceAsset;
             } catch {
               return {
@@ -1128,16 +1175,19 @@ export function EvmCollectionPage({
     if (!discovery.complete && !allowPartial) return false;
     if (!discovery.complete && !discovery.assets.length) return false;
 
+    // Reconcile against the inventory that is already on screen so rows added
+    // for other contracts survive a scan of this one.
+    const inventoryBase = nftAssetInputsRef.current[discovery.standard];
     const nextInventory = discovery.complete
       ? reconcileNftContractInventory({
-          assetInput: "",
+          assetInput: inventoryBase,
           contractAddress: discovery.contractAddress,
           standard: discovery.standard,
           tokenIds: discovery.assets.map((asset) => asset.tokenId)
         })
       : {
           ...mergeNftAssetInput(
-            "",
+            inventoryBase,
             discovery.contractAddress,
             discovery.assets.map((asset) => asset.tokenId.toString()).join(","),
             { standard: discovery.standard }
@@ -1161,6 +1211,9 @@ export function EvmCollectionPage({
         { tokenIds: new Set<string>(), units: 0n }
       ])
     );
+    // A count of 0 only means "holds none" when every recognized Token has an
+    // owner; after a partial scan it may just mean "not found yet".
+    let ownersFullyKnown = discovery.complete;
     if (discovery.standard === "erc1155" && discovery.holdings?.length) {
       discovery.holdings.forEach((holding) => {
         const summary = holdingsByOwner.get(holding.ownerAddress.toLowerCase());
@@ -1173,7 +1226,10 @@ export function EvmCollectionPage({
         const ownerAddress = asset.ownerAddress
           || (selectedAccounts.length === 1 ? selectedAccounts[0].address : "");
         const summary = holdingsByOwner.get(ownerAddress.toLowerCase());
-        if (!summary) return;
+        if (!summary) {
+          if (!asset.ownerAddress) ownersFullyKnown = false;
+          return;
+        }
         summary.tokenIds.add(asset.tokenId.toString());
         if (discovery.standard === "erc721") summary.units += 1n;
       });
@@ -1189,13 +1245,17 @@ export function EvmCollectionPage({
     setStage("editing");
     setResults([]);
     setNftStandard(discovery.standard);
-    setNftAssetInputs((current) => ({ ...current, [discovery.standard]: nextInventory.serialized }));
+    writeNftAssetInput(discovery.standard, nextInventory.serialized);
     if (discovery.standard === "erc721") {
+      const inventoryTotal = parseEvmCollectionAssets(
+        nextInventory.serialized,
+        discovery.standard
+      ).validAssets.length;
       setNftFixedAmount((current) => {
         const fixedTotal = parseErc721CollectionLimit(current);
-        return fixedTotal !== null && fixedTotal <= recognizedTotal
+        return fixedTotal !== null && fixedTotal <= inventoryTotal
           ? current
-          : String(Math.max(1, recognizedTotal));
+          : String(Math.max(1, inventoryTotal));
       });
     }
     setAddressBalances({
@@ -1215,7 +1275,8 @@ export function EvmCollectionPage({
               ? `${holdingsByOwner.get(accountKey)?.tokenIds.size || 0} ID / ${holdingsByOwner.get(accountKey)?.units || 0n}`
               : String(holdingsByOwner.get(accountKey)?.tokenIds.size || 0),
             contractAddress: getAddress(discovery.contractAddress),
-            symbol: standardLabel
+            symbol: standardLabel,
+            zero: ownersFullyKnown && !holdingsByOwner.get(accountKey)?.tokenIds.size
           }],
           label: account.label
         };
@@ -1299,7 +1360,7 @@ export function EvmCollectionPage({
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current
       || running || fixedStandard !== "nft") return;
 
-    archiveCurrentRound(true);
+    archiveCurrentRound();
     planRef.current = [];
     retryPlanRef.current = [];
     setResults([]);
@@ -1803,50 +1864,11 @@ export function EvmCollectionPage({
       operationRef.current = false;
       pauseControllerRef.current.resume();
       setPaused(false);
+      // The round moved funds, so the balances read before it no longer hold;
+      // left on screen they would feed "select zero balance" stale numbers.
+      balanceRequestRef.current += 1;
+      setAddressBalances(emptyAddressBalanceState);
     }
-  };
-
-  const clearWorkbench = () => {
-    pauseControllerRef.current.resume();
-    setPaused(false);
-    keyInputRef.current?.clear();
-    balanceRequestRef.current += 1;
-    tokenRecognitionRequestRef.current += 1;
-    planRef.current = [];
-    retryPlanRef.current = [];
-    setErc20AssetInput("");
-    setNftAssetInputs({ erc721: "", erc1155: "" });
-    setDiscoveryContract("");
-    setPendingDiscovery(null);
-    setPendingTokenScan(null);
-    setTokenRangeStart("");
-    setTokenRangeEnd("");
-    setDiscoveryComplete(false);
-    setContractInspection(null);
-    setDiscoveryIssues([]);
-    setDiscoveryMessage("");
-    setNftStandard("erc721");
-    setNftInputResetNonce((current) => current + 1);
-    setTargetAddress("");
-    setMaxFeeAmount(defaultMaximumFeeAmount);
-    setAmountMode("all");
-    setPercentageAmount("100");
-    setFixedAmount("0.1");
-    setRandomMinimum("0.01");
-    setRandomMaximum("0.1");
-    setNftAmountMode("all");
-    setNftFixedAmount("1");
-    setConcurrency("3");
-    setMinimumDelay("0");
-    setMaximumDelay("0");
-    setResults([]);
-    setArchivedRound(null);
-    setRoundSequence(1);
-    setAddressBalances(emptyAddressBalanceState);
-    setTokenRecognition(emptyTokenRecognitionState);
-    setIssues([]);
-    setMessage("");
-    setStage("editing");
   };
 
   const parsedNftFixedAmount = parseErc721CollectionLimit(nftFixedAmount);
@@ -1868,7 +1890,7 @@ export function EvmCollectionPage({
   const canStart = targetIsValid && sourceKeyLineCount > 0 && executableAssetCount > 0
     && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
     && executionSettingsValid && rpcEndpointValid && !running
-    && !archivedRound?.requiresAcknowledgement;
+    && !acknowledgementRequired;
   const parsedTokenRangeStart = /^\d+$/.test(tokenRangeStart.trim())
     ? BigInt(tokenRangeStart.trim())
     : null;
@@ -1894,17 +1916,6 @@ export function EvmCollectionPage({
         <>
           <EvmGasBadge gas={gas} />
           <Badge variant="outline">{selectedNetwork.label}</Badge>
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hasSubmittedHash || archivedRound?.results.some((result) => Boolean(result.hash))
-              ? "当前记录包含已提交的交易哈希。清空前请先核对链上状态；清空后无法恢复。"
-              : "来源密钥、持仓识别结果、归集设置和历史记录将从页面清除。"}
-            disabled={running}
-            onConfirm={clearWorkbench}
-            title="清空归集工作台？"
-            triggerLabel="清空工作台"
-            triggerVariant="destructive"
-          />
         </>
       )}
       className="collection-shell collection-page"
@@ -1975,22 +1986,31 @@ export function EvmCollectionPage({
                   paused={paused}
                   total={results.length}
                 />
-              ) : retryableCount ? (
-                <ConfirmActionDialog
-                  confirmLabel={`重试 ${retryableCount} 个失败项`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : results.length && (stage === "complete" || stage === "error") ? (
-                <span className="hint" role="status">
-                  {workbenchStatus === "uncertain"
-                    ? "可继续编辑或识别；原交易需先核对，新的写入任务会在归档确认后开放。"
-                    : "可直接修改设置或再次识别，当前结果会自动移入下方记录。"}
-                </span>
+              ) : results.length && roundIsTerminal ? (
+                <>
+                  {retryableCount ? (
+                    <ConfirmActionDialog
+                      confirmLabel={`重试 ${retryableCount} 个失败项`}
+                      description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                      disabled={running}
+                      onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
+                      title="确认重试失败项？"
+                      triggerLabel={`重试失败项 (${retryableCount})`}
+                      triggerVariant="outline"
+                    />
+                  ) : null}
+                  <Button
+                    disabled={running}
+                    onClick={startNewRound}
+                    type="button"
+                    variant={retryableCount ? "outline" : "default"}
+                  >开始新一轮归集</Button>
+                  {currentRoundRequiresAcknowledgement ? (
+                    <span className="hint" role="status">
+                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。
+                    </span>
+                  ) : null}
+                </>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -2021,652 +2041,630 @@ export function EvmCollectionPage({
           )}
           title="归集设置"
         >
-          <div className="form collection-form">
-            {fixedStandard === "erc20" ? (
-              <SecretKeyInput
-                disabled={controlsLocked || assetImporting}
-                mode="evm"
-                onDirty={(reason, address) => {
-                  if (reason === "remove" && address) {
-                    setAddressBalances((current) => ({
-                      ...current,
-                      rows: current.rows.filter((row) => row.address.toLowerCase() !== address.toLowerCase())
-                    }));
-                  }
-                  invalidatePlan(true, false, reason !== "remove");
-                }}
-                onImportingChange={handleKeyImportingChange}
-                onLineCountChange={setSourceKeyLineCount}
-                ref={keyInputRef}
-                walletBalances={walletBalances}
-                walletStatuses={walletStatuses}
-              />
-            ) : null}
+          <div className="form workbench-form">
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">来源与目标</h3>
+              {fixedStandard === "erc20" ? (
+                <SecretKeyInput
+                  disabled={controlsLocked || assetImporting}
+                  mode="evm"
+                  onDirty={(reason, addresses) => {
+                    if (reason === "remove" && addresses?.length) removeAddressBalances(addresses);
+                    invalidatePlan();
+                  }}
+                  onImportingChange={handleKeyImportingChange}
+                  onLineCountChange={setSourceKeyLineCount}
+                  ref={keyInputRef}
+                  walletBalances={walletBalances}
+                  walletStatuses={walletStatuses}
+                />
+              ) : null}
 
-            {fixedStandard === "nft" ? (
-              <SecretKeyInput
-                compactStatuses
-                disabled={controlsLocked || assetImporting}
-                mode="evm"
-                onDirty={() => {
-                  setPendingDiscovery(null);
-                  setPendingTokenScan(null);
-                  setTokenRangeStart("");
-                  setTokenRangeEnd("");
-                  setDiscoveryComplete(false);
-                  setNftAssetInputs({ erc721: "", erc1155: "" });
-                  setAddressBalances(emptyAddressBalanceState);
-                  invalidatePlan();
-                }}
-                onImportingChange={handleKeyImportingChange}
-                onLineCountChange={setSourceKeyLineCount}
-                ref={keyInputRef}
-                walletBalances={walletBalances}
-                walletStatuses={walletStatuses}
-              />
-            ) : null}
+              {fixedStandard === "nft" ? (
+                <SecretKeyInput
+                  compactStatuses
+                  disabled={controlsLocked || assetImporting}
+                  mode="evm"
+                  onDirty={(reason, addresses) => {
+                    setPendingDiscovery(null);
+                    setPendingTokenScan(null);
+                    setTokenRangeStart("");
+                    setTokenRangeEnd("");
+                    if (reason === "remove" && addresses?.length) removeAddressBalances(addresses);
+                    invalidatePlan();
+                  }}
+                  onImportingChange={handleKeyImportingChange}
+                  onLineCountChange={setSourceKeyLineCount}
+                  ref={keyInputRef}
+                  walletBalances={walletBalances}
+                  walletStatuses={walletStatuses}
+                />
+              ) : null}
 
-            {fixedStandard === "erc20" ? (
-              <>
-                <Field>
-                  <FieldLabel htmlFor="evm-collection-asset-0">Token 清单</FieldLabel>
-                  <div className="erc20-token-editor">
-                    {tokenInputRows.map((row, index) => {
-                      const trimmed = row.trim();
-                      const validAddress = isAddress(trimmed) && getAddress(trimmed) !== zeroAddress;
-                      const preview = validAddress
-                        ? recognizedTokenByAddress.get(getAddress(trimmed).toLowerCase())
-                        : undefined;
-                      const recognitionLabel = !trimmed
-                        ? "ERC20"
-                        : !validAddress
-                          ? "地址无效"
-                          : preview?.status === "ready"
-                            ? preview.symbol || "TOKEN"
-                            : preview?.status === "error" || tokenRecognition.status === "error"
-                              ? "识别失败"
-                              : "识别中";
-                      const recognitionStatus = !trimmed
-                        ? "idle"
-                        : !validAddress
-                          ? "error"
-                          : preview?.status === "ready"
-                            ? "ready"
-                            : preview?.status === "error" || tokenRecognition.status === "error"
-                              ? "error"
-                              : "loading";
-                      const tokenLocked = preview?.status === "ready";
-                      return (
-                        <div
-                          className="erc20-token-row"
-                          data-locked={tokenLocked || undefined}
-                          data-status={recognitionStatus}
-                          key={index}
-                        >
-                          <Input
-                            aria-describedby={`evm-collection-asset-status-${index}`}
-                            aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
-                            autoCapitalize="none"
-                            autoComplete="off"
-                            disabled={controlsLocked}
-                            id={`evm-collection-asset-${index}`}
-                            onChange={(event) => {
-                              if (tokenLocked) return;
-                              const nextRows = [...tokenInputRows];
-                              nextRows[index] = event.target.value;
-                              updateErc20TokenRows(nextRows);
-                            }}
-                            onPaste={(event) => {
-                              if (tokenLocked) {
-                                event.preventDefault();
-                                return;
-                              }
-                              const pastedRows = event.clipboardData.getData("text")
-                                .split(/\r?\n/)
-                                .map((value) => value.trim())
-                                .filter(Boolean);
-                              if (pastedRows.length <= 1) return;
-                              event.preventDefault();
-                              updateErc20TokenRows([
-                                ...tokenInputRows.slice(0, index),
-                                ...pastedRows,
-                                ...tokenInputRows.slice(index + 1)
-                              ]);
-                            }}
-                            placeholder="0x…"
-                            readOnly={tokenLocked}
-                            spellCheck={false}
-                            title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
-                            value={row}
-                          />
-                          <span
-                            aria-live="polite"
-                            className="erc20-token-symbol"
+              {fixedStandard === "erc20" ? (
+                <>
+                  <Field>
+                    <FieldLabel htmlFor="evm-collection-asset-0">Token 清单</FieldLabel>
+                    <div className="erc20-token-editor">
+                      {tokenInputRows.map((row, index) => {
+                        const trimmed = row.trim();
+                        const validAddress = isAddress(trimmed) && getAddress(trimmed) !== zeroAddress;
+                        const preview = validAddress
+                          ? recognizedTokenByAddress.get(getAddress(trimmed).toLowerCase())
+                          : undefined;
+                        const recognitionLabel = !trimmed
+                          ? "ERC20"
+                          : !validAddress
+                            ? "地址无效"
+                            : preview?.status === "ready"
+                              ? preview.symbol || "TOKEN"
+                              : preview?.status === "error" || tokenRecognition.status === "error"
+                                ? "识别失败"
+                                : "识别中";
+                        const recognitionStatus = !trimmed
+                          ? "idle"
+                          : !validAddress
+                            ? "error"
+                            : preview?.status === "ready"
+                              ? "ready"
+                              : preview?.status === "error" || tokenRecognition.status === "error"
+                                ? "error"
+                                : "loading";
+                        const tokenLocked = preview?.status === "ready";
+                        return (
+                          <div
+                            className="erc20-token-row"
+                            data-locked={tokenLocked || undefined}
                             data-status={recognitionStatus}
-                            id={`evm-collection-asset-status-${index}`}
-                            title={preview?.name || preview?.message || recognitionLabel}
+                            key={index}
                           >
-                            {recognitionLabel}
-                          </span>
-                          {tokenInputRows.length > 1 || trimmed ? (
-                            <Button
-                              aria-label={`删除 Token 地址 ${index + 1}`}
+                            <Input
+                              aria-describedby={`evm-collection-asset-status-${index}`}
+                              aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
+                              autoCapitalize="none"
+                              autoComplete="off"
                               disabled={controlsLocked}
-                              onClick={() => updateErc20TokenRows(
-                                tokenInputRows.length === 1
-                                  ? [""]
-                                  : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
-                              )}
-                              size="sm"
-                              type="button"
-                              variant="ghost"
+                              id={`evm-collection-asset-${index}`}
+                              onChange={(event) => {
+                                if (tokenLocked) return;
+                                const nextRows = [...tokenInputRows];
+                                nextRows[index] = event.target.value;
+                                updateErc20TokenRows(nextRows);
+                              }}
+                              onPaste={(event) => {
+                                if (tokenLocked) {
+                                  event.preventDefault();
+                                  return;
+                                }
+                                const pastedRows = event.clipboardData.getData("text")
+                                  .split(/\r?\n/)
+                                  .map((value) => value.trim())
+                                  .filter(Boolean);
+                                if (pastedRows.length <= 1) return;
+                                event.preventDefault();
+                                updateErc20TokenRows([
+                                  ...tokenInputRows.slice(0, index),
+                                  ...pastedRows,
+                                  ...tokenInputRows.slice(index + 1)
+                                ]);
+                              }}
+                              placeholder={index === 0 && nativeCurrencyEnabled
+                                ? `0x…（留空归集 ${selectedNetwork.nativeCurrency.symbol}）`
+                                : "0x…"}
+                              readOnly={tokenLocked}
+                              spellCheck={false}
+                              title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
+                              value={row}
+                            />
+                            <span
+                              aria-live="polite"
+                              className="erc20-token-symbol"
+                              data-status={recognitionStatus}
+                              id={`evm-collection-asset-status-${index}`}
+                              title={preview?.name || preview?.message || recognitionLabel}
                             >
-                              删除
-                            </Button>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                    <Button
-                      className="erc20-token-add"
-                      disabled={controlsLocked}
-                      onClick={() => {
-                        const nextIndex = tokenInputRows.length;
-                        updateErc20TokenRows([...tokenInputRows, ""]);
-                        window.requestAnimationFrame(() => {
-                          document.getElementById(`evm-collection-asset-${nextIndex}`)?.focus();
-                        });
-                      }}
-                      size="sm"
-                      type="button"
-                      variant="ghost"
-                    >
-                      添加 Token
-                    </Button>
-                  </div>
-                  <FieldDescription>
-                    {nativeCurrencyEnabled
-                      ? `可选；留空则归集 ${selectedNetwork.nativeCurrency.symbol}，填写后归集列出的 ERC20 Token。`
-                      : "当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。"}
-                  </FieldDescription>
-                  <div aria-label="地址余额查询" className="address-balance-control">
-                    <Button
-                      disabled={controlsLocked
-                        || addressBalances.status === "loading"
-                        || sourceKeyLineCount === 0
-                        || !effectiveRpcEndpoint
-                        || (Boolean(assetInput.trim()) && parsedAssetCount === 0)}
-                      onClick={() => void viewAddressBalances()}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      {addressBalances.status === "loading" ? "查询中" : "查看地址余额"}
-                    </Button>
-                    {addressBalances.status === "error" ? (
-                      <p
-                        aria-live="polite"
-                        className="address-balance-control__status"
-                        data-status={addressBalances.status}
-                        role="status"
-                      >
-                        {addressBalances.message}
-                      </p>
-                    ) : null}
-                  </div>
-                </Field>
-
-                <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
-                  <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
-                  <Input
-                    aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
-                    autoCapitalize="none"
-                    autoComplete="off"
-                    disabled={controlsLocked}
-                    id="evm-collection-target"
-                    onChange={(event) => {
-                      setTargetAddress(event.target.value);
-                      invalidatePlan();
-                    }}
-                    placeholder="0x…"
-                    spellCheck={false}
-                    value={targetAddress}
-                  />
-                  {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
-                </Field>
-              </>
-            ) : (
-              <>
-                <NftAssetInput
-                  autoDiscovery={(
-                    <section aria-labelledby="nft-discovery-title" className="nft-discovery-card">
-                      <div className="nft-discovery-card__bar">
-                        <div className="nft-discovery-card__title">
-                          <h4 id="nft-discovery-title">持仓识别</h4>
-                          <Badge variant="outline">
-                            {discoveryComplete ? `${parsedAssetCount} 个 ${nftStandard.toUpperCase()} Token ID` : "OpenSea + RPC 复核"}
-                          </Badge>
-                        </div>
-                        <Button
-                          disabled={!discoveryRunning && (controlsLocked || !discoveryContractIsValid || !discoverySourceReady)}
-                          onClick={() => discoveryRunning ? cancelNftDiscovery() : void discoverOwnedNft()}
-                          size="sm"
-                          type="button"
-                          variant={discoveryRunning ? "outline" : "default"}
-                        >
-                          {discoveryRunning
-                            ? "停止识别"
-                            : discoveryComplete || assetInput.trim() ? "再次识别" : "识别持仓"}
-                        </Button>
-                      </div>
-
-                      {contractInspection ? (
-                        <div className="nft-discovery-card__contract">
-                          <strong>{contractInspection.name || "NFT 合约"}</strong>
-                          <Badge variant="outline">
-                            {contractInspection.symbol ? contractInspection.symbol + " · " : ""}
-                            {contractInspection.standard.toUpperCase()}
-                          </Badge>
-                          <code title={contractInspection.address}>{shorten(contractInspection.address, 6)}</code>
-                        </div>
-                      ) : null}
-
-                      {pendingTokenScan ? (
-                        <Alert className="nft-token-scan" data-scanning={discoveryRunning || undefined}>
-                          <AlertTitle>直接探测 Token ID</AlertTitle>
-                          <AlertDescription>
-                            <p>
-                              OpenSea 与 Transfer 事件仍未完成余额对账。页面会在固定快照区块对指定范围调用
-                              <code> ownerOf </code>，并用来源地址的 <code>balanceOf</code> 继续复核。
-                            </p>
-                            <div className="nft-token-scan__range" aria-label="Token ID 探测范围">
-                              <div>
-                                <span>快照区块</span>
-                                <strong>{pendingTokenScan.snapshotBlock.toLocaleString()}</strong>
-                              </div>
-                              <div>
-                                <span>预计 ownerOf</span>
-                                <strong>{tokenRangeSize?.toLocaleString() || "—"} 次</strong>
-                              </div>
-                              <div><span>单轮上限</span><strong>{tokenRangeRpcLimit.toLocaleString()} 次</strong></div>
-                            </div>
-                            <div className="nft-token-scan__fields">
-                              <Field data-invalid={tokenRangeStart.trim() && parsedTokenRangeStart === null ? true : undefined}>
-                                <FieldLabel htmlFor="nft-token-range-start">起始 Token ID</FieldLabel>
-                                <Input
-                                  aria-invalid={tokenRangeStart.trim() && parsedTokenRangeStart === null ? true : undefined}
-                                  disabled={discoveryRunning}
-                                  id="nft-token-range-start"
-                                  inputMode="numeric"
-                                  min="0"
-                                  onChange={(event) => setTokenRangeStart(event.target.value)}
-                                  step="1"
-                                  type="number"
-                                  value={tokenRangeStart}
-                                />
-                              </Field>
-                              <Field data-invalid={tokenRangeEnd.trim() && parsedTokenRangeEnd === null ? true : undefined}>
-                                <FieldLabel htmlFor="nft-token-range-end">结束 Token ID</FieldLabel>
-                                <Input
-                                  aria-invalid={tokenRangeEnd.trim() && parsedTokenRangeEnd === null ? true : undefined}
-                                  disabled={discoveryRunning}
-                                  id="nft-token-range-end"
-                                  inputMode="numeric"
-                                  min="0"
-                                  onChange={(event) => setTokenRangeEnd(event.target.value)}
-                                  step="1"
-                                  type="number"
-                                  value={tokenRangeEnd}
-                                />
-                              </Field>
-                            </div>
-                            <FieldDescription>
-                              范围命中全部来源余额后会自动停止；找不全时只展示已验证结果，不会删除旧清单项。
-                            </FieldDescription>
-                            {!tokenRangeValid ? (
-                              <FieldError>请输入有效范围，且单轮 ownerOf 调用不能超过 {tokenRangeRpcLimit.toLocaleString()} 次</FieldError>
-                            ) : null}
-                            <div className="nft-token-scan__actions">
+                              {recognitionLabel}
+                            </span>
+                            {tokenInputRows.length > 1 || trimmed ? (
                               <Button
-                                disabled={discoveryRunning || !tokenRangeValid}
-                                onClick={() => void runPendingTokenScan()}
-                                size="sm"
-                                type="button"
-                              >
-                                {discoveryRunning ? "正在探测" : "探测 Token ID"}
-                              </Button>
-                              <Button
-                                onClick={cancelNftDiscovery}
+                                aria-label={`删除 Token 地址 ${index + 1}`}
+                                disabled={controlsLocked}
+                                onClick={() => updateErc20TokenRows(
+                                  tokenInputRows.length === 1
+                                    ? [""]
+                                    : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
+                                )}
                                 size="sm"
                                 type="button"
                                 variant="ghost"
-                              >{discoveryRunning ? "停止探测" : "取消"}</Button>
-                            </div>
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-
-                      {pendingDiscovery ? (
-                        <Alert>
-                          <AlertTitle>部分发现结果</AlertTitle>
-                          <AlertDescription>
-                            <p>{pendingDiscovery.assets.length} 个 Token ID</p>
-                            <code>
-                              {pendingDiscovery.assets.slice(0, 8).map((asset) => asset.tokenId.toString()).join(" · ")}
-                              {pendingDiscovery.assets.length > 8 ? " · …" : ""}
-                            </code>
-                            <ConfirmActionDialog
-                              confirmLabel="确认使用部分结果"
-                              description="只会使用当前已验证的 Token ID；未覆盖的资产不会自动归集，需另行核对。"
-                              disabled={controlsLocked}
-                              onConfirm={() => applyPendingDiscovery(true)}
-                              title="使用部分识别结果？"
-                              triggerLabel="确认使用部分结果"
-                              triggerVariant="outline"
-                            />
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-
-                      {discoveryMessage ? (
-                        <p aria-live="polite" className="nft-discovery-card__status" role="status">
-                          {discoveryMessage}
+                              >
+                                删除
+                              </Button>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                      <Button
+                        className="erc20-token-add"
+                        disabled={controlsLocked}
+                        onClick={() => {
+                          const nextIndex = tokenInputRows.length;
+                          updateErc20TokenRows([...tokenInputRows, ""]);
+                          window.requestAnimationFrame(() => {
+                            document.getElementById(`evm-collection-asset-${nextIndex}`)?.focus();
+                          });
+                        }}
+                        size="sm"
+                        type="button"
+                        variant="ghost"
+                      >
+                        添加 Token
+                      </Button>
+                    </div>
+                    {!nativeCurrencyEnabled ? (
+                      <FieldDescription>当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。</FieldDescription>
+                    ) : null}
+                    <div aria-label="地址余额查询" className="address-balance-control">
+                      <Button
+                        disabled={controlsLocked
+                          || addressBalances.status === "loading"
+                          || sourceKeyLineCount === 0
+                          || !effectiveRpcEndpoint
+                          || (Boolean(assetInput.trim()) && parsedAssetCount === 0)}
+                        onClick={() => void viewAddressBalances()}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        {addressBalances.status === "loading" ? "查询中" : "查看地址余额"}
+                      </Button>
+                      {addressBalances.status === "error" ? (
+                        <p
+                          aria-live="polite"
+                          className="address-balance-control__status"
+                          data-status={addressBalances.status}
+                          role="status"
+                        >
+                          {addressBalances.message}
                         </p>
                       ) : null}
+                    </div>
+                  </Field>
 
-                      {discoveryIssues.length ? (
-                        <Alert variant="destructive">
-                          <AlertTitle>识别提示</AlertTitle>
-                          <AlertDescription>
-                            <ul>
-                              {discoveryIssues.slice(0, 8).map((issue, index) => (
-                                <li key={issue + "-" + index}>{issue}</li>
-                              ))}
-                            </ul>
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-                    </section>
-                  )}
-                  contractAddress={discoveryContract}
-                  contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
-                  defaultMode="auto"
-                  disabled={controlsLocked || keyImporting}
-                  key={nftInputResetNonce}
-                  onChange={(value) => {
-                    setCurrentAssetInput(value);
-                    invalidatePlan();
-                  }}
-                  onContractAddressChange={(value) => {
-                    setDiscoveryContract(value);
-                    setNftAssetInputs({ erc721: "", erc1155: "" });
-                    setAddressBalances(emptyAddressBalanceState);
-                    setPendingDiscovery(null);
-                    setPendingTokenScan(null);
-                    setTokenRangeStart("");
-                    setTokenRangeEnd("");
-                    setDiscoveryComplete(false);
-                    setContractInspection(null);
-                    setDiscoveryMessage("");
-                    setDiscoveryIssues([]);
-                    invalidatePlan();
-                  }}
-                  onImportingChange={handleAssetImportingChange}
-                  onStandardChange={(nextStandard) => {
-                    setNftStandard(nextStandard);
-                    if (nextStandard === "erc1155") setNftAmountMode("all");
-                    setAddressBalances(emptyAddressBalanceState);
-                    setPendingDiscovery(null);
-                    setPendingTokenScan(null);
-                    setDiscoveryComplete(false);
-                    setDiscoveryMessage("");
-                    setDiscoveryIssues([]);
-                    invalidatePlan();
-                  }}
-                  standard={nftStandard}
-                  value={assetInput}
-                />
-
-                <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
-                  <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
-                  <Input
-                    aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
-                    autoCapitalize="none"
-                    autoComplete="off"
-                    disabled={controlsLocked}
-                    id="evm-collection-target"
-                    onChange={(event) => {
-                      setTargetAddress(event.target.value);
-                      invalidatePlan();
-                    }}
-                    placeholder="0x…"
-                    spellCheck={false}
-                    value={targetAddress}
-                  />
-                  {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
-                </Field>
-
-              </>
-            )}
-
-            <h3 className="collection-config-heading">归集配置</h3>
-
-            <div className="evm-network-row" aria-label="网络与 RPC">
-              <Field>
-                <div className="evm-network-label-row">
-                  <FieldLabel htmlFor="evm-collection-network">网络</FieldLabel>
-                  <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
-                </div>
-                <SearchableSelect
-                  disabled={controlsLocked}
-                  id="evm-collection-network"
-                  listboxLabel="EVM 归集网络"
-                  metaLabel="Chain ID"
-                  onChange={selectNetwork}
-                  options={networkOptions}
-                  placeholder="搜索网络或 Chain ID"
-                  triggerLabel="选择归集网络"
-                  value={networkId}
-                />
-              </Field>
-              <Field data-invalid={!rpcEndpointValid ? true : undefined}>
-                <FieldLabel htmlFor="evm-collection-rpc">RPC</FieldLabel>
-                <Input
-                  aria-invalid={!rpcEndpointValid ? true : undefined}
-                  disabled={controlsLocked}
-                  id="evm-collection-rpc"
-                  onBlur={() => rememberRpcEndpoint("evm", networkId, rpcEndpoint)}
-                  onChange={(event) => {
-                    setRpcEndpoint(event.target.value);
-                    setPendingDiscovery(null);
-                    setPendingTokenScan(null);
-                    setTokenRangeStart("");
-                    setTokenRangeEnd("");
-                    setDiscoveryComplete(false);
-                    setContractInspection(null);
-                    if (fixedStandard === "nft") {
-                      setNftAssetInputs({ erc721: "", erc1155: "" });
-                      setAddressBalances(emptyAddressBalanceState);
-                    }
-                    invalidatePlan();
-                  }}
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-                {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
-              </Field>
-            </div>
-
-            {fixedStandard === "erc20" ? (
-              <Field data-invalid={!amountPolicyValid ? true : undefined}>
-                <FieldLabel>归集数量</FieldLabel>
-                <Tabs
-                  onValueChange={(value) => {
-                    setAmountMode(value as AmountMode);
-                    invalidatePlan();
-                  }}
-                  value={amountMode}
-                >
-                  <TabsList aria-label="EVM 归集数量模式">
-                    {Object.entries(amountModeLabels).map(([value, label]) => (
-                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
-                    ))}
-                  </TabsList>
-                </Tabs>
-                {amountMode === "percentage" ? (
-                  <Input
-                    aria-label="归集百分比"
-                    disabled={controlsLocked}
-                    inputMode="decimal"
-                    max="100"
-                    min="0.01"
-                    onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
-                    step="0.01"
-                    type="number"
-                    value={percentageAmount}
-                  />
-                ) : amountMode === "fixed" ? (
-                  <Input
-                    aria-label="每钱包每资产固定归集数量"
-                    disabled={controlsLocked}
-                    inputMode="decimal"
-                    min="0"
-                    onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
-                    step="0.000001"
-                    type="number"
-                    value={fixedAmount}
-                  />
-                ) : amountMode === "random" ? (
-                  <div className="amount-grid">
-                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
-                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
-                  </div>
-                ) : null}
-                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
-              </Field>
-            ) : null}
-
-            {fixedStandard === "nft" ? (
-              nftStandard === "erc1155" ? (
-                <Field>
-                  <div className="flex w-fit items-center gap-1">
-                    <FieldLabel>归集数量</FieldLabel>
-                    <HelpTooltip label="归集数量说明">
-                      归集每个已选来源钱包中、每个已列出 Token ID 的全部实时余额。余额会在提交前重新读取。
-                    </HelpTooltip>
-                  </div>
-                  <Badge variant="outline">归集全部余额</Badge>
-                  <FieldDescription>
-                    ERC1155 暂不提供“指定总数量”，避免在多个钱包和 Token ID 之间产生不明确的份数分配。
-                  </FieldDescription>
-                </Field>
-              ) : (
-                <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
-                  <div className="flex w-fit items-center gap-1">
-                    <FieldLabel>归集数量</FieldLabel>
-                    <HelpTooltip label="归集数量说明">
-                      归集全部：归集所有已识别的 ERC721；指定总数量：从已选钱包合计归集 N 个，不足则全部归集。
-                    </HelpTooltip>
-                  </div>
-                  <Tabs
-                    onValueChange={(value) => {
-                      setNftAmountMode(value as "all" | "fixed");
-                      invalidatePlan();
-                    }}
-                    value={nftAmountMode}
-                  >
-                    <TabsList aria-label="ERC721 归集数量模式">
-                      <TabsTrigger disabled={controlsLocked} value="all">归集全部</TabsTrigger>
-                      <TabsTrigger disabled={controlsLocked || parsedAssetCount === 0} value="fixed">指定总数量</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  {nftAmountMode === "fixed" ? (
+                  <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
+                    <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
                     <Input
-                      aria-label="ERC721 归集总数量"
-                      disabled={controlsLocked || parsedAssetCount === 0}
-                      inputMode="numeric"
-                      max={Math.max(1, parsedAssetCount)}
-                      min="1"
+                      aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      disabled={controlsLocked}
+                      id="evm-collection-target"
                       onChange={(event) => {
-                        setNftFixedAmount(event.target.value);
+                        setTargetAddress(event.target.value);
                         invalidatePlan();
                       }}
-                      step="1"
-                      type="number"
-                      value={nftFixedAmount}
+                      placeholder="0x…"
+                      spellCheck={false}
+                      value={targetAddress}
                     />
-                  ) : null}
-                  {!nftAmountPolicyValid ? (
-                    <FieldError>请输入 1–{parsedAssetCount} 的整数</FieldError>
-                  ) : null}
-                </Field>
-              )
-            ) : null}
+                    {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                  </Field>
+                </>
+              ) : (
+                <>
+                  <NftAssetInput
+                    autoDiscovery={(
+                      <section aria-labelledby="nft-discovery-title" className="nft-discovery-card">
+                        <div className="nft-discovery-card__bar">
+                          <div className="nft-discovery-card__title">
+                            <h4 id="nft-discovery-title">持仓识别</h4>
+                            {discoveryComplete ? (
+                              <Badge variant="outline">{parsedAssetCount} 个 {nftStandard.toUpperCase()} Token ID</Badge>
+                            ) : null}
+                          </div>
+                          <Button
+                            disabled={!discoveryRunning && (controlsLocked || !discoveryContractIsValid || !discoverySourceReady)}
+                            onClick={() => discoveryRunning ? cancelNftDiscovery() : void discoverOwnedNft()}
+                            size="sm"
+                            type="button"
+                            variant={discoveryRunning ? "outline" : "default"}
+                          >
+                            {discoveryRunning
+                              ? "停止识别"
+                              : discoveryComplete || assetInput.trim() ? "再次识别" : "识别持仓"}
+                          </Button>
+                        </div>
 
-            <div className="field-row execution-settings-row">
-              <Field>
-                <div className="flex w-fit items-center gap-1">
-                  <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
-                  {fixedStandard === "nft" ? (
-                    <HelpTooltip label="并发钱包数说明">
-                      可按 RPC 承载能力自行设置；高于已选钱包数时只执行现有钱包，不会产生额外任务。
-                    </HelpTooltip>
-                  ) : null}
-                </div>
-                <Input
-                  disabled={controlsLocked}
-                  id="evm-collection-concurrency"
-                  inputMode="numeric"
-                  max="20"
-                  min="1"
-                  onChange={(event) => { setConcurrency(event.target.value); invalidatePlan(); }}
-                  step="1"
-                  type="number"
-                  value={concurrency}
-                />
-              </Field>
-              <Field>
-                <FieldLabel>随机延迟（秒）</FieldLabel>
-                <div className="amount-grid compact-range">
-                  <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
-                  <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
-                </div>
-              </Field>
+                        {contractInspection ? (
+                          <div className="nft-discovery-card__contract">
+                            <strong>{contractInspection.name || "NFT 合约"}</strong>
+                            <Badge variant="outline">
+                              {contractInspection.symbol ? contractInspection.symbol + " · " : ""}
+                              {contractInspection.standard.toUpperCase()}
+                            </Badge>
+                            <code title={contractInspection.address}>{shorten(contractInspection.address, 6)}</code>
+                          </div>
+                        ) : null}
+
+                        {pendingTokenScan ? (
+                          <Alert className="nft-token-scan" data-scanning={discoveryRunning || undefined}>
+                            <AlertTitle>直接探测 Token ID</AlertTitle>
+                            <AlertDescription>
+                              <p>
+                                OpenSea 与 Transfer 事件仍未完成余额对账。页面会在固定快照区块对指定范围调用
+                                <code> ownerOf </code>，并用来源地址的 <code>balanceOf</code> 继续复核。
+                              </p>
+                              <div className="nft-token-scan__range" aria-label="Token ID 探测范围">
+                                <div>
+                                  <span>快照区块</span>
+                                  <strong>{pendingTokenScan.snapshotBlock.toLocaleString()}</strong>
+                                </div>
+                                <div>
+                                  <span>预计 ownerOf</span>
+                                  <strong>{tokenRangeSize?.toLocaleString() || "—"} 次</strong>
+                                </div>
+                                <div><span>单轮上限</span><strong>{tokenRangeRpcLimit.toLocaleString()} 次</strong></div>
+                              </div>
+                              <div className="nft-token-scan__fields">
+                                <Field data-invalid={tokenRangeStart.trim() && parsedTokenRangeStart === null ? true : undefined}>
+                                  <FieldLabel htmlFor="nft-token-range-start">起始 Token ID</FieldLabel>
+                                  <Input
+                                    aria-invalid={tokenRangeStart.trim() && parsedTokenRangeStart === null ? true : undefined}
+                                    disabled={discoveryRunning}
+                                    id="nft-token-range-start"
+                                    inputMode="numeric"
+                                    min="0"
+                                    onChange={(event) => setTokenRangeStart(event.target.value)}
+                                    step="1"
+                                    type="number"
+                                    value={tokenRangeStart}
+                                  />
+                                </Field>
+                                <Field data-invalid={tokenRangeEnd.trim() && parsedTokenRangeEnd === null ? true : undefined}>
+                                  <FieldLabel htmlFor="nft-token-range-end">结束 Token ID</FieldLabel>
+                                  <Input
+                                    aria-invalid={tokenRangeEnd.trim() && parsedTokenRangeEnd === null ? true : undefined}
+                                    disabled={discoveryRunning}
+                                    id="nft-token-range-end"
+                                    inputMode="numeric"
+                                    min="0"
+                                    onChange={(event) => setTokenRangeEnd(event.target.value)}
+                                    step="1"
+                                    type="number"
+                                    value={tokenRangeEnd}
+                                  />
+                                </Field>
+                              </div>
+                              {!tokenRangeValid ? (
+                                <FieldError>请输入有效范围，且单轮 ownerOf 调用不能超过 {tokenRangeRpcLimit.toLocaleString()} 次</FieldError>
+                              ) : null}
+                              <div className="nft-token-scan__actions">
+                                <Button
+                                  disabled={discoveryRunning || !tokenRangeValid}
+                                  onClick={() => void runPendingTokenScan()}
+                                  size="sm"
+                                  type="button"
+                                >
+                                  {discoveryRunning ? "正在探测" : "探测 Token ID"}
+                                </Button>
+                                <Button
+                                  onClick={cancelNftDiscovery}
+                                  size="sm"
+                                  type="button"
+                                  variant="ghost"
+                                >{discoveryRunning ? "停止探测" : "取消"}</Button>
+                              </div>
+                            </AlertDescription>
+                          </Alert>
+                        ) : null}
+
+                        {pendingDiscovery ? (
+                          <Alert>
+                            <AlertTitle>部分发现结果</AlertTitle>
+                            <AlertDescription>
+                              <p>{pendingDiscovery.assets.length} 个 Token ID</p>
+                              <code>
+                                {pendingDiscovery.assets.slice(0, 8).map((asset) => asset.tokenId.toString()).join(" · ")}
+                                {pendingDiscovery.assets.length > 8 ? " · …" : ""}
+                              </code>
+                              <ConfirmActionDialog
+                                confirmLabel="确认使用部分结果"
+                                description="只会使用当前已验证的 Token ID；未覆盖的资产不会自动归集，需另行核对。"
+                                disabled={controlsLocked}
+                                onConfirm={() => applyPendingDiscovery(true)}
+                                title="使用部分识别结果？"
+                                triggerLabel="确认使用部分结果"
+                                triggerVariant="outline"
+                              />
+                            </AlertDescription>
+                          </Alert>
+                        ) : null}
+
+                        {discoveryMessage ? (
+                          <p aria-live="polite" className="nft-discovery-card__status" role="status">
+                            {discoveryMessage}
+                          </p>
+                        ) : null}
+
+                        {discoveryIssues.length ? (
+                          <Alert variant="destructive">
+                            <AlertTitle>识别提示</AlertTitle>
+                            <AlertDescription>
+                              <ul>
+                                {discoveryIssues.slice(0, 8).map((issue, index) => (
+                                  <li key={issue + "-" + index}>{issue}</li>
+                                ))}
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        ) : null}
+                      </section>
+                    )}
+                    contractAddress={discoveryContract}
+                    contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
+                    defaultMode="auto"
+                    disabled={controlsLocked || keyImporting}
+                    onChange={(value) => {
+                      setCurrentAssetInput(value);
+                      invalidatePlan();
+                    }}
+                    onContractAddressChange={(value) => {
+                      setDiscoveryContract(value);
+                      // Per-wallet counts describe the previous contract; the
+                      // recognized Token IDs themselves stay in the inventory.
+                      setAddressBalances(emptyAddressBalanceState);
+                      setPendingDiscovery(null);
+                      setPendingTokenScan(null);
+                      setTokenRangeStart("");
+                      setTokenRangeEnd("");
+                      setDiscoveryComplete(false);
+                      setContractInspection(null);
+                      setDiscoveryMessage("");
+                      setDiscoveryIssues([]);
+                      invalidatePlan();
+                    }}
+                    onImportingChange={handleAssetImportingChange}
+                    onStandardChange={(nextStandard) => {
+                      setNftStandard(nextStandard);
+                      if (nextStandard === "erc1155") setNftAmountMode("all");
+                      setAddressBalances(emptyAddressBalanceState);
+                      setPendingDiscovery(null);
+                      setPendingTokenScan(null);
+                      setDiscoveryComplete(false);
+                      setDiscoveryMessage("");
+                      setDiscoveryIssues([]);
+                      invalidatePlan();
+                    }}
+                    standard={nftStandard}
+                    value={assetInput}
+                  />
+
+                  <Field data-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}>
+                    <FieldLabel htmlFor="evm-collection-target">目标地址</FieldLabel>
+                    <Input
+                      aria-invalid={targetAddress.trim() && !targetIsValid ? true : undefined}
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      disabled={controlsLocked}
+                      id="evm-collection-target"
+                      onChange={(event) => {
+                        setTargetAddress(event.target.value);
+                        invalidatePlan();
+                      }}
+                      placeholder="0x…"
+                      spellCheck={false}
+                      value={targetAddress}
+                    />
+                    {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                  </Field>
+
+                </>
+              )}
             </div>
-            {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
-            <EvmGasSettings
-              disabled={controlsLocked}
-              gas={gas}
-              onSettingsChange={() => invalidatePlan()}
-            />
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">归集配置</h3>
 
-            <AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
-              <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
-                <FieldLabel htmlFor="evm-collection-max-fee">
-                  单笔最高网络费（{selectedNetwork.nativeCurrency.symbol}）
-                </FieldLabel>
-                <Input
-                  aria-invalid={maximumFeeAmount === null ? true : undefined}
-                  disabled={controlsLocked}
-                  id="evm-collection-max-fee"
-                  inputMode="decimal"
-                  min="0"
-                  onChange={(event) => {
-                    setMaxFeeAmount(event.target.value);
-                    invalidatePlan();
-                  }}
-                  step="0.000001"
-                  type="number"
-                  value={maxFeeAmount}
-                />
-                <FieldDescription>
-                  预计单笔网络费超过此值时停止提交；当前网络默认 {defaultMaximumFeeAmount} {selectedNetwork.nativeCurrency.symbol}。
-                </FieldDescription>
-                {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
-              </Field>
-            </AdvancedSettings>
+              <div className="evm-network-row" aria-label="网络与 RPC">
+                <Field>
+                  <div className="evm-network-label-row">
+                    <FieldLabel htmlFor="evm-collection-network">网络</FieldLabel>
+                    <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
+                  </div>
+                  <SearchableSelect
+                    disabled={controlsLocked}
+                    id="evm-collection-network"
+                    listboxLabel="EVM 归集网络"
+                    metaLabel="Chain ID"
+                    onChange={selectNetwork}
+                    options={networkOptions}
+                    placeholder="搜索网络或 Chain ID"
+                    triggerLabel="选择归集网络"
+                    value={networkId}
+                  />
+                </Field>
+                <Field data-invalid={!rpcEndpointValid ? true : undefined}>
+                  <FieldLabel htmlFor="evm-collection-rpc">RPC</FieldLabel>
+                  <Input
+                    aria-invalid={!rpcEndpointValid ? true : undefined}
+                    disabled={controlsLocked}
+                    id="evm-collection-rpc"
+                    onBlur={() => rememberRpcEndpoint("evm", networkId, rpcEndpoint)}
+                    onChange={(event) => {
+                      setRpcEndpoint(event.target.value);
+                      setPendingDiscovery(null);
+                      setPendingTokenScan(null);
+                      setTokenRangeStart("");
+                      setTokenRangeEnd("");
+                      setContractInspection(null);
+                      invalidatePlan();
+                    }}
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                  {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+                </Field>
+              </div>
+
+              {fixedStandard === "erc20" ? (
+                <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                  <FieldLabel>归集数量</FieldLabel>
+                  <Tabs
+                    onValueChange={(value) => {
+                      setAmountMode(value as AmountMode);
+                      invalidatePlan();
+                    }}
+                    value={amountMode}
+                  >
+                    <TabsList aria-label="EVM 归集数量模式">
+                      {Object.entries(amountModeLabels).map(([value, label]) => (
+                        <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                      ))}
+                    </TabsList>
+                  </Tabs>
+                  {amountMode === "percentage" ? (
+                    <Input
+                      aria-label="归集百分比"
+                      disabled={controlsLocked}
+                      inputMode="decimal"
+                      max="100"
+                      min="0.01"
+                      onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
+                      step="0.01"
+                      type="number"
+                      value={percentageAmount}
+                    />
+                  ) : amountMode === "fixed" ? (
+                    <Input
+                      aria-label="每钱包每资产固定归集数量"
+                      disabled={controlsLocked}
+                      inputMode="decimal"
+                      min="0"
+                      onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
+                      step="0.000001"
+                      type="number"
+                      value={fixedAmount}
+                    />
+                  ) : amountMode === "random" ? (
+                    <div className="amount-grid">
+                      <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
+                      <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
+                    </div>
+                  ) : null}
+                  {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+                </Field>
+              ) : null}
+
+              {fixedStandard === "nft" ? (
+                nftStandard === "erc1155" ? (
+                  <Field>
+                    <FieldLabel>归集数量</FieldLabel>
+                    <Badge variant="outline">归集全部余额</Badge>
+                  </Field>
+                ) : (
+                  <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
+                    <div className="flex w-fit items-center gap-1">
+                      <FieldLabel>归集数量</FieldLabel>
+                      <HelpTooltip label="归集数量说明">
+                        归集全部：归集所有已识别的 ERC721；指定总数量：从已选钱包合计归集 N 个，不足则全部归集。
+                      </HelpTooltip>
+                    </div>
+                    <Tabs
+                      onValueChange={(value) => {
+                        setNftAmountMode(value as "all" | "fixed");
+                        invalidatePlan();
+                      }}
+                      value={nftAmountMode}
+                    >
+                      <TabsList aria-label="ERC721 归集数量模式">
+                        <TabsTrigger disabled={controlsLocked} value="all">归集全部</TabsTrigger>
+                        <TabsTrigger disabled={controlsLocked || parsedAssetCount === 0} value="fixed">指定总数量</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    {nftAmountMode === "fixed" ? (
+                      <Input
+                        aria-label="ERC721 归集总数量"
+                        disabled={controlsLocked || parsedAssetCount === 0}
+                        inputMode="numeric"
+                        max={Math.max(1, parsedAssetCount)}
+                        min="1"
+                        onChange={(event) => {
+                          setNftFixedAmount(event.target.value);
+                          invalidatePlan();
+                        }}
+                        step="1"
+                        type="number"
+                        value={nftFixedAmount}
+                      />
+                    ) : null}
+                    {!nftAmountPolicyValid ? (
+                      <FieldError>请输入 1–{parsedAssetCount} 的整数</FieldError>
+                    ) : null}
+                  </Field>
+                )
+              ) : null}
+
+              <div className="field-row execution-settings-row">
+                <Field>
+                  <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
+                  <Input
+                    disabled={controlsLocked}
+                    id="evm-collection-concurrency"
+                    inputMode="numeric"
+                    max="20"
+                    min="1"
+                    onChange={(event) => { setConcurrency(event.target.value); invalidatePlan(); }}
+                    step="1"
+                    type="number"
+                    value={concurrency}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>随机延迟（秒）</FieldLabel>
+                  <div className="compact-range">
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最小</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={minimumDelay} />
+                    </InputGroup>
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最大</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidatePlan(); }} step="0.1" type="number" value={maximumDelay} />
+                    </InputGroup>
+                  </div>
+                </Field>
+              </div>
+              {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
+
+              <EvmGasSettings
+                disabled={controlsLocked}
+                gas={gas}
+                onSettingsChange={() => invalidatePlan()}
+              />
+
+              <AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
+                <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
+                  <FieldLabel htmlFor="evm-collection-max-fee">
+                    单笔最高网络费（{selectedNetwork.nativeCurrency.symbol}）
+                  </FieldLabel>
+                  <Input
+                    aria-invalid={maximumFeeAmount === null ? true : undefined}
+                    disabled={controlsLocked}
+                    id="evm-collection-max-fee"
+                    inputMode="decimal"
+                    min="0"
+                    onChange={(event) => {
+                      setMaxFeeAmount(event.target.value);
+                      invalidatePlan();
+                    }}
+                    step="0.000001"
+                    type="number"
+                    value={maxFeeAmount}
+                  />
+                  {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
+                </Field>
+              </AdvancedSettings>
+            </div>
 
             {issues.length ? (
               <Alert variant="destructive">
@@ -2691,40 +2689,51 @@ export function EvmCollectionPage({
 
           </div>
         </WorkbenchPanel>
-        {archivedRound ? (
+        {archivedRounds.length ? (
           <ReviewPanel
-            actions={archivedRound.requiresAcknowledgement ? (
+            actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已通过交易哈希核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
+                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
+                  ...round,
                   requiresAcknowledgement: false
-                } : current)}
+                })))}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
             ) : null}
             className="collection-round-archive"
-            stateKey={archivedRound.sequence}
+            stateKey={archivedRounds[0].sequence}
             summary={(
               <span>
-                成功 {archivedRound.results.filter((result) => result.status === "success").length}
-                {" · "}需处理 {archivedRound.results.filter((result) => (
-                  result.status === "error" || result.status === "skipped"
-                )).length}
+                {archivedRounds.length} 轮
+                {" · "}成功 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => result.status === "success").length
+                ), 0)}
+                {" · "}需处理 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => (
+                    result.status === "error" || result.status === "skipped"
+                  )).length
+                ), 0)}
               </span>
             )}
             title="归集记录"
           >
-            <p className="collection-round-archive__message">{archivedRound.message}</p>
-            <CollectionResults
-              embedded
-              exportFilename={`${currentToolId}-records.csv`}
-              results={archivedRound.results}
-              title="交易明细"
-            />
+            {archivedRounds.map((round) => (
+              <section className="collection-round-archive__round" key={round.sequence}>
+                <p className="collection-round-archive__message">
+                  第 {round.sequence} 轮 · {round.message}
+                </p>
+                <CollectionResults
+                  embedded
+                  exportFilename={`${currentToolId}-round-${round.sequence}.csv`}
+                  results={round.results}
+                  title="交易明细"
+                />
+              </section>
+            ))}
           </ReviewPanel>
         ) : null}
       </div>

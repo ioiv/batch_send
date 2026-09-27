@@ -165,6 +165,7 @@ export function ConfirmActionDialog({
   onConfirm,
   title,
   triggerAriaLabel,
+  triggerClassName,
   triggerLabel,
   triggerSize,
   triggerVariant = "default"
@@ -176,6 +177,7 @@ export function ConfirmActionDialog({
   onConfirm: () => void | Promise<void>;
   title: string;
   triggerAriaLabel?: string;
+  triggerClassName?: string;
   triggerLabel: string;
   triggerSize?: "default" | "sm" | "lg" | "icon" | "icon-sm" | "icon-lg";
   triggerVariant?: "default" | "outline" | "secondary" | "ghost" | "destructive";
@@ -186,7 +188,16 @@ export function ConfirmActionDialog({
     <AlertDialog onOpenChange={setOpen} open={open}>
       <AlertDialogTrigger
         disabled={disabled}
-        render={<Button aria-label={triggerAriaLabel} disabled={disabled} size={triggerSize} type="button" variant={triggerVariant} />}
+        render={(
+          <Button
+            aria-label={triggerAriaLabel}
+            className={triggerClassName}
+            disabled={disabled}
+            size={triggerSize}
+            type="button"
+            variant={triggerVariant}
+          />
+        )}
       >
         {triggerLabel}
       </AlertDialogTrigger>

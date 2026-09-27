@@ -213,7 +213,8 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("textbox", { name: "Token 清单" })).toBeVisible();
     expect(screen.getByRole("button", { name: "添加 Token" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看地址余额" })).toBeVisible();
-    expect(screen.getByText(/可选；留空则归集 SOL，填写后归集列出的 SPL Token/)).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveAttribute("placeholder", "Mint 地址（留空归集 SOL）");
+    expect(screen.queryByText(/留空则归集 SOL，填写后归集/)).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "SOL" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "SPL Token" })).not.toBeInTheDocument();
 
@@ -347,6 +348,26 @@ describe("SolCollectionPage workbench", () => {
       mintAddresses: [token2022Mint]
     })));
     expect(await screen.findByText(/清单内发现 1 个非零 Token 账户/)).toBeVisible();
+  });
+
+  it("keeps read balances through selection changes and selects a wallet holding nothing", async () => {
+    solMocks.discoverHoldings.mockResolvedValueOnce(holdingsResult([], 0n));
+    const user = userEvent.setup();
+    render(<SolCollectionPage />);
+
+    await importSolSecret(user);
+    await user.click(screen.getByRole("button", { name: "查看地址余额" }));
+    const balanceLabel = new RegExp(`来源一.*${firstSourceAddress}.*余额`);
+    expect(await screen.findByLabelText(balanceLabel)).toBeVisible();
+
+    const walletCheckbox = screen.getByRole("checkbox", { name: new RegExp(firstSourceAddress) });
+    await user.click(walletCheckbox);
+    expect(walletCheckbox).not.toBeChecked();
+    expect(screen.getByLabelText(balanceLabel)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    expect(walletCheckbox).toBeChecked();
+    expect(screen.getByLabelText(balanceLabel)).toBeVisible();
   });
 
   it("shows selection, four amount modes and direct confirmation without a preflight section", () => {
@@ -602,6 +623,23 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByText("归集记录")).toBeVisible();
   });
 
+  it("starts another round without forcing an unrelated edit", async () => {
+    solMocks.collect.mockResolvedValueOnce([result({})]);
+    const user = await prepareSolPage();
+    await confirmExecution(user);
+    await screen.findByText(/归集完成：1 笔成功/);
+
+    expect(screen.queryByRole("button", { name: "确认并开始归集" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开始新一轮归集" }));
+
+    expect(screen.getByText("归集记录")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "目标钱包" })).toHaveValue(targetAddress);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+
+    await confirmExecution(user);
+    await waitFor(() => expect(solMocks.collect).toHaveBeenCalledTimes(2));
+  });
+
   it("offers retry for safe failures and retries only those wallets", async () => {
     solMocks.parseSources.mockReturnValue({
       duplicates: [],
@@ -659,10 +697,30 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
+  it("keeps RPC and execution settings on the surface, as the EVM page does", () => {
+    render(<SolCollectionPage />);
+    expect(screen.getByRole("textbox", { name: "RPC 地址" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "并发钱包数" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最小秒数" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toBeVisible();
+  });
+
+  it("groups the form so the two columns hold what they claim to", () => {
+    const { container } = render(<SolCollectionPage />);
+    const subject = container.querySelector(".workbench-form__primary");
+    const config = container.querySelector(".workbench-form__secondary");
+    expect(subject).not.toBeNull();
+    expect(config).not.toBeNull();
+    // "归集什么" on one side, "怎么归集" on the other; a field in the wrong group
+    // lands in the wrong column on a wide screen without failing anything else.
+    expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标钱包" }));
+    expect(config).toContainElement(screen.getByRole("textbox", { name: "RPC 地址" }));
+    expect(config).toContainElement(screen.getByRole("spinbutton", { name: "并发钱包数" }));
+  });
+
   it("persists a replacement RPC and uses it on the next mount", async () => {
     const user = userEvent.setup();
     const firstRender = render(<SolCollectionPage />);
-    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
     const rpc = screen.getByRole("textbox", { name: "RPC 地址" });
     await user.clear(rpc);
     await user.type(rpc, "https://custom.sol.example/rpc");
@@ -670,7 +728,6 @@ describe("SolCollectionPage workbench", () => {
     firstRender.unmount();
 
     render(<SolCollectionPage />);
-    await user.click(screen.getByRole("button", { name: "RPC、保留金额与执行设置" }));
     expect(screen.getByRole("textbox", { name: "RPC 地址" })).toHaveValue("https://custom.sol.example/rpc");
   });
 

@@ -3,12 +3,14 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   SecretKeyInput,
   type SecretKeyInputHandle,
+  type WalletBalanceItem,
   type WalletExecutionItem
 } from "../components/SecretKeyInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -71,6 +73,8 @@ type SolTokenRecognitionState = {
   message: string;
   status: "error" | "idle" | "loading" | "ready";
 };
+
+const maximumArchivedRounds = 10;
 
 type ArchivedSolCollectionRound = {
   message: string;
@@ -259,13 +263,16 @@ function solTokenExecutionLabel({
 }
 
 function buildSolWalletBalances(holdings: SolanaHoldingsResult | null) {
-  const rows: Record<string, Array<{ amount: string; contractAddress?: string; symbol: string }>> = {};
+  const rows: Record<string, WalletBalanceItem[]> = {};
   holdings?.wallets.forEach((wallet) => {
-    const balances: Array<{ amount: string; contractAddress?: string; symbol: string }> = [{
+    // Without the full Token inventory an empty list is not an empty wallet.
+    const inventoryComplete = wallet.tokenInventoryStatus === "complete";
+    const balances: WalletBalanceItem[] = [{
       amount: wallet.nativeBalanceLamports === null
         ? "读取失败"
         : formatLamportsForDisplay(wallet.nativeBalanceLamports, 4),
-      symbol: "SOL"
+      symbol: "SOL",
+      zero: inventoryComplete && wallet.nativeBalanceLamports === 0n
     }];
     const grouped = new Map<string, { amount: bigint; decimals: number | null; holding: SolTokenAssetHolding }>();
     wallet.tokenAccounts.forEach((holding) => {
@@ -280,12 +287,14 @@ function buildSolWalletBalances(holdings: SolanaHoldingsResult | null) {
         ? `${entry.amount.toString()} 原始单位`
         : formatSolTokenAmount(entry.amount, entry.decimals),
       contractAddress: key,
-      symbol: solTokenAssetLabel(entry.holding)
+      symbol: solTokenAssetLabel(entry.holding),
+      zero: inventoryComplete && entry.amount === 0n
     }));
     if (grouped.size > 8) balances.push({
       amount: `+${grouped.size - 8}`,
       contractAddress: "additional-sol-token-holdings",
-      symbol: "更多清单内 Token"
+      symbol: "更多清单内 Token",
+      zero: inventoryComplete && [...grouped.values()].slice(8).every((entry) => entry.amount === 0n)
     });
     rows[wallet.address.toLowerCase()] = balances;
   });
@@ -404,10 +413,11 @@ export function SolCollectionPage() {
   const [message, setMessage] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
-  const [archivedRound, setArchivedRound] = useState<ArchivedSolCollectionRound | null>(null);
+  const [archivedRounds, setArchivedRounds] = useState<ArchivedSolCollectionRound[]>([]);
   const [roundSequence, setRoundSequence] = useState(1);
   const [keyImporting, setKeyImporting] = useState(false);
   const [holdings, setHoldings] = useState<SolanaHoldingsResult | null>(null);
+  const [balanceSnapshot, setBalanceSnapshot] = useState<SolanaHoldingsResult | null>(null);
   const [holdingsStatus, setHoldingsStatus] = useState<SolHoldingsStatus>("idle");
   const [holdingsMessage, setHoldingsMessage] = useState("");
   const [holdingsIssues, setHoldingsIssues] = useState<string[]>([]);
@@ -430,16 +440,19 @@ export function SolCollectionPage() {
   const normalizedTarget = validatePublicKey(targetAddress.trim());
   const taskRunning = stage === "running";
   const running = taskRunning || keyImporting;
-  const hasSubmittedHash = results.some((result) => Boolean(result.hash));
-  const hasRecordedHash = hasSubmittedHash || Boolean(archivedRound?.results.some((result) => result.hash));
   const controlsLocked = running;
   const workbenchStatus = getSolCollectionWorkbenchStatus(stage, results);
+  const roundIsTerminal = stage === "complete" || stage === "error";
+  const currentRoundRequiresAcknowledgement = roundIsTerminal
+    && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
+  const acknowledgementRequired = currentRoundRequiresAcknowledgement
+    || archivedRounds.some((round) => round.requiresAcknowledgement);
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
   const retryableCount = retrySourcesRef.current.length + retryTokenJobsRef.current.length;
   const walletStatuses = useMemo(() => groupWalletStatuses(results), [results]);
-  const walletBalances = useMemo(() => buildSolWalletBalances(holdings), [holdings]);
+  const walletBalances = useMemo(() => buildSolWalletBalances(balanceSnapshot), [balanceSnapshot]);
   const recognizedTokenByMint = useMemo(() => new Map(
     tokenRecognition.items.map((item) => [item.mintAddress, item] as const)
   ), [tokenRecognition.items]);
@@ -458,9 +471,12 @@ export function SolCollectionPage() {
     setKeyImporting(importing);
   }, []);
 
-  const invalidateHoldings = useCallback(() => {
+  // Editing the wallet list changes which wallets the holdings gate speaks for,
+  // not what the remaining ones hold, so their balances stay on screen.
+  const invalidateHoldings = useCallback((keepWalletBalances = false) => {
     holdingsRequestRef.current += 1;
     setHoldings(null);
+    if (!keepWalletBalances) setBalanceSnapshot(null);
     setHoldingsStatus("idle");
     setHoldingsMessage("");
     setHoldingsIssues([]);
@@ -469,6 +485,7 @@ export function SolCollectionPage() {
   const expireHoldingsSnapshot = useCallback(() => {
     holdingsRequestRef.current += 1;
     setHoldings(null);
+    setBalanceSnapshot(null);
     setHoldingsStatus("idle");
     setHoldingsIssues([]);
     setHoldingsMessage("余额快照已因执行而失效；可再次查看，下一轮执行仍会即时重读");
@@ -486,6 +503,7 @@ export function SolCollectionPage() {
       retryTokenJobsRef.current = [];
       holdingsRequestRef.current += 1;
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("idle");
       setHoldingsMessage("");
       setHoldingsIssues([]);
@@ -618,9 +636,8 @@ export function SolCollectionPage() {
 
   const archiveCurrentRound = () => {
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
-    const requiresAcknowledgement = workbenchStatus === "uncertain"
-      || results.some((result) => result.uncertain);
-    setArchivedRound({
+    const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
+    setArchivedRounds((current) => [{
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -628,13 +645,20 @@ export function SolCollectionPage() {
         message: sanitizeRoundArchiveText(result.message)
       })),
       sequence: roundSequence
-    });
+    }, ...current].slice(0, maximumArchivedRounds));
     retrySourcesRef.current = [];
     retryTokenJobsRef.current = [];
     setResults([]);
     setRoundSequence((current) => current + 1);
     setStage("editing");
     return true;
+  };
+
+  // Finishing a round must not depend on the user finding a setting to edit.
+  const startNewRound = () => {
+    if (operationRef.current || running || !archiveCurrentRound()) return;
+    setMessage("");
+    setIssues([]);
   };
 
   const invalidateTask = (clearResults = true) => {
@@ -717,6 +741,7 @@ export function SolCollectionPage() {
       : validateSolCollectionWorkload(parsedSources.sources.length)));
     if (nextIssues.length) {
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("error");
       setHoldingsIssues(nextIssues);
       setHoldingsMessage("请先修正来源钱包或 RPC 设置");
@@ -727,6 +752,7 @@ export function SolCollectionPage() {
     const requestId = holdingsRequestRef.current + 1;
     holdingsRequestRef.current = requestId;
     setHoldings(null);
+    setBalanceSnapshot(null);
     setHoldingsStatus("loading");
     setHoldingsIssues([]);
     setHoldingsMessage(assetMode === "spl"
@@ -742,6 +768,7 @@ export function SolCollectionPage() {
       }), parsedTokenMints.mintAddresses);
       if (holdingsRequestRef.current !== requestId) return;
       setHoldings(discovered);
+      setBalanceSnapshot(discovered);
       setHoldingsStatus("ready");
       setHoldingsIssues([
         ...discovered.issues,
@@ -762,6 +789,7 @@ export function SolCollectionPage() {
     } catch (error) {
       if (holdingsRequestRef.current !== requestId) return;
       setHoldings(null);
+      setBalanceSnapshot(null);
       setHoldingsStatus("error");
       setHoldingsIssues([]);
       setHoldingsMessage(error instanceof Error && error.message.includes("RPC 网络不匹配")
@@ -999,6 +1027,7 @@ export function SolCollectionPage() {
           throw new Error("Token 持仓清单读取不完整，请更换或检查 RPC 后重试");
         }
         setHoldings(scopedHoldings);
+        setBalanceSnapshot(scopedHoldings);
         setHoldingsStatus("ready");
         setHoldingsIssues([
           ...scopedHoldings.issues,
@@ -1136,38 +1165,6 @@ export function SolCollectionPage() {
     assetMode === "spl" ? executeTokenCollection(retryOnly) : executeNativeCollection(retryOnly)
   );
 
-  const resetTask = () => {
-    pauseControllerRef.current.resume();
-    setPaused(false);
-    keyInputRef.current?.clear();
-    retrySourcesRef.current = [];
-    retryTokenJobsRef.current = [];
-    holdingsRequestRef.current += 1;
-    setTokenMintInput("");
-    setTokenMintInputMessage("");
-    setTargetAddress("");
-    setAmountMode("all");
-    setPercentageAmount("100");
-    setFixedAmount("0.1");
-    setRandomMinimum("0.01");
-    setRandomMaximum("0.1");
-    setReserveAmount("0");
-    setMinimumAmount("0");
-    setConcurrency("3");
-    setMinimumDelay("0");
-    setMaximumDelay("0");
-    setHoldings(null);
-    setHoldingsStatus("idle");
-    setHoldingsMessage("");
-    setHoldingsIssues([]);
-    setResults([]);
-    setArchivedRound(null);
-    setRoundSequence(1);
-    setIssues([]);
-    setMessage("");
-    setStage("editing");
-  };
-
   const amountPolicyValid = getAmountPolicy() !== null;
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(rpcEndpoint);
@@ -1182,28 +1179,14 @@ export function SolCollectionPage() {
       : splTargetValid && parsedTokenMints.valid && parsedTokenMints.mintAddresses.length > 0
         && !knownTokenInventoryUnavailable)
     && executionSettingsValid && !running
-    && !archivedRound?.requiresAcknowledgement);
+    && !acknowledgementRequired);
 
   return (
     <ToolPageLayout
-      actions={(
-        <>
-          <Badge variant="outline">{selectedNetwork.label}</Badge>
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={hasRecordedHash
-              ? "当前钱包行包含已提交的交易。清空前请先核对链上状态；清空后本页记录无法恢复。"
-              : "来源密钥、目标地址、当前执行状态和历史记录将从页面清除。"}
-            disabled={running}
-            onConfirm={resetTask}
-            title="清空 SOL / SPL Token 归集工作台？"
-            triggerLabel="清空工作台"
-            triggerVariant="destructive"
-          />
-        </>
-      )}
+      actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="collection-shell collection-page"
       currentToolId="sol-collection"
+      stickyActions
       status={workbenchStatus}
       statusLabel={solStatusLabels[workbenchStatus]}
       title="SOL / SPL Token 归集"
@@ -1221,22 +1204,31 @@ export function SolCollectionPage() {
                   paused={paused}
                   total={results.length}
                 />
-              ) : retryableCount ? (
-                <ConfirmActionDialog
-                  confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(true)}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : results.length && (stage === "complete" || stage === "error") ? (
-                <p className="collection-terminal-hint">
-                  {workbenchStatus === "uncertain"
-                    ? "可直接编辑设置；当前结果会移入下方记录。核对链上状态后才可开始新的写入任务。"
-                    : "任务已结束。直接修改任一设置即可继续，当前结果会移入下方记录。"}
-                </p>
+              ) : results.length && roundIsTerminal ? (
+                <>
+                  {retryableCount ? (
+                    <ConfirmActionDialog
+                      confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
+                      description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                      disabled={running}
+                      onConfirm={() => executeCollection(true)}
+                      title="确认重试失败项？"
+                      triggerLabel={`重试失败项 (${retryableCount})`}
+                      triggerVariant="outline"
+                    />
+                  ) : null}
+                  <Button
+                    disabled={running}
+                    onClick={startNewRound}
+                    type="button"
+                    variant={retryableCount ? "outline" : "default"}
+                  >开始新一轮归集</Button>
+                  {currentRoundRequiresAcknowledgement ? (
+                    <p className="collection-terminal-hint">
+                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。
+                    </p>
+                  ) : null}
+                </>
               ) : (
                 <ConfirmActionDialog
                   confirmLabel="确认并开始归集"
@@ -1265,300 +1257,287 @@ export function SolCollectionPage() {
           )}
           title="归集设置"
         >
-          <div className="form collection-form">
-            <SecretKeyInput
-              disabled={controlsLocked}
-              mode="solana"
-              onDirty={() => { invalidateTask(); invalidateHoldings(); }}
-              onImportingChange={handleKeyImportingChange}
-              onLineCountChange={setSourceCount}
-              ref={keyInputRef}
-              walletBalances={walletBalances}
-              walletStatuses={walletStatuses}
-            />
+          <div className="form workbench-form">
+            <div className="workbench-form__primary">
+              <h3 className="workbench-form__group">来源与目标</h3>
+              <SecretKeyInput
+                disabled={controlsLocked}
+                mode="solana"
+                onDirty={() => { invalidateTask(); invalidateHoldings(true); }}
+                onImportingChange={handleKeyImportingChange}
+                onLineCountChange={setSourceCount}
+                ref={keyInputRef}
+                walletBalances={walletBalances}
+                walletStatuses={walletStatuses}
+              />
 
-            <Field>
-              <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
-              <div className="erc20-token-editor">
-                {tokenInputRows.map((row, index) => {
-                  const parsedRow = parsedTokenMints.rows[index];
-                  const mintAddress = parsedRow?.mintAddress;
-                  const preview = mintAddress ? recognizedTokenByMint.get(mintAddress) : undefined;
-                  const matchedHoldings = mintAddress
-                    ? holdings?.holdings.filter((holding) => holding.mintAddress === mintAddress) || []
-                    : [];
-                  const recognitionLabel = !row.trim()
-                    ? "SPL"
-                    : parsedRow?.status === "invalid"
-                      ? "地址无效"
-                      : parsedRow?.status === "duplicate"
-                        ? "地址重复"
+              <Field>
+                <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
+                <div className="erc20-token-editor">
+                  {tokenInputRows.map((row, index) => {
+                    const parsedRow = parsedTokenMints.rows[index];
+                    const mintAddress = parsedRow?.mintAddress;
+                    const preview = mintAddress ? recognizedTokenByMint.get(mintAddress) : undefined;
+                    const matchedHoldings = mintAddress
+                      ? holdings?.holdings.filter((holding) => holding.mintAddress === mintAddress) || []
+                      : [];
+                    const recognitionLabel = !row.trim()
+                      ? "SPL"
+                      : parsedRow?.status === "invalid"
+                        ? "地址无效"
+                        : parsedRow?.status === "duplicate"
+                          ? "地址重复"
+                          : preview?.status === "ready"
+                            ? preview.program === "token-2022" ? "Token-2022" : "SPL"
+                            : preview?.status === "unsupported"
+                              ? "不支持"
+                              : preview?.status === "unverified"
+                                ? "识别失败"
+                                : tokenRecognition.status === "loading" || holdingsStatus === "loading"
+                            ? "查询中"
+                            : matchedHoldings.length
+                              ? matchedHoldings.some((holding) => holding.program === "token-2022")
+                                ? "Token-2022"
+                                : "SPL"
+                              : holdingsStatus === "ready" ? "无持仓" : "SPL";
+                    const recognitionStatus = !row.trim()
+                      ? "idle"
+                      : parsedRow?.status === "invalid" || parsedRow?.status === "duplicate"
+                        ? "error"
                         : preview?.status === "ready"
-                          ? preview.program === "token-2022" ? "Token-2022" : "SPL"
-                          : preview?.status === "unsupported"
-                            ? "不支持"
-                            : preview?.status === "unverified"
-                              ? "识别失败"
-                              : tokenRecognition.status === "loading" || holdingsStatus === "loading"
-                          ? "查询中"
-                          : matchedHoldings.length
-                            ? matchedHoldings.some((holding) => holding.program === "token-2022")
-                              ? "Token-2022"
-                              : "SPL"
-                            : holdingsStatus === "ready" ? "无持仓" : "SPL";
-                  const recognitionStatus = !row.trim()
-                    ? "idle"
-                    : parsedRow?.status === "invalid" || parsedRow?.status === "duplicate"
-                      ? "error"
-                      : preview?.status === "ready"
-                        ? "ready"
-                        : preview?.status === "unsupported" || preview?.status === "unverified"
-                          ? "error"
-                          : tokenRecognition.status === "loading" || holdingsStatus === "loading"
-                        ? "loading"
-                        : matchedHoldings.length ? "ready" : "idle";
-                  const tokenLocked = preview?.status === "ready";
-                  return (
-                    <div
-                      className="erc20-token-row"
-                      data-locked={tokenLocked || undefined}
-                      data-status={recognitionStatus}
-                      key={index}
-                    >
-                      <Input
-                        aria-describedby={`sol-collection-token-status-${index}`}
-                        aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        disabled={controlsLocked}
-                        id={`sol-collection-token-${index}`}
-                        maxLength={maximumSolTokenMintAddressLength}
-                        onChange={(event) => {
-                          if (tokenLocked) return;
-                          const nextRows = [...tokenInputRows];
-                          nextRows[index] = event.target.value;
-                          updateTokenMintRows(nextRows);
-                        }}
-                        onPaste={(event) => {
-                          if (tokenLocked) {
-                            event.preventDefault();
-                            return;
-                          }
-                          const pastedRows = event.clipboardData.getData("text")
-                            .split(/\r?\n/)
-                            .map((value) => value.trim())
-                            .filter(Boolean);
-                          if (pastedRows.length <= 1) return;
-                          event.preventDefault();
-                          updateTokenMintRows([
-                            ...tokenInputRows.slice(0, index),
-                            ...pastedRows,
-                            ...tokenInputRows.slice(index + 1)
-                          ]);
-                        }}
-                        placeholder="Mint 地址"
-                        readOnly={tokenLocked}
-                        spellCheck={false}
-                        title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
-                        value={row}
-                      />
-                      <span
-                        aria-live="polite"
-                        className="erc20-token-symbol"
+                          ? "ready"
+                          : preview?.status === "unsupported" || preview?.status === "unverified"
+                            ? "error"
+                            : tokenRecognition.status === "loading" || holdingsStatus === "loading"
+                          ? "loading"
+                          : matchedHoldings.length ? "ready" : "idle";
+                    const tokenLocked = preview?.status === "ready";
+                    return (
+                      <div
+                        className="erc20-token-row"
+                        data-locked={tokenLocked || undefined}
                         data-status={recognitionStatus}
-                        id={`sol-collection-token-status-${index}`}
-                        title={parsedRow?.problem || preview?.unsupportedReason
-                          || (preview?.decimals !== null && preview?.decimals !== undefined
-                            ? `${recognitionLabel} · ${preview.decimals} 位小数`
-                            : mintAddress || recognitionLabel)}
+                        key={index}
                       >
-                        {recognitionLabel}
-                      </span>
-                      {tokenInputRows.length > 1 || row.trim() ? (
-                        <Button
-                          aria-label={`删除 Token 地址 ${index + 1}`}
+                        <Input
+                          aria-describedby={`sol-collection-token-status-${index}`}
+                          aria-label={index === 0 ? "Token 清单" : `Token 地址 ${index + 1}`}
+                          autoCapitalize="none"
+                          autoComplete="off"
                           disabled={controlsLocked}
-                          onClick={() => updateTokenMintRows(
-                            tokenInputRows.length === 1
-                              ? [""]
-                              : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
-                          )}
-                          size="sm"
-                          type="button"
-                          variant="ghost"
+                          id={`sol-collection-token-${index}`}
+                          maxLength={maximumSolTokenMintAddressLength}
+                          onChange={(event) => {
+                            if (tokenLocked) return;
+                            const nextRows = [...tokenInputRows];
+                            nextRows[index] = event.target.value;
+                            updateTokenMintRows(nextRows);
+                          }}
+                          onPaste={(event) => {
+                            if (tokenLocked) {
+                              event.preventDefault();
+                              return;
+                            }
+                            const pastedRows = event.clipboardData.getData("text")
+                              .split(/\r?\n/)
+                              .map((value) => value.trim())
+                              .filter(Boolean);
+                            if (pastedRows.length <= 1) return;
+                            event.preventDefault();
+                            updateTokenMintRows([
+                              ...tokenInputRows.slice(0, index),
+                              ...pastedRows,
+                              ...tokenInputRows.slice(index + 1)
+                            ]);
+                          }}
+                          placeholder={index === 0 ? "Mint 地址（留空归集 SOL）" : "Mint 地址"}
+                          readOnly={tokenLocked}
+                          spellCheck={false}
+                          title={tokenLocked ? "Token 已添加；如需更换，请删除后重新添加" : undefined}
+                          value={row}
+                        />
+                        <span
+                          aria-live="polite"
+                          className="erc20-token-symbol"
+                          data-status={recognitionStatus}
+                          id={`sol-collection-token-status-${index}`}
+                          title={parsedRow?.problem || preview?.unsupportedReason
+                            || (preview?.decimals !== null && preview?.decimals !== undefined
+                              ? `${recognitionLabel} · ${preview.decimals} 位小数`
+                              : mintAddress || recognitionLabel)}
                         >
-                          删除
-                        </Button>
-                      ) : null}
-                    </div>
-                  );
-                })}
-                <Button
-                  className="erc20-token-add"
-                  disabled={controlsLocked || tokenInputRows.length >= maximumSolTokenMintInputEntries}
-                  onClick={() => {
-                    const nextIndex = tokenInputRows.length;
-                    updateTokenMintRows([...tokenInputRows, ""]);
-                    window.requestAnimationFrame(() => {
-                      document.getElementById(`sol-collection-token-${nextIndex}`)?.focus();
-                    });
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  添加 Token
-                </Button>
-              </div>
-              <FieldDescription>
-                可选；留空则归集 SOL，填写后归集列出的 SPL Token（支持 Token-2022）。
-              </FieldDescription>
-              {tokenRecognition.message ? (
-                <p
-                  aria-live="polite"
-                  className="address-balance-control__status"
-                  data-status={tokenRecognition.status}
-                  role="status"
-                >
-                  {tokenRecognition.message}
-                </p>
-              ) : null}
-              {tokenMintInputMessage || parsedTokenMints.limitIssue ? (
-                <FieldError>{tokenMintInputMessage || parsedTokenMints.limitIssue}</FieldError>
-              ) : null}
-              <div aria-label="地址余额查询" className="address-balance-control">
-                <Button
-                  disabled={controlsLocked || holdingsStatus === "loading" || sourceCount === 0
-                    || !rpcEndpointValid || !parsedTokenMints.valid}
-                  onClick={() => void discoverHoldings()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  {holdingsStatus === "loading" ? "查询中" : "查看地址余额"}
-                </Button>
-                {holdingsMessage ? (
+                          {recognitionLabel}
+                        </span>
+                        {tokenInputRows.length > 1 || row.trim() ? (
+                          <Button
+                            aria-label={`删除 Token 地址 ${index + 1}`}
+                            disabled={controlsLocked}
+                            onClick={() => updateTokenMintRows(
+                              tokenInputRows.length === 1
+                                ? [""]
+                                : tokenInputRows.filter((_, rowIndex) => rowIndex !== index)
+                            )}
+                            size="sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            删除
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  <Button
+                    className="erc20-token-add"
+                    disabled={controlsLocked || tokenInputRows.length >= maximumSolTokenMintInputEntries}
+                    onClick={() => {
+                      const nextIndex = tokenInputRows.length;
+                      updateTokenMintRows([...tokenInputRows, ""]);
+                      window.requestAnimationFrame(() => {
+                        document.getElementById(`sol-collection-token-${nextIndex}`)?.focus();
+                      });
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    添加 Token
+                  </Button>
+                </div>
+                {tokenRecognition.message ? (
                   <p
                     aria-live="polite"
                     className="address-balance-control__status"
-                    data-status={holdingsStatus}
+                    data-status={tokenRecognition.status}
                     role="status"
                   >
-                    {holdingsMessage}
+                    {tokenRecognition.message}
                   </p>
                 ) : null}
-              </div>
-              {holdingsIssues.length ? (
-                <Alert variant={holdingsStatus === "error" ? "destructive" : "default"}>
-                  <AlertDescription>
-                    <ul>{holdingsIssues.slice(0, 8).map((issue) => <li key={issue}>{issue}</li>)}</ul>
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-            </Field>
-
-            <Field data-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}>
-              <FieldLabel htmlFor="sol-collection-target">目标钱包</FieldLabel>
-              <Input
-                aria-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}
-                autoCapitalize="none"
-                autoComplete="off"
-                disabled={controlsLocked}
-                id="sol-collection-target"
-                onChange={(event) => { setTargetAddress(event.target.value); invalidateTask(); }}
-                placeholder="Solana 地址"
-                spellCheck={false}
-                value={targetAddress}
-              />
-              {targetAddress.trim() && !normalizedTarget ? <FieldError>请输入有效的 Solana 地址</FieldError> : null}
-              {targetAddress.trim() && normalizedTarget && !splTargetValid ? (
-                <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
-              ) : null}
-            </Field>
-
-            <h3 className="collection-config-heading">归集配置</h3>
-
-            <Field>
-              <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
-              <SearchableSelect
-                disabled={controlsLocked}
-                id="sol-collection-network"
-                listboxLabel="Solana 归集网络"
-                onChange={(value) => {
-                  const nextNetwork = getNetworkConfig(value);
-                  setNetworkId(value);
-                  setRpcEndpoint(getPreferredRpcEndpoint("solana", value, nextNetwork.endpoint));
-                  invalidateTask();
-                  invalidateHoldings();
-                }}
-                options={networkOptions}
-                searchable={false}
-                triggerLabel="选择 Solana 网络"
-                value={networkId}
-              />
-            </Field>
-
-            {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
-              <FieldLabel>归集数量</FieldLabel>
-              <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
-                <TabsList aria-label="SOL 归集数量模式">
-                  {Object.entries(amountModeLabels).map(([value, label]) => (
-                    <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              {amountMode === "percentage" ? (
-                <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
-              ) : amountMode === "fixed" ? (
-                <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
-              ) : amountMode === "random" ? (
-                <div className="amount-grid">
-                  <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
-                  <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                {tokenMintInputMessage || parsedTokenMints.limitIssue ? (
+                  <FieldError>{tokenMintInputMessage || parsedTokenMints.limitIssue}</FieldError>
+                ) : null}
+                <div aria-label="地址余额查询" className="address-balance-control">
+                  <Button
+                    disabled={controlsLocked || holdingsStatus === "loading" || sourceCount === 0
+                      || !rpcEndpointValid || !parsedTokenMints.valid}
+                    onClick={() => void discoverHoldings()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {holdingsStatus === "loading" ? "查询中" : "查看地址余额"}
+                  </Button>
+                  {holdingsMessage ? (
+                    <p
+                      aria-live="polite"
+                      className="address-balance-control__status"
+                      data-status={holdingsStatus}
+                      role="status"
+                    >
+                      {holdingsMessage}
+                    </p>
+                  ) : null}
                 </div>
-              ) : null}
-              {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
-            </Field> : (
-              <Alert>
-                <AlertTitle>SPL Token 数量</AlertTitle>
-                <AlertDescription>
-                  每个已选 Token Account 归集执行时的全部可用余额；来源 SOL 仅用于网络费和必要的目标 ATA 租金。
-                </AlertDescription>
-              </Alert>
-            )}
-
-            <AdvancedSettings
-              disabled={controlsLocked}
-              label={assetMode === "spl" ? "RPC 与执行设置" : "RPC、保留金额与执行设置"}
-            >
-              <Field data-invalid={!rpcEndpointValid ? true : undefined}>
-                <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
-                <Input
-                  aria-invalid={!rpcEndpointValid ? true : undefined}
-                  disabled={controlsLocked}
-                  id="sol-collection-rpc"
-                  onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
-                  onChange={(event) => {
-                    setRpcEndpoint(event.target.value);
-                    invalidateTask();
-                    invalidateHoldings();
-                  }}
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-                {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+                {holdingsIssues.length ? (
+                  <Alert variant={holdingsStatus === "error" ? "destructive" : "default"}>
+                    <AlertDescription>
+                      <ul>{holdingsIssues.slice(0, 8).map((issue) => <li key={issue}>{issue}</li>)}</ul>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
               </Field>
-              {assetMode === "native" ? <div className="field-row">
+
+              <Field data-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}>
+                <FieldLabel htmlFor="sol-collection-target">目标钱包</FieldLabel>
+                <Input
+                  aria-invalid={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? true : undefined}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  disabled={controlsLocked}
+                  id="sol-collection-target"
+                  onChange={(event) => { setTargetAddress(event.target.value); invalidateTask(); }}
+                  placeholder="Solana 地址"
+                  spellCheck={false}
+                  value={targetAddress}
+                />
+                {targetAddress.trim() && !normalizedTarget ? <FieldError>请输入有效的 Solana 地址</FieldError> : null}
+                {targetAddress.trim() && normalizedTarget && !splTargetValid ? (
+                  <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
+                ) : null}
+              </Field>
+            </div>
+
+            <div className="workbench-form__secondary">
+              <h3 className="workbench-form__group">归集配置</h3>
+
+              <div className="network-rpc-row" aria-label="网络与 RPC">
                 <Field>
-                  <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
-                  <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                  <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
+                  <SearchableSelect
+                    disabled={controlsLocked}
+                    id="sol-collection-network"
+                    listboxLabel="Solana 归集网络"
+                    onChange={(value) => {
+                      const nextNetwork = getNetworkConfig(value);
+                      setNetworkId(value);
+                      setRpcEndpoint(getPreferredRpcEndpoint("solana", value, nextNetwork.endpoint));
+                      invalidateTask();
+                      invalidateHoldings();
+                    }}
+                    options={networkOptions}
+                    searchable={false}
+                    triggerLabel="选择 Solana 网络"
+                    value={networkId}
+                  />
                 </Field>
+                <Field data-invalid={!rpcEndpointValid ? true : undefined}>
+                  <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
+                  <Input
+                    aria-invalid={!rpcEndpointValid ? true : undefined}
+                    disabled={controlsLocked}
+                    id="sol-collection-rpc"
+                    onBlur={() => rememberRpcEndpoint("solana", networkId, rpcEndpoint)}
+                    onChange={(event) => {
+                      setRpcEndpoint(event.target.value);
+                      invalidateTask();
+                      invalidateHoldings(true);
+                    }}
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                  {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
+                </Field>
+              </div>
+
+              {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                <FieldLabel>归集数量</FieldLabel>
+                <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
+                  <TabsList aria-label="SOL 归集数量模式">
+                    {Object.entries(amountModeLabels).map(([value, label]) => (
+                      <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                {amountMode === "percentage" ? (
+                  <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
+                ) : amountMode === "fixed" ? (
+                  <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
+                ) : amountMode === "random" ? (
+                  <div className="amount-grid">
+                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
+                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                  </div>
+                ) : null}
+                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+              </Field> : (
                 <Field>
-                  <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
-                  <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                  <FieldLabel>归集数量</FieldLabel>
+                  <Badge variant="outline">归集全部余额</Badge>
                 </Field>
-              </div> : null}
+              )}
+
               <div className="field-row execution-settings-row">
                 <Field>
                   <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
@@ -1566,14 +1545,35 @@ export function SolCollectionPage() {
                 </Field>
                 <Field>
                   <FieldLabel>随机延迟（秒）</FieldLabel>
-                  <div className="amount-grid compact-range">
-                    <Input aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
-                    <Input aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
+                  <div className="compact-range">
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最小</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最小秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMinimumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={minimumDelay} />
+                    </InputGroup>
+                    <InputGroup className="compact-range__input" data-disabled={controlsLocked || undefined}>
+                      <InputGroupAddon>最大</InputGroupAddon>
+                      <InputGroupInput aria-label="随机延迟最大秒数" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setMaximumDelay(event.target.value); invalidateTask(); }} step="0.1" type="number" value={maximumDelay} />
+                    </InputGroup>
                   </div>
                 </Field>
               </div>
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
-            </AdvancedSettings>
+
+              {assetMode === "native" ? (
+                <AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
+                  <div className="field-row">
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
+                      <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
+                      <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                    </Field>
+                  </div>
+                </AdvancedSettings>
+              ) : null}
+            </div>
 
             {issues.length ? (
               <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
@@ -1585,40 +1585,51 @@ export function SolCollectionPage() {
             ) : null}
           </div>
         </WorkbenchPanel>
-        {archivedRound ? (
+        {archivedRounds.length ? (
           <ReviewPanel
-            actions={archivedRound.requiresAcknowledgement ? (
+            actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
+                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
+                  ...round,
                   requiresAcknowledgement: false
-                } : current)}
+                })))}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
               />
             ) : null}
             className="collection-round-archive"
-            stateKey={archivedRound.sequence}
+            stateKey={archivedRounds[0].sequence}
             summary={(
               <span>
-                成功 {archivedRound.results.filter((result) => result.status === "success").length}
-                {" · "}需处理 {archivedRound.results.filter((result) => (
-                  result.status === "error" || result.status === "skipped"
-                )).length}
+                {archivedRounds.length} 轮
+                {" · "}成功 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => result.status === "success").length
+                ), 0)}
+                {" · "}需处理 {archivedRounds.reduce((total, round) => (
+                  total + round.results.filter((result) => (
+                    result.status === "error" || result.status === "skipped"
+                  )).length
+                ), 0)}
               </span>
             )}
             title="归集记录"
           >
-            <p className="collection-round-archive__message">{archivedRound.message}</p>
-            <CollectionResults
-              embedded
-              exportFilename="sol-collection-records.csv"
-              results={archivedRound.results}
-              title="交易明细"
-            />
+            {archivedRounds.map((round) => (
+              <section className="collection-round-archive__round" key={round.sequence}>
+                <p className="collection-round-archive__message">
+                  第 {round.sequence} 轮 · {round.message}
+                </p>
+                <CollectionResults
+                  embedded
+                  exportFilename={`sol-collection-round-${round.sequence}.csv`}
+                  results={round.results}
+                  title="交易明细"
+                />
+              </section>
+            ))}
           </ReviewPanel>
         ) : null}
       </div>
