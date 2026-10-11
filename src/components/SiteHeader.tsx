@@ -1,6 +1,7 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { getToolsByCategory, toolCategories, tools, type ToolIcon as ToolIconName } from "@/config/tools";
 import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import {
   Sheet,
   SheetContent,
@@ -76,8 +77,21 @@ function SearchIcon() {
 }
 
 function ToolSearch() {
+  const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -99,20 +113,23 @@ function ToolSearch() {
 
   return (
     <form className="site-tool-search" onSubmit={handleSubmit} role="search">
-      <span className="site-tool-search__icon"><SearchIcon /></span>
-      <input
-        aria-describedby="site-tool-search-message"
-        aria-label="搜索工具"
-        list="site-tool-search-options"
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setMessage("");
-        }}
-        placeholder="搜索工具、链或功能"
-        type="search"
-        value={query}
-      />
-      <kbd aria-hidden="true">Enter</kbd>
+      <InputGroup>
+        <InputGroupAddon className="site-tool-search__icon"><SearchIcon /></InputGroupAddon>
+        <InputGroupInput
+          aria-describedby="site-tool-search-message"
+          aria-label="搜索工具"
+          list="site-tool-search-options"
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setMessage("");
+          }}
+          placeholder="搜索工具、链或功能"
+          ref={inputRef}
+          type="search"
+          value={query}
+        />
+        <InputGroupAddon align="inline-end"><kbd aria-hidden="true">⌘K</kbd></InputGroupAddon>
+      </InputGroup>
       <datalist id="site-tool-search-options">
         {tools.map((tool) => <option key={tool.id} value={tool.title} />)}
       </datalist>
@@ -210,9 +227,9 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
           aria-label={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
           className="site-sidebar__toggle"
           onClick={toggleSidebar}
-          size="icon"
+          size="icon-sm"
           title={sidebarCollapsed ? "展开侧边导航" : "收起侧边导航"}
-          variant="outline"
+          variant="ghost"
         >
           <CollapseIcon />
         </Button>

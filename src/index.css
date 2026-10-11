@@ -10,6 +10,11 @@
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
+  --text-ui-caption: var(--text-caption);
+  --text-ui-label: var(--text-label);
+  --text-ui-body: var(--text-body);
+  --text-ui-title: var(--text-title);
+  --text-ui-heading: var(--text-heading);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -43,25 +48,25 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  --radius-sm: var(--radius-control);
+  --radius-md: var(--radius-control);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.35);
-  --radius-2xl: calc(var(--radius) * 1.7);
-  --radius-3xl: calc(var(--radius) * 2.1);
-  --radius-4xl: calc(var(--radius) * 2.5);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
 }
 
 :root {
   color-scheme: dark;
   --background: #050505;
   --foreground: #f5f5f5;
-  --card: #0d0d0d;
+  --card: #111111;
   --card-foreground: #f5f5f5;
   --popover: #111111;
   --popover-foreground: #f5f5f5;
-  --primary: #f5f5f5;
-  --primary-foreground: #080808;
+  --primary: #67d4e8;
+  --primary-foreground: #06252c;
   --secondary: #1a1a1a;
   --secondary-foreground: #ededed;
   --muted: #181818;
@@ -71,25 +76,30 @@
   --destructive: oklch(0.69 0.19 26);
   --success: oklch(0.72 0.13 148);
   --warning: oklch(0.8 0.14 83);
-  --border: rgb(255 255 255 / 0.12);
+  --border: rgb(255 255 255 / 0.08);
   --input: rgb(255 255 255 / 0.15);
-  --ring: #d4d4d4;
+  --ring: #67d4e8;
   --chart-1: #fafafa;
   --chart-2: #d4d4d4;
   --chart-3: #a3a3a3;
   --chart-4: #737373;
   --chart-5: #404040;
-  --radius: 0.5rem;
+  --radius: 0.625rem;
+  --radius-control: 0.375rem;
+  --radius-sm: var(--radius-control);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius);
   --control-h: 2rem;
   --control-h-sm: 1.75rem;
+  --control-h-lg: 2.25rem;
   --sidebar: #090909;
   --sidebar-foreground: #f5f5f5;
-  --sidebar-primary: #f5f5f5;
-  --sidebar-primary-foreground: #080808;
+  --sidebar-primary: #67d4e8;
+  --sidebar-primary-foreground: #06252c;
   --sidebar-accent: #1a1a1a;
   --sidebar-accent-foreground: #f5f5f5;
-  --sidebar-border: rgb(255 255 255 / 0.12);
-  --sidebar-ring: #d4d4d4;
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-ring: #67d4e8;
 
   /* Design scales. The stylesheet had grown 30+ raw spacing values, 19 font
      sizes and 8 weights — enough variants that nothing could be applied
@@ -108,13 +118,11 @@
 
   /* Type: the old UI text sat at 11.5px, which is why dense screens read as
      both cramped and empty. Body text starts at 14px here. */
-  --text-micro: 0.6875rem;
   --text-caption: 0.75rem;
   --text-label: 0.8125rem;
   --text-body: 0.875rem;
   --text-title: 1rem;
   --text-heading: 1.375rem;
-  --text-display: 2rem;
 
   --leading-tight: 1.25;
   --leading-snug: 1.4;
@@ -156,6 +164,9 @@
     min-height: 0;
     overflow: hidden;
     overscroll-behavior: none;
+    font-size: var(--text-body);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-normal);
     background-image:
       radial-gradient(circle at 84% -12%, color-mix(in oklab, var(--foreground) 5%, transparent), transparent 30rem),
       linear-gradient(to bottom, color-mix(in oklab, var(--background) 97%, black), var(--background));

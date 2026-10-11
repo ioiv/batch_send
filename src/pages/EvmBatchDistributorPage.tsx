@@ -872,14 +872,90 @@ export function EvmBatchDistributorPage() {
 
   return (
     <ToolPageLayout
+      actionBar={(
+        <ActionBar
+          summary={(
+            <DistributionSummary
+              details={preflightState.result ? (
+                <div className="summary-list">
+                  <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
+                  <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
+                </div>
+              ) : undefined}
+              rows={[
+                { label: "有效地址", value: parsed.validRows.length },
+                { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
+                ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
+                ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
+                { label: "预估网络费", value: preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "—" }
+              ]}
+            />
+          )}
+          feedback={(
+            <div className="distribution-status" role={sendFailed || preflightFailed ? "alert" : "status"} aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}>
+              <Badge variant={reviewHasRisk ? "destructive" : "outline"}>{sendComplete ? "分发完成" : reviewSummaryLabel}</Badge>
+              <span className="distribution-status__message">{actionStatusMessage}</span>
+              {actionStatusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{actionStatusMessage}</HelpTooltip> : null}
+              {unresolvedSubmission ? <HelpTooltip label="不可安全整批重试">已有交易提交到链上。请先核对交易哈希，再开始新任务。</HelpTooltip> : null}
+            </div>
+          )}
+        >
+          <div className="action-group">
+            {!sendComplete && !sendFailed && !sending ? (
+              <Button
+                size="lg"
+                disabled={!readyToSend}
+                onClick={() => void prepareDistribution()}
+                type="button"
+                variant={showFinalSummary ? "outline" : "default"}
+              >{preflighting ? "预检中" : showFinalSummary || preflightFailed ? "重新预检" : listImporting ? "正在导入清单" : "运行预检"}</Button>
+            ) : null}
+            {sending ? <Button size="lg" disabled type="button">{sendState.status === "preparing" ? "签名前复检" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
+            {showFinalSummary ? (
+              <ConfirmActionDialog
+                triggerSize="lg"
+                confirmLabel={preflightState.result?.needsApproval ? "授权并分发" : "签名并分发"}
+                description={(
+                  <div className="summary-list">
+                    <div><span>网络</span><strong>{selectedNetwork.label} · {selectedNetwork.chainId}</strong></div>
+                    <div><span>资产</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
+                    <div><span>收款地址</span><strong>{parsed.validRows.length}</strong></div>
+                    <div><span>分发总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
+                    <div><span>资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
+                    <div><span>发送账户</span><strong className="address" title={wallet.address}>{shortenAddress(wallet.address)}</strong></div>
+                    <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                    <div><span>授权</span><strong>{preflightState.result?.needsApproval ? "1 次 Token 授权" : "无需授权"}</strong></div>
+                    {preflightState.result?.needsApproval ? (
+                      <div><span>授权后复检</span><strong>余额、授权与 Gas 通过后才分发</strong></div>
+                    ) : null}
+                    <div><span>钱包确认</span><strong>{preflightState.result?.totalTransactions ?? 0} 次</strong></div>
+                    <div><span>地址抽样</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
+                  </div>
+                )}
+                disabled={!readyToSend}
+                onConfirm={sendDistribution}
+                title="确认 EVM 分发"
+                triggerLabel="确认分发"
+              />
+            ) : null}
+            {sendComplete || sendFailed ? (
+              <>
+                {/* Ending a round must not depend on finding a setting to edit;
+                    the list stays for the next round. */}
+                <Button size="lg" onClick={resetForEdit} type="button">开始新一轮分发</Button>
+              </>
+            ) : null}
+          </div>
+        </ActionBar>
+      )}
       actions={(
         <>
-          <EvmGasBadge gas={gas} />
-          <EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />
+          <EvmGasBadge gas={gas} networkLabel={selectedNetwork.label} />
         </>
       )}
       className="page-distributor"
       currentToolId="evm-distribution"
+      walletControl={<EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
       stickyActions
       status={pageStatus}
       statusLabel={pageStatusLabel}
@@ -889,80 +965,6 @@ export function EvmBatchDistributorPage() {
         <WorkbenchPanel
           actions={<Badge variant="outline">{selectedNetwork.label} · {assetSymbol}</Badge>}
           className="input-panel"
-          footer={(
-            <ActionBar
-              summary={(
-                <DistributionSummary
-                  details={preflightState.result ? (
-                    <div className="summary-list">
-                      <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
-                      <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
-                    </div>
-                  ) : undefined}
-                  rows={[
-                    { label: "有效地址", value: parsed.validRows.length },
-                    { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
-                    ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
-                    ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
-                    { label: "预估网络费", value: preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "—" }
-                  ]}
-                />
-              )}
-              feedback={(
-                <div className="distribution-status" role={sendFailed || preflightFailed ? "alert" : "status"} aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}>
-                  <Badge variant={reviewHasRisk ? "destructive" : "outline"}>{sendComplete ? "分发完成" : reviewSummaryLabel}</Badge>
-                  <span className="distribution-status__message">{actionStatusMessage}</span>
-                  {actionStatusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{actionStatusMessage}</HelpTooltip> : null}
-                  {unresolvedSubmission ? <HelpTooltip label="不可安全整批重试">已有交易提交到链上。请先核对交易哈希，再开始新任务。</HelpTooltip> : null}
-                </div>
-              )}
-            >
-              <div className="action-group">
-                {!sendComplete && !sendFailed && !sending ? (
-                  <Button
-                    disabled={!readyToSend}
-                    onClick={() => void prepareDistribution()}
-                    type="button"
-                    variant={showFinalSummary ? "outline" : "default"}
-                  >{preflighting ? "预检中" : showFinalSummary || preflightFailed ? "重新预检" : listImporting ? "正在导入清单" : "运行预检"}</Button>
-                ) : null}
-                {sending ? <Button disabled type="button">{sendState.status === "preparing" ? "签名前复检" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
-                {showFinalSummary ? (
-                  <ConfirmActionDialog
-                    confirmLabel={preflightState.result?.needsApproval ? "授权并分发" : "签名并分发"}
-                    description={(
-                      <div className="summary-list">
-                        <div><span>网络</span><strong>{selectedNetwork.label} · {selectedNetwork.chainId}</strong></div>
-                        <div><span>资产</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
-                        <div><span>收款地址</span><strong>{parsed.validRows.length}</strong></div>
-                        <div><span>分发总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
-                        <div><span>资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
-                        <div><span>发送账户</span><strong className="address" title={wallet.address}>{shortenAddress(wallet.address)}</strong></div>
-                        <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
-                        <div><span>授权</span><strong>{preflightState.result?.needsApproval ? "1 次 Token 授权" : "无需授权"}</strong></div>
-                        {preflightState.result?.needsApproval ? (
-                          <div><span>授权后复检</span><strong>余额、授权与 Gas 通过后才分发</strong></div>
-                        ) : null}
-                        <div><span>钱包确认</span><strong>{preflightState.result?.totalTransactions ?? 0} 次</strong></div>
-                        <div><span>地址抽样</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
-                      </div>
-                    )}
-                    disabled={!readyToSend}
-                    onConfirm={sendDistribution}
-                    title="确认 EVM 分发"
-                    triggerLabel="确认分发"
-                  />
-                ) : null}
-                {sendComplete || sendFailed ? (
-                  <>
-                    {/* Ending a round must not depend on finding a setting to edit;
-                        the list stays for the next round. */}
-                    <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
-                  </>
-                ) : null}
-              </div>
-            </ActionBar>
-          )}
           segmented
           title="批量分发"
         >

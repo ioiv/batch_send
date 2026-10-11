@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { ToolPageLayout } from "./ToolPageLayout";
 
 describe("ToolPageLayout", () => {
+  it("keeps task actions outside the form scroll viewport", () => {
+    const markup = renderToStaticMarkup(
+      <ToolPageLayout actionBar={<button>确认并开始归集</button>} currentToolId="sol-collection" stickyActions title="归集">
+        <div>长表单内容</div>
+      </ToolPageLayout>
+    );
+    const dock = markup.indexOf('class="site-action-dock"');
+    expect(markup).toContain('class="site-tool-scroll"');
+    expect(dock).toBeGreaterThan(markup.indexOf("</main>"));
+    expect(dock).toBeGreaterThan(markup.indexOf("</footer>"));
+    expect(markup.match(/确认并开始归集/g)).toHaveLength(1);
+    expect(markup.indexOf("确认并开始归集")).toBeGreaterThan(dock);
+  });
   it("keeps the optional mode switch beside the title before the workspace", () => {
     const markup = renderToStaticMarkup(
       <ToolPageLayout currentToolId="sol-collection" modeSwitch={<button>一键归集</button>} title="测试工具">

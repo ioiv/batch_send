@@ -15,6 +15,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("wallet file drop", () => {
+  it("reads a dropped file into the import dialog and waits for confirmation", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const secret = `0x${"41".repeat(32)}`;
+    const file = new File([secret], "wallets.txt", { type: "text/plain" });
+    Object.defineProperty(file, "text", { value: async () => secret });
+    render(<SecretKeyInput mode="evm" ref={ref} />);
+    const dropzone = screen.getByRole("button", { name: "导入钱包" });
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+    const dialog = await screen.findByRole("dialog", { name: "导入来源钱包" });
+    await waitFor(() => expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue(secret));
+    expect(ref.current?.read()).toBe("");
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current?.read()).toBe(secret);
+    expect(screen.getByRole("button", { name: "继续导入钱包" })).toHaveTextContent("已导入 1 个钱包");
+  });
+
+  it("does not read a dropped file while controls are locked", async () => {
+    const read = vi.fn(async () => "");
+    const file = new File([], "wallets.txt", { type: "text/plain" });
+    Object.defineProperty(file, "text", { value: read });
+    render(<SecretKeyInput disabled mode="evm" />);
+    fireEvent.drop(screen.getByRole("button", { name: "导入钱包" }), { dataTransfer: { files: [file] } });
+    expect(screen.queryByRole("dialog", { name: "导入来源钱包" })).not.toBeInTheDocument();
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
 async function importWallets(user: ReturnType<typeof userEvent.setup>, secret: string) {
   await user.click(screen.getByRole("button", { name: /导入钱包/ }));
   const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });

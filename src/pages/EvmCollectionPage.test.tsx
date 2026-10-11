@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -285,6 +285,27 @@ describe("EVM collection fee protection defaults", () => {
 });
 
 describe("EvmCollectionPage workbench", () => {
+  it("keeps a dropped wallet file open while the page locks other controls for reading", async () => {
+    const user = userEvent.setup();
+    let finishReading!: (value: string) => void;
+    const read = vi.fn(() => new Promise<string>(resolve => { finishReading = resolve; }));
+    const file = new File([], "wallets.txt", { type: "text/plain" });
+    Object.defineProperty(file, "text", { value: read });
+    const { container } = render(<EvmCollectionPage fixedStandard="erc20" />);
+    fireEvent.drop(screen.getByRole("button", { name: "导入钱包" }), { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(read).toHaveBeenCalledOnce());
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    expect(container.querySelector("#evm-collection-target")).toBeDisabled();
+    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
+    await act(async () => finishReading(privateKey));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeEnabled());
+    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue(privateKey);
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(screen.getByRole("button", { name: "继续导入钱包" })).toHaveTextContent("已导入 1 个钱包");
+    expect(container.querySelector("#evm-collection-target")).toBeEnabled();
+  });
+
   it("hands imported wallets and public configuration to automatic mode", async () => {
     const automatic = vi.fn();
     const user = userEvent.setup();
@@ -649,7 +670,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(walletRow).getByLabelText(`${signerAccount.address} 代币与 NFT 概览`)).toHaveTextContent("NFT 1");
     expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
     expect(screen.getByText(/共有 1 个可归集 ERC721/)).toHaveAttribute("role", "status");
-    expect(screen.getByLabelText("说明：归集数量说明")).toHaveTextContent("?");
+    expect(screen.getByRole("button", { name: "说明：归集数量说明" }).querySelector("svg")).not.toBeNull();
     expect(screen.queryByText(/归集全部：归集所有已识别的 ERC721/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
     expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(1);

@@ -9,6 +9,18 @@ beforeEach(() => window.localStorage.clear());
 afterEach(cleanup);
 
 describe("SiteHeader sidebar navigation", () => {
+  it("focuses and selects the tool search with the keyboard shortcut", async () => {
+    const user = userEvent.setup();
+    render(<SiteHeader />);
+    const search = screen.getByRole("combobox", { name: "搜索工具" });
+    await user.type(search, "归集");
+    await user.click(screen.getByRole("button", { name: "收起侧边导航" }));
+    await user.keyboard("{Control>}k{/Control}");
+    expect(search).toHaveFocus();
+    expect((search as HTMLInputElement).selectionStart).toBe(0);
+    expect((search as HTMLInputElement).selectionEnd).toBe(2);
+    expect(screen.getByText("⌘K")).toBeVisible();
+  });
   it("replaces the all-tools dropdown with a collapsible persistent sidebar", async () => {
     const user = userEvent.setup();
     const { container } = render(<SiteHeader currentToolId="sol-distribution" />);

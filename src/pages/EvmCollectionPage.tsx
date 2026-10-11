@@ -24,6 +24,7 @@ import { NftAssetInput } from "../components/NftAssetInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import {
   SecretKeyInput,
+  SourceWalletHelp,
   type SecretKeyInputHandle,
   type SecretKeyInputSnapshot,
   type WalletExecutionItem
@@ -1957,13 +1958,119 @@ export function EvmCollectionPage({
     && tokenRangeSize !== null
     && tokenRangeSize <= tokenRangeRpcLimit
   );
+  const fixedNativeAmount = fixedStandard === "erc20" && !assetInput.trim() && amountMode === "fixed"
+    ? parsePositiveFeeAmount(fixedAmount, selectedNetwork.nativeCurrency.decimals)
+    : null;
+  const plannedTotal = !sourceKeyLineCount ? "—" : fixedStandard === "nft"
+    ? nftStandard === "erc721" && nftAmountMode === "fixed"
+      ? parsedNftFixedAmount !== null ? `${parsedNftFixedAmount} 个 NFT` : "—"
+      : "全部已识别持仓"
+    : !assetInput.trim() && amountMode === "fixed"
+      ? fixedNativeAmount !== null
+        ? `${formatUnits(fixedNativeAmount * BigInt(sourceKeyLineCount), selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
+        : "—"
+      : "按实时余额计算";
 
   return (
     <ToolPageLayout
+      actionBar={(
+        <ActionBar
+          summary={<WorkbenchSummary items={[
+            { label: "已选钱包", value: sourceKeyLineCount },
+            { label: "计划总额", value: plannedTotal },
+            { label: "资产项", value: parsedAssetCount },
+            { label: "并发", value: concurrency }
+          ]} />}
+          feedback={(
+            <>
+              {issues.length ? (
+                <Alert variant="destructive">
+                  <AlertTitle>输入有误</AlertTitle>
+                  <AlertDescription>
+                    <ul aria-label="输入问题">
+                      {issues.map((issue, index) => <li key={issue + "-" + index}>{issue}</li>)}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
+              {message ? (
+                <Alert
+                  aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
+                  summary={message}
+                  variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
+                >{message}</Alert>
+              ) : null}
+
+
+            </>
+          )}
+        >
+          {stage === "running" ? (
+            <CollectionExecutionControls
+              current={completedResultCount}
+              label="EVM 归集进度"
+              onPausedChange={handlePausedChange}
+              paused={paused}
+              total={results.length}
+            />
+          ) : results.length && roundIsTerminal ? (
+            <>
+              {retryableCount ? (
+                <ConfirmActionDialog
+                  triggerSize="lg"
+                  confirmLabel={`重试 ${retryableCount} 个失败项`}
+                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                  disabled={running}
+                  onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
+                  title="确认重试失败项？"
+                  triggerLabel={`重试失败项 (${retryableCount})`}
+                  triggerVariant="outline"
+                />
+              ) : null}
+              <Button
+                size="lg"
+                disabled={running}
+                onClick={startNewRound}
+                type="button"
+                variant={retryableCount ? "outline" : "default"}
+              >开始新一轮归集</Button>
+              {currentRoundRequiresAcknowledgement ? (
+                <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。</Alert>
+              ) : null}
+            </>
+          ) : (
+            <ConfirmActionDialog
+              triggerSize="lg"
+              confirmLabel="确认并开始归集"
+              description={(
+                <div className="summary-list">
+                  <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                  <div><span>目标地址</span><strong className="mono">{targetAddress || "—"}</strong></div>
+                  <div><span>来源钱包</span><strong>{sourceKeyLineCount} 个已选择</strong></div>
+                  <div>
+                    <span>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</span>
+                    <strong>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</strong>
+                  </div>
+                  <div><span>归集数量</span><strong>{fixedStandard === "nft"
+                    ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
+                    : amountModeLabels[amountMode]}</strong></div>
+                  <div><span>并发</span><strong>{concurrency}</strong></div>
+                  <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
+                  <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                </div>
+              )}
+              disabled={!canStart}
+              onConfirm={() => executeCollection()}
+              title="确认 EVM 归集？"
+              triggerLabel="确认并开始归集"
+            />
+          )}
+        </ActionBar>
+      )}
       actions={(
         <>
-          <EvmGasBadge gas={gas} />
-          <Badge variant="outline">{selectedNetwork.label}</Badge>
+          <EvmGasBadge gas={gas} networkLabel={selectedNetwork.label} />
         </>
       )}
       className="collection-shell collection-page"
@@ -2021,7 +2128,7 @@ export function EvmCollectionPage({
                   className="nft-opensea-key__visibility"
                   disabled={controlsLocked}
                   onClick={() => setOpenSeaKeyVisible((visible) => !visible)}
-                  size="xs"
+                  size="sm"
                   type="button"
                   variant="ghost"
                 >
@@ -2037,104 +2144,14 @@ export function EvmCollectionPage({
           ) : undefined}
           className="collection-workbench-panel"
           segmented
-          footer={(
-            <ActionBar
-              summary={<WorkbenchSummary items={[
-                { label: "已选钱包", value: sourceKeyLineCount },
-                { label: "资产项", value: parsedAssetCount },
-                { label: "并发", value: concurrency }
-              ]} />}
-              feedback={(
-                <>
-            {issues.length ? (
-              <Alert variant="destructive">
-                <AlertTitle>输入有误</AlertTitle>
-                <AlertDescription>
-                  <ul aria-label="输入问题">
-                    {issues.map((issue, index) => <li key={issue + "-" + index}>{issue}</li>)}
-                  </ul>
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            {message ? (
-              <Alert
-                aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
-                summary={message}
-                variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
-              >{message}</Alert>
-            ) : null}
-
-
-                </>
-              )}
-            >
-              {stage === "running" ? (
-                <CollectionExecutionControls
-                  current={completedResultCount}
-                  label="EVM 归集进度"
-                  onPausedChange={handlePausedChange}
-                  paused={paused}
-                  total={results.length}
-                />
-              ) : results.length && roundIsTerminal ? (
-                <>
-                  {retryableCount ? (
-                    <ConfirmActionDialog
-                      confirmLabel={`重试 ${retryableCount} 个失败项`}
-                      description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                      disabled={running}
-                      onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
-                      title="确认重试失败项？"
-                      triggerLabel={`重试失败项 (${retryableCount})`}
-                      triggerVariant="outline"
-                    />
-                  ) : null}
-                  <Button
-                    disabled={running}
-                    onClick={startNewRound}
-                    type="button"
-                    variant={retryableCount ? "outline" : "default"}
-                  >开始新一轮归集</Button>
-                  {currentRoundRequiresAcknowledgement ? (
-                    <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。</Alert>
-                  ) : null}
-                </>
-              ) : (
-                <ConfirmActionDialog
-                  confirmLabel="确认并开始归集"
-                  description={(
-                    <div className="summary-list">
-                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                      <div><span>目标地址</span><strong className="mono">{targetAddress || "—"}</strong></div>
-                      <div><span>来源钱包</span><strong>{sourceKeyLineCount} 个已选择</strong></div>
-                      <div>
-                        <span>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</span>
-                        <strong>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</strong>
-                      </div>
-                      <div><span>归集数量</span><strong>{fixedStandard === "nft"
-                        ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
-                        : amountModeLabels[amountMode]}</strong></div>
-                      <div><span>并发</span><strong>{concurrency}</strong></div>
-                      <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
-                      <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
-                    </div>
-                  )}
-                  disabled={!canStart}
-                  onConfirm={() => executeCollection()}
-                  title="确认 EVM 归集？"
-                  triggerLabel="确认并开始归集"
-                />
-              )}
-            </ActionBar>
-          )}
           title="归集设置"
         >
           <div className="form workbench-form">
-            <WorkbenchSection title="来源钱包">
+            <WorkbenchSection actions={<SourceWalletHelp />} title="来源钱包">
               {fixedStandard === "erc20" ? (
                 <SecretKeyInput
-                  disabled={controlsLocked || assetImporting}
+                  hideHeading
+                  disabled={operationRunning || assetImporting}
                   mode="evm"
                   onDirty={(reason, addresses) => {
                     if (reason === "remove" && addresses?.length) removeAddressBalances(addresses);
@@ -2152,8 +2169,9 @@ export function EvmCollectionPage({
 
               {fixedStandard === "nft" ? (
                 <SecretKeyInput
+                  hideHeading
                   compactStatuses
-                  disabled={controlsLocked || assetImporting}
+                  disabled={operationRunning || assetImporting}
                   mode="evm"
                   onDirty={(reason, addresses) => {
                     setPendingDiscovery(null);
@@ -2723,11 +2741,11 @@ export function EvmCollectionPage({
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
               <div className="config-grid__full">
-              <EvmGasSettings
-                disabled={controlsLocked}
-                gas={gas}
-                onSettingsChange={() => invalidatePlan()}
-              />
+                <EvmGasSettings
+                  disabled={controlsLocked}
+                  gas={gas}
+                  onSettingsChange={() => invalidatePlan()}
+                />
               </div>
 
               <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级网络费保护">

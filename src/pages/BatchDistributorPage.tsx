@@ -649,9 +649,84 @@ export function BatchDistributorPage() {
 
   return (
     <ToolPageLayout
+      actionBar={(
+        <ActionBar
+          summary={(
+            <DistributionSummary
+              details={(
+                <div className="summary-list">
+                  <div><span>预计交易</span><strong>{preflightState.status === "success" ? preflightState.transactionCount : transactionCount || 0}</strong></div>
+                  <div><span>钱包余额</span><strong>{walletBalance}{wallet.connected && balanceLookup.status === "success" ? " SOL" : ""}</strong></div>
+                  {preflightState.requiredLamports !== null ? <div><span>预计总扣款</span><strong>{formatLamports(preflightState.requiredLamports)} SOL</strong></div> : null}
+                </div>
+              )}
+              rows={[
+                { label: "有效地址", value: parsed.validRows.length },
+                { label: "合计金额", value: `${parsed.total} SOL` },
+                ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
+                ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
+                { label: "预估手续费", value: preflightState.estimatedFeeLamports === null ? "—" : `${formatLamports(preflightState.estimatedFeeLamports)} SOL` }
+              ]}
+            />
+          )}
+          feedback={(
+            <div className="distribution-status" role={sendFailed || preflightFailed || balanceLookup.status === "error" ? "alert" : "status"} aria-live={sendFailed || preflightFailed || balanceLookup.status === "error" ? "assertive" : "polite"}>
+              <Badge variant={sendFailed || preflightFailed ? "destructive" : "outline"}>{statusTitle}</Badge>
+              <span className="distribution-status__message">{statusMessage}</span>
+              {statusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{statusMessage}</HelpTooltip> : null}
+              {unresolvedSubmission ? <HelpTooltip label="禁止直接重试">已有交易提交到链上，请核对交易哈希后再开始新任务。</HelpTooltip> : null}
+            </div>
+          )}
+        >
+          <div className="action-group">
+            {balanceLookup.status === "error" ? <Button size="lg" disabled={pageControlsLocked} onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button> : null}
+            {!confirmVisible && !sendComplete && !sendFailed ? (
+              <Button size="lg" disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">运行预检</Button>
+            ) : null}
+            {preflightFailed && sendState.status === "idle" ? (
+              <>
+                <Button size="lg" disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">重新预检</Button>
+                <Button size="lg" onClick={resetConfirmation} type="button" variant="outline">返回修改</Button>
+              </>
+            ) : null}
+            {showFinalSummary ? (
+              <>
+                <Button size="lg" onClick={resetConfirmation} type="button" variant="outline">返回修改</Button>
+                <ConfirmActionDialog
+                  triggerSize="lg"
+                  confirmLabel="确认并签名"
+                  description={(
+                    <ResultTable
+                      caption="SOL 分发确认摘要"
+                      columns={[
+                        { header: "项目", key: "label", render: (row) => row.label },
+                        { header: "值", key: "value", render: (row) => <span className="font-mono">{row.value}</span> }
+                      ]}
+                      getRowKey={(row) => row.label}
+                      rows={confirmationSummaryRows}
+                    />
+                  )}
+                  disabled={!readyToSend}
+                  onConfirm={sendDistribution}
+                  title="确认 SOL 批量分发"
+                  triggerLabel="确认并签名"
+                />
+              </>
+            ) : null}
+            {sendComplete || sendFailed ? (
+              <>
+                {/* Ending a round must not depend on finding a setting to edit;
+                    the list stays for the next round. */}
+                <Button size="lg" onClick={resetForEdit} type="button">开始新一轮分发</Button>
+              </>
+            ) : null}
+          </div>
+        </ActionBar>
+      )}
       actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="page-distributor"
       currentToolId="sol-distribution"
+      walletControl={<WalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
       stickyActions
       status={pageStatus}
       statusLabel={pageStatusLabel}
@@ -659,81 +734,7 @@ export function BatchDistributorPage() {
     >
       <div className="workbench-grid">
         <WorkbenchPanel
-          actions={<WalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
           className="min-w-0"
-          footer={(
-            <ActionBar
-              summary={(
-              <DistributionSummary
-                details={(
-                  <div className="summary-list">
-                    <div><span>预计交易</span><strong>{preflightState.status === "success" ? preflightState.transactionCount : transactionCount || 0}</strong></div>
-                    <div><span>钱包余额</span><strong>{walletBalance}{wallet.connected && balanceLookup.status === "success" ? " SOL" : ""}</strong></div>
-                    {preflightState.requiredLamports !== null ? <div><span>预计总扣款</span><strong>{formatLamports(preflightState.requiredLamports)} SOL</strong></div> : null}
-                  </div>
-                )}
-                rows={[
-                  { label: "有效地址", value: parsed.validRows.length },
-                  { label: "合计金额", value: `${parsed.total} SOL` },
-                  ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
-                  ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
-                  { label: "预估手续费", value: preflightState.estimatedFeeLamports === null ? "—" : `${formatLamports(preflightState.estimatedFeeLamports)} SOL` }
-                ]}
-              />
-              )}
-              feedback={(
-                <div className="distribution-status" role={sendFailed || preflightFailed || balanceLookup.status === "error" ? "alert" : "status"} aria-live={sendFailed || preflightFailed || balanceLookup.status === "error" ? "assertive" : "polite"}>
-                  <Badge variant={sendFailed || preflightFailed ? "destructive" : "outline"}>{statusTitle}</Badge>
-                  <span className="distribution-status__message">{statusMessage}</span>
-                  {statusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{statusMessage}</HelpTooltip> : null}
-                  {unresolvedSubmission ? <HelpTooltip label="禁止直接重试">已有交易提交到链上，请核对交易哈希后再开始新任务。</HelpTooltip> : null}
-                </div>
-              )}
-            >
-              <div className="action-group">
-                {balanceLookup.status === "error" ? <Button disabled={pageControlsLocked} onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button> : null}
-                {!confirmVisible && !sendComplete && !sendFailed ? (
-                  <Button disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">运行预检</Button>
-                ) : null}
-                {preflightFailed && sendState.status === "idle" ? (
-                  <>
-                    <Button disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">重新预检</Button>
-                    <Button onClick={resetConfirmation} type="button" variant="outline">返回修改</Button>
-                  </>
-                ) : null}
-                {showFinalSummary ? (
-                  <>
-                    <Button onClick={resetConfirmation} type="button" variant="outline">返回修改</Button>
-                    <ConfirmActionDialog
-                      confirmLabel="确认并签名"
-                      description={(
-                        <ResultTable
-                          caption="SOL 分发确认摘要"
-                          columns={[
-                            { header: "项目", key: "label", render: (row) => row.label },
-                            { header: "值", key: "value", render: (row) => <span className="font-mono">{row.value}</span> }
-                          ]}
-                          getRowKey={(row) => row.label}
-                          rows={confirmationSummaryRows}
-                        />
-                      )}
-                      disabled={!readyToSend}
-                      onConfirm={sendDistribution}
-                      title="确认 SOL 批量分发"
-                      triggerLabel="确认并签名"
-                    />
-                  </>
-                ) : null}
-                {sendComplete || sendFailed ? (
-                  <>
-                    {/* Ending a round must not depend on finding a setting to edit;
-                        the list stays for the next round. */}
-                    <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
-                  </>
-                ) : null}
-              </div>
-            </ActionBar>
-          )}
           segmented
           title="批量分发"
         >

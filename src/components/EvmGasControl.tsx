@@ -1,6 +1,7 @@
-import type { CSSProperties } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { useId, type CSSProperties } from "react";
+import { Popover } from "@base-ui/react/popover";
+import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { EvmGasChoice, EvmGasController } from "@/hooks/useEvmGas";
 import { formatGasPriceGwei, getEvmFeeCapPerGas } from "@/lib/evm-gas";
@@ -14,7 +15,7 @@ function formatRecommendation(gas: EvmGasController, tier: typeof recommendation
     : "--";
 }
 
-export function EvmGasBadge({ gas }: { gas: EvmGasController }) {
+export function EvmGasBadge({ gas, networkLabel }: { gas: EvmGasController; networkLabel?: string }) {
   const values = recommendationTiers.map((tier) => ({
     label: gas.recommendations?.[tier].label,
     tier,
@@ -34,31 +35,40 @@ export function EvmGasBadge({ gas }: { gas: EvmGasController }) {
     : gas.live.message;
 
   return (
-    <Badge
-      aria-label={ariaLabel}
-      className="gas-live-badge"
-      data-state={gas.live.status}
-      title={title}
-      variant="outline"
-    >
-      <span aria-hidden="true" className="gas-live-badge__dot" />
-      <span className="gas-live-badge__prefix">Gas</span>
-      {hasRecommendations ? values.map(({ label, tier, value }) => (
-        <span className="gas-live-badge__tier" key={tier}>
-          <span>{label}</span>
-          <strong>{value}</strong>
+    <Popover.Root modal={false}>
+      <Popover.Trigger
+        aria-label={ariaLabel}
+        className="gas-live-badge"
+        data-state={gas.live.status}
+        title={title}
+        render={<Button className="gas-live-badge" size="sm" variant="outline" />}
+      >
+        <span aria-hidden="true" className="gas-live-badge__dot" />
+        <span className="gas-live-badge__prefix">Gas</span>
+        {hasRecommendations ? <strong>{formatRecommendation(gas, "standard")}</strong> : <span>{fallback}</span>}
+        {hasRecommendations ? <span className="gas-live-badge__unit">Gwei</span> : null}
+        {networkLabel ? <span className="gas-live-badge__network">· {networkLabel}</span> : null}
+        <span aria-hidden="true" className="gas-live-badge__refresh-track">
+          <span
+            className="gas-live-badge__refresh-progress"
+            data-active={gas.refreshCycle > 0 && gas.live.status !== "loading" ? "true" : "false"}
+            key={gas.refreshCycle}
+            style={{ "--gas-refresh-duration": `${gas.refreshIntervalMs}ms` } as CSSProperties}
+          />
         </span>
-      )) : <span>{fallback}</span>}
-      {hasRecommendations ? <span className="gas-live-badge__unit">Gwei</span> : null}
-      <span aria-hidden="true" className="gas-live-badge__refresh-track">
-        <span
-          className="gas-live-badge__refresh-progress"
-          data-active={gas.refreshCycle > 0 && gas.live.status !== "loading" ? "true" : "false"}
-          key={gas.refreshCycle}
-          style={{ "--gas-refresh-duration": `${gas.refreshIntervalMs}ms` } as CSSProperties}
-        />
-      </span>
-    </Badge>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner align="start" className="gas-live-popover__positioner" collisionPadding={8} side="bottom" sideOffset={8}>
+          <Popover.Popup className="gas-live-popover">
+            <Popover.Title>实时 Gas{networkLabel ? ` · ${networkLabel}` : ""}</Popover.Title>
+            <dl className="gas-live-popover__tiers">
+              {values.map(({ label, tier, value }) => <div key={tier}><dt>{label || ({ slow: "慢", standard: "中", fast: "快" } as const)[tier]}</dt><dd>{value} Gwei</dd></div>)}
+            </dl>
+            <p>{hasRecommendations ? `${feeType} · ${updatedAt} 更新` : gas.live.message}</p>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -74,6 +84,7 @@ export function EvmGasSettings({
   onSettingsChange?: () => void;
 }) {
   const customOpen = gas.choice === "custom";
+  const customGasPriceId = useId();
   const changeChoice = (nextChoice: string) => {
     if (!["auto", "slow", "standard", "fast", "custom"].includes(nextChoice)) return;
     gas.setChoice(nextChoice as EvmGasChoice);
@@ -104,38 +115,34 @@ export function EvmGasSettings({
                 </TabsTrigger>
               );
             })}
-            <div className="gas-settings__custom-control" data-open={customOpen}>
-              <TabsTrigger disabled={disabled} title="自定义 Legacy Gas Price" value="custom">自定义</TabsTrigger>
-              <div
-                aria-hidden={!customOpen}
-                className="gas-settings__custom-reveal"
-                data-open={customOpen}
-              >
-                <label className="sr-only" htmlFor="customGasPriceGwei">Gas Price（Gwei）</label>
-                <div className="gas-settings__input-wrap">
-                  <Input
-                    aria-invalid={!gas.customGasPriceIsValid || undefined}
-                    autoComplete="off"
-                    disabled={disabled || !customOpen}
-                    id="customGasPriceGwei"
-                    inputMode="decimal"
-                    min="0"
-                    onChange={(event) => {
-                      gas.setCustomGasPriceGwei(event.target.value);
-                      onSettingsChange?.();
-                    }}
-                    placeholder={gas.live.gasPriceWei === null ? "1.5" : formatGasPriceGwei(gas.live.gasPriceWei, 6)}
-                    step="0.000000001"
-                    tabIndex={customOpen ? undefined : -1}
-                    type="number"
-                    value={gas.customGasPriceGwei}
-                  />
-                  <span aria-hidden="true" className="gas-settings__input-unit">Gwei</span>
-                </div>
-              </div>
-            </div>
+            <TabsTrigger disabled={disabled} title="自定义 Legacy Gas Price" value="custom">自定义</TabsTrigger>
           </TabsList>
         </Tabs>
+
+        {customOpen ? (
+          <div className="gas-settings__custom-control">
+            <label className="sr-only" htmlFor={customGasPriceId}>Gas Price（Gwei）</label>
+            <InputGroup className="gas-settings__input-wrap">
+              <InputGroupInput
+                aria-invalid={!gas.customGasPriceIsValid || undefined}
+                autoComplete="off"
+                disabled={disabled}
+                id={customGasPriceId}
+                inputMode="decimal"
+                min="0"
+                onChange={(event) => {
+                  gas.setCustomGasPriceGwei(event.target.value);
+                  onSettingsChange?.();
+                }}
+                placeholder={gas.live.gasPriceWei === null ? "1.5" : formatGasPriceGwei(gas.live.gasPriceWei, 6)}
+                step="0.000000001"
+                type="number"
+                value={gas.customGasPriceGwei}
+              />
+              <InputGroupAddon align="inline-end" className="gas-settings__input-unit">Gwei</InputGroupAddon>
+            </InputGroup>
+          </div>
+        ) : null}
 
         {feeEstimate ? (
           <div className="gas-settings__fee" aria-label={`预估网络费 ${feeEstimate}`}>

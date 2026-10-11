@@ -13,7 +13,7 @@
 
 .distribution-generator__heading h3 {
   margin: 0;
-  font-size: var(--text-title);
+  font-size: var(--text-body);
   font-weight: var(--weight-strong);
 }
 
@@ -139,7 +139,7 @@
 .distribution-summary.distribution-summary--compact button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-control);
 }
 
 .distribution-config-grid > .evm-network-row,

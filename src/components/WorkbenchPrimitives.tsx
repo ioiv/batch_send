@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Loading03Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, Loading03Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 export { CompactNotice, NoticeTitle, NoticeDetail } from "./CompactNotice";
 import {
@@ -189,9 +189,7 @@ export function ReviewPanel({
               )}
             >
               {open ? "收起" : "查看"}
-              <svg aria-hidden="true" fill="none" viewBox="0 0 20 20">
-                <path d="m6 8 4 4 4-4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" />
-              </svg>
+              <HugeiconsIcon aria-hidden="true" className="disclosure-arrow" icon={ArrowDown01Icon} size={14} strokeWidth={1.8} />
             </CollapsibleTrigger>
           </div>
         </CardHeader>
@@ -216,10 +214,10 @@ export function AdvancedSettings({
     <Collapsible className="advanced-settings">
       <CollapsibleTrigger
         disabled={disabled}
-        render={<Button className="advanced-settings__trigger" type="button" variant="ghost" />}
+        render={<Button className="advanced-settings__trigger" size="sm" type="button" variant="ghost" />}
       >
         {label}
-        <span aria-hidden="true">⌄</span>
+        <HugeiconsIcon aria-hidden="true" className="disclosure-arrow" icon={ArrowDown01Icon} size={14} strokeWidth={1.8} />
       </CollapsibleTrigger>
       <CollapsibleContent className="advanced-settings__content">{children}</CollapsibleContent>
     </Collapsible>

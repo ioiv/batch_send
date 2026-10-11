@@ -182,7 +182,8 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(summaryValue("预估网络费")).toHaveTextContent("—");
     expect(gasSettings.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
-    expect(gasSettings.closest(".workbench-panel")).toBe(preflightButton.closest(".workbench-panel"));
+    expect(gasSettings.closest(".workbench-panel")).not.toBeNull();
+    expect(preflightButton.closest(".site-action-dock")).not.toBeNull();
     expect(gasSettings.compareDocumentPosition(preflightButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "3.25");

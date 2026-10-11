@@ -152,6 +152,22 @@ describe("EVM Gas controls", () => {
     expect(screen.queryByRole("button", { name: "刷新 Gas" })).not.toBeInTheDocument();
   });
 
+  it("opens the compact quote to show all three Gas tiers", async () => {
+    gasMocks.getLiveFeeQuote.mockResolvedValue(legacyQuote);
+    const user = userEvent.setup();
+    render(<GasHarness />);
+    const trigger = await screen.findByRole("button", { name: /实时 Gas 推荐：慢 9 Gwei/ });
+    expect(screen.queryByRole("dialog", { name: "实时 Gas" })).not.toBeInTheDocument();
+    await user.click(trigger);
+    const details = screen.getByRole("dialog", { name: "实时 Gas" });
+    expect(within(details).getByText("9 Gwei")).toBeVisible();
+    expect(within(details).getByText("10 Gwei")).toBeVisible();
+    expect(within(details).getByText("12 Gwei")).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "实时 Gas" })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+  });
+
   it.each([
     {
       expectedSettings: "custom|legacy|10000000000",
@@ -187,13 +203,12 @@ describe("EVM Gas controls", () => {
 
     const rateTabs = await screen.findByRole("tablist", { name: "Gas 费率" });
     const customTab = within(rateTabs).getByRole("tab", { name: "自定义" });
+    expect(screen.queryByRole("spinbutton", { name: "Gas Price（Gwei）" })).not.toBeInTheDocument();
     await user.click(customTab);
 
-    const customControl = customTab.closest<HTMLElement>(".gas-settings__custom-control");
+    const customInput = screen.getByRole("spinbutton", { name: "Gas Price（Gwei）" });
+    const customControl = customInput.closest<HTMLElement>(".gas-settings__custom-control");
     expect(customControl).not.toBeNull();
-    expect(customControl).toContainElement(customTab);
-
-    const customInput = within(customControl as HTMLElement).getByRole("spinbutton", { name: "Gas Price（Gwei）" });
     const inputWrap = customInput.closest<HTMLElement>(".gas-settings__input-wrap");
     const inputUnit = within(inputWrap as HTMLElement).getByText("Gwei");
     expect(customControl).toContainElement(customInput);
@@ -215,5 +230,9 @@ describe("EVM Gas controls", () => {
       expect(customInput).not.toHaveAttribute("aria-invalid", "true");
     });
     expect(onSettingsChange.mock.calls.length).toBeGreaterThan(callbacksAfterModeChange);
+    await user.click(within(rateTabs).getByRole("tab", { name: "自动" }));
+    expect(screen.queryByRole("spinbutton", { name: "Gas Price（Gwei）" })).not.toBeInTheDocument();
+    await user.click(customTab);
+    expect(screen.getByRole("spinbutton", { name: "Gas Price（Gwei）" })).toHaveValue(2.5);
   });
 });

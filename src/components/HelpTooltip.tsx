@@ -1,5 +1,7 @@
 import { useId, useRef, useState, type ReactNode } from "react";
 import { Popover } from "@base-ui/react/popover";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 
 export const helpTooltipDelayMs = 300;
 export const helpTooltipCloseDelayMs = 150;
@@ -29,7 +31,7 @@ export function HelpTooltip({ children, label }: { children: ReactNode; label: s
         openOnHover
         ref={triggerRef}
         type="button"
-      >?</Popover.Trigger>
+      ><HugeiconsIcon aria-hidden="true" icon={InformationCircleIcon} size={14} strokeWidth={1.8} /></Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner align="start" className="help-tooltip__positioner" collisionPadding={8} side="top" sideOffset={8}>
           <Popover.Popup

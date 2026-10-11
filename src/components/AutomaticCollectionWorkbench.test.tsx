@@ -14,8 +14,8 @@ vi.mock("../lib/automatic-sol-collection", () => ({ prepareAutomaticSolCollectio
 vi.mock("../lib/automatic-evm-collection", () => ({ prepareAutomaticEvmCollection: vi.fn() }));
 vi.mock("../hooks/useEvmGas", () => ({ useEvmGas: () => ({ gasSettings: { gasLimit: "auto", gasPrice: "auto" } }) }));
 vi.mock("./ToolPageLayout", () => ({
-  ToolPageLayout: ({ children, title, modeSwitch, status }: { children: ReactNode; title: string; modeSwitch: ReactNode; status: string }) => (
-    <main data-status={status}><h1>{title}</h1>{modeSwitch}{children}</main>
+  ToolPageLayout: ({ actionBar, children, title, modeSwitch, status }: { actionBar: ReactNode; children: ReactNode; title: string; modeSwitch: ReactNode; status: string }) => (
+    <main data-status={status}><h1>{title}</h1>{modeSwitch}{children}{actionBar}</main>
   )
 }));
 

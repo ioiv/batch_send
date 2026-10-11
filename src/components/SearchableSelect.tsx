@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Blockchain01Icon } from "@hugeicons/core-free-icons";
 import {
   Combobox,
   ComboboxCollection,
@@ -99,6 +101,7 @@ export function SearchableSelect<T extends string>({
         className="searchable-select-trigger"
         disabled={disabled}
         id={id}
+        leading={<HugeiconsIcon aria-hidden="true" className="network-select-icon" icon={Blockchain01Icon} size={16} strokeWidth={1.8} />}
         placeholder={selectedOption?.label || placeholder}
         readOnly={!searchable}
         showClear={false}

@@ -646,10 +646,81 @@ export function EvmContractDeployPage() {
 
   return (
     <ToolPageLayout
+      actionBar={(
+        <ActionBar
+          summary={<WorkbenchSummary items={[
+            { label: "目标", value: <span title={disperseContractAddress}>{shortenAddress(disperseContractAddress)}</span> },
+            ...(preflight?.status === "ready" ? [{ label: "执行费上限", value: estimatedFee }] : [])
+          ]} />}
+          feedback={(
+            <>
+              {!wallet.connected || !effectiveRpcEndpoint ? <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : "请输入 HTTPS RPC"}</span> : null}
+      {message ? (
+        <Alert variant={status === "error" ? "destructive" : "default"}>
+          <AlertTitle>{status === "ready"
+            ? "部署校验通过"
+            : status === "success"
+              ? "部署与 runtime 验证完成"
+              : status === "already-deployed"
+                ? "合约已存在"
+                : status === "error"
+                  ? submittedButUncertain ? "禁止直接重试部署" : "部署已阻断"
+                  : "部署处理中"}</AlertTitle>
+          <AlertDescription>{message}{submittedButUncertain ? "。交易已提交，请先核对哈希与目标地址状态。" : ""}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {hash ? (
+        <div className="deployment-transaction" aria-label="部署交易">
+          <div>
+            <span>交易哈希</span>
+            <strong title={hash}>{explorerUrl
+              ? <a href={explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(hash)}</a>
+              : shortenAddress(hash)}</strong>
+          </div>
+        </div>
+      ) : null}
+
+
+            </>
+          )}
+        >
+            {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
+              <Button size="lg" disabled={!canValidate} onClick={() => void runValidation()} type="button">
+                {status === "idle" ? "校验部署条件" : "重新校验"}
+              </Button>
+            ) : null}
+            {busy ? <Button size="lg" disabled type="button">{status === "validating" ? "校验中" : status === "awaiting-wallet" ? "等待钱包签名" : "链上验证中"}</Button> : null}
+            {status === "ready" && network && preflight ? (
+              <>
+                <ConfirmActionDialog
+                  triggerSize="lg"
+                  confirmLabel="签名并部署"
+                  description={(
+                    <div className="summary-list">
+                      <div><span>网络</span><strong>{network.label} · {network.chainId}</strong></div>
+                      <div><span>部署方式</span><strong>CreateX.deployCreate2(bytes32,bytes)</strong></div>
+                      <div><span>CreateX</span><strong title={createXContractAddress}>{shortenAddress(createXContractAddress)}</strong></div>
+                      <div><span>目标地址</span><strong title={disperseContractAddress}>{disperseContractAddress}</strong></div>
+                      <div><span>交易 value</span><strong>0</strong></div>
+                      <div><span>Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
+                      <div><span>Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
+                      <div><span>执行费上限</span><strong>{estimatedFee}</strong></div>
+                    </div>
+                  )}
+                  disabled={!canDeploy}
+                  onConfirm={deployContract}
+                  title="确认 CreateX 部署"
+                  triggerLabel="确认部署"
+                />
+                <Button size="lg" disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
+              </>
+            ) : null}
+        </ActionBar>
+      )}
       actions={(
         <>
-          <EvmGasBadge gas={gas} />
-          <EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />
+          <EvmGasBadge gas={gas} networkLabel={displayNetwork?.label} />
         </>
       )}
       className="page-deploy"
@@ -661,6 +732,7 @@ export function EvmContractDeployPage() {
           <TabsList><TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger><TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger></TabsList>
         </Tabs>
       )}
+      walletControl={<EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />}
       stickyActions
       status={workbenchStatus}
       statusLabel={workbenchStatusLabel}
@@ -671,77 +743,6 @@ export function EvmContractDeployPage() {
           actions={<Badge variant="outline">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "网络待校验"}</Badge>}
           className="deploy-panel"
           segmented
-          footer={(
-            <ActionBar
-              summary={<WorkbenchSummary items={[
-                { label: "目标", value: <span title={disperseContractAddress}>{shortenAddress(disperseContractAddress)}</span> },
-                ...(preflight?.status === "ready" ? [{ label: "执行费上限", value: estimatedFee }] : [])
-              ]} />}
-              feedback={(
-                <>
-                  {!wallet.connected || !effectiveRpcEndpoint ? <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : "请输入 HTTPS RPC"}</span> : null}
-          {message ? (
-            <Alert variant={status === "error" ? "destructive" : "default"}>
-              <AlertTitle>{status === "ready"
-                ? "部署校验通过"
-                : status === "success"
-                  ? "部署与 runtime 验证完成"
-                  : status === "already-deployed"
-                    ? "合约已存在"
-                    : status === "error"
-                      ? submittedButUncertain ? "禁止直接重试部署" : "部署已阻断"
-                      : "部署处理中"}</AlertTitle>
-              <AlertDescription>{message}{submittedButUncertain ? "。交易已提交，请先核对哈希与目标地址状态。" : ""}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {hash ? (
-            <div className="deployment-transaction" aria-label="部署交易">
-              <div>
-                <span>交易哈希</span>
-                <strong title={hash}>{explorerUrl
-                  ? <a href={explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(hash)}</a>
-                  : shortenAddress(hash)}</strong>
-              </div>
-            </div>
-          ) : null}
-
-
-                </>
-              )}
-            >
-                {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
-                  <Button disabled={!canValidate} onClick={() => void runValidation()} type="button">
-                    {status === "idle" ? "校验部署条件" : "重新校验"}
-                  </Button>
-                ) : null}
-                {busy ? <Button disabled type="button">{status === "validating" ? "校验中" : status === "awaiting-wallet" ? "等待钱包签名" : "链上验证中"}</Button> : null}
-                {status === "ready" && network && preflight ? (
-                  <>
-                    <ConfirmActionDialog
-                      confirmLabel="签名并部署"
-                      description={(
-                        <div className="summary-list">
-                          <div><span>网络</span><strong>{network.label} · {network.chainId}</strong></div>
-                          <div><span>部署方式</span><strong>CreateX.deployCreate2(bytes32,bytes)</strong></div>
-                          <div><span>CreateX</span><strong title={createXContractAddress}>{shortenAddress(createXContractAddress)}</strong></div>
-                          <div><span>目标地址</span><strong title={disperseContractAddress}>{disperseContractAddress}</strong></div>
-                          <div><span>交易 value</span><strong>0</strong></div>
-                          <div><span>Gas 估算</span><strong>{preflight.estimatedGas.toLocaleString()}</strong></div>
-                          <div><span>Gas 上限</span><strong>{preflight.gasLimit.toLocaleString()}</strong></div>
-                          <div><span>执行费上限</span><strong>{estimatedFee}</strong></div>
-                        </div>
-                      )}
-                      disabled={!canDeploy}
-                      onConfirm={deployContract}
-                      title="确认 CreateX 部署"
-                      triggerLabel="确认部署"
-                    />
-                    <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
-                  </>
-                ) : null}
-            </ActionBar>
-          )}
           title="部署配置"
         >
           <div className="form workbench-form">

@@ -7,6 +7,8 @@ import {
   useState,
   type ChangeEvent
 } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Upload01Icon } from "@hugeicons/core-free-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -339,9 +341,16 @@ function WalletStatusSummary({
   );
 }
 
+export function SourceWalletHelp() {
+  return <HelpTooltip label="来源钱包与私钥说明">
+    私钥仅在当前页面中解析和签名；页面关闭或刷新后清除。钱包列表只展示地址，支持粘贴和文件导入，最多 1,000 个钱包。
+  </HelpTooltip>;
+}
+
 export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   compactStatuses?: boolean;
   disabled?: boolean;
+  hideHeading?: boolean;
   mode: "evm" | "solana";
   /** `addresses` lists the wallets a "remove" took out of the list. */
   onDirty?: (reason: SecretKeyInputChangeReason, addresses?: readonly string[]) => void;
@@ -353,6 +362,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   walletStatuses?: Readonly<Record<string, readonly WalletExecutionItem[]>>;
 }>(function SecretKeyInput({
   disabled = false,
+  hideHeading = false,
   mode,
   onDirty,
   onImportingChange,
@@ -373,6 +383,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const walletListRef = useRef<HTMLDivElement>(null);
   const initialWalletsReadRef = useRef(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [draftLineCount, setDraftLineCount] = useState(0);
   const [fileStatus, setFileStatus] = useState<
     | { kind: "error" | "idle" | "loading"; message: string }
@@ -386,6 +397,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleWalletCount, setVisibleWalletCount] = useState(importedWalletBatchSize);
   const [wallets, setWallets] = useState<ImportedWallet[]>([]);
+  const inputLocked = disabled || fileStatus.kind === "loading";
   disabledRef.current = disabled;
   selectedIdsRef.current = selectedIds;
 
@@ -482,12 +494,8 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     window.requestAnimationFrame(() => draftTextareaRef.current?.focus());
   };
 
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-
+  const readWalletFile = async (file: File) => {
+    if (disabledRef.current) return;
     const requestId = importRequestRef.current + 1;
     importRequestRef.current = requestId;
     setImportActive(true);
@@ -514,9 +522,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
           : "文件导入失败，请重新选择文件"
       });
     } finally {
-      input.value = "";
       if (requestId === importRequestRef.current) setImportActive(false);
     }
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (file) void readWalletFile(file);
   };
 
   const importWallets = useCallback((initialKeys?: string, initialSelectedIds?: readonly string[]) => {
@@ -678,31 +691,52 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         accept=".txt,.csv,.json,text/plain,text/csv,application/json"
         aria-hidden="true"
         className="sr-only"
-        disabled={disabled}
+        disabled={inputLocked}
         onChange={handleFileChange}
         ref={fileInputRef}
         tabIndex={-1}
         type="file"
       />
 
-      <div className="secret-input-heading">
-        <div className="secret-input-heading__label">
+      {!hideHeading || wallets.length ? <div className="secret-input-heading">
+        {!hideHeading ? <div className="secret-input-heading__label">
           <FieldLabel>来源钱包</FieldLabel>
-          <HelpTooltip label="来源钱包与私钥说明">
-            私钥仅在当前页面中解析和签名；页面关闭或刷新后清除。钱包列表只展示地址，支持粘贴和文件导入，最多 1,000 个钱包。
-          </HelpTooltip>
-        </div>
+          <SourceWalletHelp />
+        </div> : null}
         <span aria-live="polite">
           {wallets.length ? <Badge variant="outline">已选择 {selectedIds.size} / {wallets.length}</Badge> : null}
         </span>
-      </div>
+      </div> : null}
 
       <Dialog onOpenChange={handleDialogOpenChange} open={dialogOpen}>
         <DialogTrigger
-          disabled={disabled}
-          render={<Button className="secret-file-button" disabled={disabled} type="button" variant="outline" />}
+          aria-label={wallets.length ? "继续导入钱包" : "导入钱包"}
+          className={wallets.length ? "secret-import-summary" : "secret-import-dropzone"}
+          data-drag-active={dragActive || undefined}
+          disabled={inputLocked}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (inputLocked) return;
+            event.dataTransfer.dropEffect = "copy";
+            setDragActive(true);
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragActive(false);
+            if (inputLocked) return;
+            const file = event.dataTransfer.files[0];
+            if (!file) return;
+            handleDialogOpenChange(true);
+            window.requestAnimationFrame(() => {
+              if (draftTextareaRef.current && !disabledRef.current) void readWalletFile(file);
+            });
+          }}
+          render={<Button disabled={inputLocked} type="button" variant="outline" />}
         >
-          {wallets.length ? "继续导入钱包" : "导入钱包"}
+          <HugeiconsIcon aria-hidden="true" icon={Upload01Icon} size={20} strokeWidth={1.8} />
+          <span>{wallets.length ? `已导入 ${wallets.length} 个钱包` : "拖入文件或点击导入"}</span>
+          <span className="secret-import-dropzone__hint">{wallets.length ? "继续导入钱包" : "TXT、CSV、JSON · 支持粘贴私钥"}</span>
         </DialogTrigger>
         <DialogContent className="secret-import-dialog">
           <DialogHeader>
@@ -728,6 +762,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
               autoCapitalize="none"
               autoComplete="off"
               className="secret-import-textarea"
+              disabled={inputLocked}
               data-1p-ignore="true"
               data-bwignore="true"
               id={`${mode}-secret-draft`}
@@ -747,7 +782,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             ) : null}
           </Field>
           <div className="secret-import-file-row">
-            <Button onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
+            <Button disabled={inputLocked} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
               选择钱包文件
             </Button>
             <span aria-live="polite" className="secret-file-status">
@@ -768,7 +803,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             <Button onClick={() => handleDialogOpenChange(false)} type="button" variant="outline">取消</Button>
             <Button
               aria-label="确认导入"
-              disabled={!draftLineCount || draftLineCount > maximumSecretInputLines}
+              disabled={inputLocked || !draftLineCount || draftLineCount > maximumSecretInputLines}
               onClick={() => importWallets()}
               type="button"
             >
@@ -782,11 +817,11 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         <div aria-label="已导入来源钱包" className="imported-wallet-browser">
           <div aria-label="钱包列表控制" className="imported-wallet-toolbar">
             <div className="imported-wallet-toolbar__actions">
-              <Button disabled={disabled} onClick={toggleAllWallets} size="sm" type="button" variant="ghost">
+              <Button disabled={inputLocked} onClick={toggleAllWallets} size="sm" type="button" variant="ghost">
                 {allWalletsSelected ? "取消全选" : "全选"}
               </Button>
               <Button
-                disabled={disabled || !zeroBalanceWalletIds.length}
+                disabled={inputLocked || !zeroBalanceWalletIds.length}
                 onClick={selectZeroBalanceWallets}
                 size="sm"
                 type="button"
@@ -797,7 +832,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
               <ConfirmActionDialog
                 confirmLabel={`删除 ${selectedIds.size} 个钱包`}
                 description="私钥会从页面移除，需重新导入才能恢复。"
-                disabled={disabled || !selectedIds.size}
+                disabled={inputLocked || !selectedIds.size}
                 onConfirm={() => removeWallets(new Set(selectedIdsRef.current))}
                 title={`删除 ${selectedIds.size} 个已选钱包？`}
                 triggerClassName="imported-wallet-toolbar__delete"
@@ -809,7 +844,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             {hasMoreWallets ? (
               <div className="imported-wallet-toolbar__more">
                 <span aria-live="polite">已显示 {visibleWallets.length} / {wallets.length}</span>
-                <Button disabled={disabled} onClick={loadMoreWallets} size="sm" type="button" variant="ghost">
+                <Button disabled={inputLocked} onClick={loadMoreWallets} size="sm" type="button" variant="ghost">
                   加载更多钱包
                 </Button>
               </div>
@@ -846,7 +881,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                   <Checkbox
                     aria-label={`选择 ${accessibleName}`}
                     checked={selectedIds.has(wallet.id)}
-                    disabled={disabled}
+                    disabled={inputLocked}
                     onCheckedChange={(checked) => toggleWallet(wallet.id, checked === true)}
                   />
                   <div className="imported-wallet-identity">
@@ -857,7 +892,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                         aria-label={`复制 ${accessibleName} 地址`}
                         className="imported-wallet-copy"
                         onClick={() => void copyWalletAddress(wallet)}
-                        size="xs"
+                        size="sm"
                         title="复制完整地址"
                         type="button"
                         variant="ghost"
@@ -881,7 +916,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                   <Button
                     aria-label={`删除 ${accessibleName}`}
                     className="imported-wallet-remove"
-                    disabled={disabled}
+                    disabled={inputLocked}
                     onClick={() => removeWallets(new Set([wallet.id]))}
                     size="sm"
                     type="button"

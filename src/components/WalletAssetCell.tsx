@@ -43,7 +43,7 @@ function AssetDetails({ overview }: { overview: WalletAssetOverview }) {
                 <Button
                   aria-label={`复制 ${getWalletAssetSymbol(holding)} ${holding.address} 合约或 Mint 地址`}
                   onClick={() => void copyAddress(holding)}
-                  size="xs"
+                  size="sm"
                   type="button"
                   variant="ghost"
                 >

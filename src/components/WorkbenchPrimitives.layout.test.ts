@@ -11,6 +11,16 @@ function readRule(selector: string) {
 }
 
 describe("workbench layout CSS contract", () => {
+  it("reserves a separate action row while the form scrolls", () => {
+    expect(readRule(".site-tool-scroll")).toContain("flex: 1");
+    expect(readRule(".site-tool-scroll")).toContain("overflow-y: auto");
+    expect(readRule(".site-action-dock")).toContain("flex: 0 0 auto");
+    expect(readRule(".site-action-dock")).not.toContain("position: fixed");
+    const gridRules = [...appCss.matchAll(/\.config-grid\s*\{([^}]+)\}/g)]
+      .map(match => match[1]).filter(rule => rule.includes("grid-template-columns"));
+    expect(gridRules).toHaveLength(1);
+    expect(gridRules[0]).toContain("repeat(12, minmax(0, 1fr))");
+  });
   it("uses natural page flow without an action footer covering form fields", () => {
     const actionableRule = readRule(".workbench-panel--actionable");
     expect(actionableRule).toContain("position: static");
