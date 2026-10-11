@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CompactNotice } from "@/components/CompactNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
@@ -311,7 +311,7 @@ export function NftAssetInput({
         </Tabs>
       )}
 
-      {message ? <Alert><AlertDescription role="status">{message}</AlertDescription></Alert> : null}
+      {message ? <CompactNotice role="status" summary={message}>{message}</CompactNotice> : null}
       {issues.length ? (
         <FieldError className="nft-asset-builder-issues">
           <ul>

@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { Button } from "@/components/ui/button";
-import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { DistributionListEditor } from "./DistributionListEditor";
+import { HelpTooltip } from "./HelpTooltip";
 import { ConfirmActionDialog } from "./WorkbenchPrimitives";
 import { getDuplicateAddressKey, type AddressKind } from "../lib/address";
 import {
@@ -20,10 +19,16 @@ import {
   isCurrentLocalFileImport,
   type LocalFileImportEpoch
 } from "../lib/local-file-import";
+import "./distribution-workbench.css";
+
+export type DistributionListGeneratorHandle = {
+  focusProblem: (kind: "invalid" | "duplicate") => void;
+};
 
 type DistributionListGeneratorProps = {
   addressKind: AddressKind;
   decimals: number;
+  controlRef?: Ref<DistributionListGeneratorHandle>;
   disabled?: boolean;
   generationDisabled?: boolean;
   initialAddresses?: string;
@@ -73,6 +78,7 @@ function formatStepUnits(units: bigint, decimals: number) {
 export function DistributionListGenerator({
   addressKind,
   decimals,
+  controlRef,
   disabled = false,
   generationDisabled = false,
   initialAddresses = "",
@@ -87,6 +93,7 @@ export function DistributionListGenerator({
   const instanceId = useId().replace(/:/g, "");
   const disabledRef = useRef(disabled);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const addressInputRef = useRef<HTMLTextAreaElement>(null);
   const importEpochRef = useRef<LocalFileImportEpoch>({ current: 0 });
   const importingRef = useRef(false);
   const [addresses, setAddresses] = useState(initialAddresses);
@@ -225,13 +232,43 @@ export function DistributionListGenerator({
 
   const controlsDisabled = disabled || importing;
 
+  useImperativeHandle(controlRef, () => ({
+    focusProblem(kind) {
+      const input = addressInputRef.current;
+      if (!input) return;
+      const sourceLines = addresses.split("\n");
+      const nonemptyLines = sourceLines.map((line, index) => ({ text: line.trim(), index })).filter((line) => line.text);
+      let lineIndex = 0;
+      if (kind === "duplicate") {
+        const seen = new Set<string>();
+        const duplicate = nonemptyLines.find((line) => {
+          const key = getDuplicateAddressKey(line.text, addressKind);
+          if (seen.has(key)) return true;
+          seen.add(key);
+          return false;
+        });
+        lineIndex = duplicate?.index ?? 0;
+      } else {
+        const firstInvalid = result.issues.find((issue) => /^第 \d+ 行地址/.test(issue));
+        const generatedLine = firstInvalid?.match(/^第 (\d+) 行/)?.[1];
+        lineIndex = nonemptyLines[Math.max(0, Number(generatedLine || 1) - 1)]?.index ?? 0;
+      }
+      const start = sourceLines.slice(0, lineIndex).reduce((offset, line) => offset + line.length + 1, 0);
+      input.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(start, start + (sourceLines[lineIndex]?.length || 0));
+    }
+  }), [addressKind, addresses, result.issues]);
+
   return (
     <section
       aria-disabled={controlsDisabled || undefined}
       className={`distribution-generator${controlsDisabled ? " disabled" : ""}${generationDisabled ? " generation-disabled" : ""}`}
       aria-label="批量金额清单生成器"
     >
-      <div className="generator-heading-actions justify-end">
+      <div className="distribution-generator__heading">
+        <h3>收款清单</h3>
+        <div className="generator-heading-actions">
         <Input
           accept=".txt,.csv,text/plain,text/csv"
           aria-hidden="true"
@@ -253,18 +290,31 @@ export function DistributionListGenerator({
           type="button"
           variant="outline"
         >导入 TXT/CSV</Button>
+        {mode === "random" ? (
+          <Button disabled={controlsDisabled || generationDisabled || !result.output} onClick={regenerateRandomAmounts} type="button" variant="outline">重新随机</Button>
+        ) : null}
+        <Button disabled={controlsDisabled || result.duplicates === 0} onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind))} type="button" variant="outline">去重</Button>
+        <ConfirmActionDialog
+          confirmLabel="确认清空"
+          description={`将删除当前 ${result.validCount} 个有效地址及全部已填写内容，无法撤销。`}
+          disabled={controlsDisabled || !addresses.trim()}
+          onConfirm={() => { updateAddresses(""); setRandomEntropies(new Map()); }}
+          title="清空收款清单？"
+          triggerClassName="action-group__destructive"
+          triggerLabel="清空"
+          triggerVariant="destructive"
+        />
+        </div>
       </div>
 
       {importMessage ? <p className="hint generator-import-message" role="status">{importMessage}</p> : null}
 
       {unavailableMessage ? (
-        <Alert className="compact-notice">
-          <AlertTitle>金额生成暂不可用</AlertTitle>
-          <AlertDescription>{unavailableMessage}</AlertDescription>
-        </Alert>
+        <div className="distribution-generator__notice"><span>金额生成暂不可用</span><HelpTooltip label="金额生成说明">{unavailableMessage}</HelpTooltip></div>
       ) : null}
 
       <DistributionListEditor
+        addressInputRef={addressInputRef}
         addressPlaceholder={addressKind === "evm"
           ? "0x0000000000000000000000000000000000000001\n0x0000000000000000000000000000000000000002"
           : "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"}
@@ -294,42 +344,12 @@ export function DistributionListGenerator({
         symbol={symbol}
       />
 
-      <div className="actions generator-actions">
-        <div className="action-group">
-          {mode === "random" ? (
-            <Button
-              disabled={controlsDisabled || generationDisabled || !result.output}
-              type="button"
-              onClick={regenerateRandomAmounts}
-              variant="outline"
-            >重新随机</Button>
-          ) : null}
-          <Button
-            disabled={controlsDisabled || result.duplicates === 0}
-            type="button"
-            onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind))}
-            variant="outline"
-          >去重</Button>
-          <ConfirmActionDialog
-            confirmLabel="确认清空"
-            description={`将删除当前 ${result.validCount} 个有效地址及全部已填写内容，无法撤销。`}
-            disabled={controlsDisabled || !addresses.trim()}
-            onConfirm={() => {
-              updateAddresses("");
-              setRandomEntropies(new Map());
-            }}
-            title="清空收款清单？"
-            triggerClassName="action-group__destructive"
-            triggerLabel="清空"
-            triggerVariant="destructive"
-          />
+      {result.issues.length > 0 || result.duplicates > 0 ? (
+        <div aria-live="polite" className="distribution-generator__notice" data-tone="error">
+          <span>{result.invalid > 0 ? `${result.invalid} 处需修正` : result.issues.length ? "金额设置需修正" : ""}{result.invalid > 0 && result.duplicates > 0 ? " · " : ""}{result.duplicates > 0 ? `${result.duplicates} 个重复地址` : ""}</span>
+          <HelpTooltip label="清单问题详情"><div>{result.issues.map((issue) => <p key={issue}>{issue}</p>)}{result.duplicates > 0 ? <p>发现 {result.duplicates} 个重复地址，请先去重后再发送。</p> : null}</div></HelpTooltip>
         </div>
-      </div>
-
-      <FieldError className="invalid-list" aria-live="polite">
-        {result.issues.slice(0, 5).map((issue) => <div key={issue}>{issue}</div>)}
-        {result.duplicates > 0 ? <div>发现 {result.duplicates} 个重复地址，请先去重后再发送。</div> : null}
-      </FieldError>
+      ) : null}
     </section>
   );
 }

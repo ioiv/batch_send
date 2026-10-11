@@ -1,5 +1,5 @@
-import { EvmCollectionPage } from "./EvmCollectionPage";
+import { CollectionModePage } from "./CollectionModePage";
 
 export function EvmNftCollectionPage() {
-  return <EvmCollectionPage fixedStandard="nft" />;
+  return <CollectionModePage kind="evm" fixedStandard="nft" />;
 }

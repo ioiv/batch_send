@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { ToolPageLayout } from "./ToolPageLayout";
 
 describe("ToolPageLayout", () => {
+  it("keeps the optional mode switch beside the title before the workspace", () => {
+    const markup = renderToStaticMarkup(
+      <ToolPageLayout currentToolId="sol-collection" modeSwitch={<button>一键归集</button>} title="测试工具">
+        <div>来源钱包</div>
+      </ToolPageLayout>
+    );
+    expect(markup).toContain('class="site-tool-mode-switch"');
+    expect(markup.indexOf("一键归集")).toBeLessThan(markup.indexOf("<main"));
+    expect(markup.match(/<main/g)).toHaveLength(1);
+  });
   it("renders one dynamic status without a stepper", () => {
     const markup = renderToStaticMarkup(
       <ToolPageLayout

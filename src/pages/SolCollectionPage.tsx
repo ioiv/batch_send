@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CompactNotice as Alert, NoticeDetail as AlertDescription, NoticeTitle as AlertTitle } from "@/components/CompactNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
@@ -10,18 +10,24 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   SecretKeyInput,
   type SecretKeyInputHandle,
+  type SecretKeyInputSnapshot,
   type WalletBalanceItem,
   type WalletExecutionItem
 } from "../components/SecretKeyInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
+import { buildWalletAssetOverview } from "../lib/wallet-asset-overview";
+import { HelpTooltip } from "../components/HelpTooltip";
 import { CollectionResults } from "../components/CollectionResults";
 import {
+  ActionBar,
   AdvancedSettings,
   CollectionExecutionControls,
   ConfirmActionDialog,
   ReviewPanel,
-  WorkbenchPanel
+  WorkbenchPanel,
+  WorkbenchSection,
+  WorkbenchSummary
 } from "../components/WorkbenchPrimitives";
 import { formatLamports, formatLamportsForDisplay, parseSolToLamports } from "../lib/amount";
 import type { CollectionAmountPolicy } from "../lib/collection-amount";
@@ -383,10 +389,14 @@ function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
   return grouped;
 }
 
-export function SolCollectionPage() {
-  const initialNetworkId: SolanaNetworkId = "mainnet-beta";
+export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConfig }: {
+  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: { networkId: string; rpcEndpoint: string; targetAddress: string }, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
+  readInitialWallets?: () => SecretKeyInputSnapshot | null;
+  initialConfig?: { networkId: string; rpcEndpoint: string; targetAddress: string };
+} = {}) {
+  const initialNetworkId: SolanaNetworkId = getNetworkConfig((initialConfig?.networkId || "mainnet-beta") as SolanaNetworkId).id;
   const [networkId, setNetworkId] = useState<SolanaNetworkId>(initialNetworkId);
-  const [rpcEndpoint, setRpcEndpoint] = useState(() => getPreferredRpcEndpoint(
+  const [rpcEndpoint, setRpcEndpoint] = useState(() => initialConfig?.rpcEndpoint ?? getPreferredRpcEndpoint(
     "solana",
     initialNetworkId,
     getNetworkConfig(initialNetworkId).endpoint
@@ -396,7 +406,7 @@ export function SolCollectionPage() {
   const [tokenRecognition, setTokenRecognition] = useState<SolTokenRecognitionState>(
     emptySolTokenRecognitionState
   );
-  const [targetAddress, setTargetAddress] = useState("");
+  const [targetAddress, setTargetAddress] = useState(initialConfig?.targetAddress || "");
   const [amountMode, setAmountMode] = useState<AmountMode>("all");
   const [percentageAmount, setPercentageAmount] = useState("100");
   const [fixedAmount, setFixedAmount] = useState("0.1");
@@ -453,6 +463,18 @@ export function SolCollectionPage() {
   const retryableCount = retrySourcesRef.current.length + retryTokenJobsRef.current.length;
   const walletStatuses = useMemo(() => groupWalletStatuses(results), [results]);
   const walletBalances = useMemo(() => buildSolWalletBalances(balanceSnapshot), [balanceSnapshot]);
+  const walletAssetOverviews = useMemo(() => Object.fromEntries((balanceSnapshot?.wallets || []).map((wallet) => [wallet.address, buildWalletAssetOverview({
+    complete: wallet.status === "ok" && wallet.tokenInventoryStatus === "complete" && wallet.nativeBalanceStatus === "ok",
+    native: { symbol: "SOL", raw: wallet.nativeBalanceLamports, decimals: 9 },
+    holdings: wallet.tokenAccounts.map((holding) => ({
+      kind: holding.decimals === 0 && holding.amount === 1n ? "nft" : "token",
+      key: holding.mintAddress,
+      address: holding.mintAddress,
+      symbol: null,
+      raw: holding.amount,
+      decimals: holding.decimals
+    }))
+  })])), [balanceSnapshot]);
   const recognizedTokenByMint = useMemo(() => new Map(
     tokenRecognition.items.map((item) => [item.mintAddress, item] as const)
   ), [tokenRecognition.items]);
@@ -1186,6 +1208,18 @@ export function SolCollectionPage() {
       actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="collection-shell collection-page"
       currentToolId="sol-collection"
+      modeSwitch={onAutomatic ? (
+        <Tabs value="manual" onValueChange={(value) => {
+          if (value !== "automatic" || controlsLocked || acknowledgementRequired) return;
+          const snapshot = keyInputRef.current?.handoff();
+          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress }, [
+            ...archivedRounds.map((round) => ({ label: `归集记录 #${round.sequence}`, results: round.results })),
+            ...(roundIsTerminal && results.length ? [{ label: `归集记录 #${roundSequence}`, results }] : [])
+          ]);
+        }}>
+          <TabsList aria-label="归集模式"><TabsTrigger value="manual">手动归集</TabsTrigger><TabsTrigger disabled={controlsLocked || acknowledgementRequired} value="automatic">一键归集</TabsTrigger></TabsList>
+        </Tabs>
+      ) : undefined}
       stickyActions
       status={workbenchStatus}
       statusLabel={solStatusLabels[workbenchStatus]}
@@ -1194,8 +1228,26 @@ export function SolCollectionPage() {
       <div className="workspace collection-workspace">
         <WorkbenchPanel
           className="collection-workbench-panel"
+          segmented
           footer={(
-            <div className="actions collection-actions">
+            <ActionBar
+              summary={<WorkbenchSummary items={[
+                { label: "已选钱包", value: sourceCount },
+                { label: "资产项", value: assetMode === "spl" ? parsedTokenMints.mintAddresses.length : 1 },
+                { label: "并发", value: concurrency }
+              ]} />}
+              feedback={(
+                <>
+            {issues.length ? (
+              <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
+            ) : null}
+            {message ? (
+              <Alert aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"} summary={message} variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}>{message}</Alert>
+            ) : null}
+
+                </>
+              )}
+            >
               {stage === "running" ? (
                 <CollectionExecutionControls
                   current={completedResultCount}
@@ -1224,9 +1276,7 @@ export function SolCollectionPage() {
                     variant={retryableCount ? "outline" : "default"}
                   >开始新一轮归集</Button>
                   {currentRoundRequiresAcknowledgement ? (
-                    <p className="collection-terminal-hint">
-                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。
-                    </p>
+                    <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。</Alert>
                   ) : null}
                 </>
               ) : (
@@ -1253,24 +1303,28 @@ export function SolCollectionPage() {
                   triggerLabel="确认并开始归集"
                 />
               )}
-            </div>
+            </ActionBar>
           )}
           title="归集设置"
         >
           <div className="form workbench-form">
-            <div className="workbench-form__primary">
-              <h3 className="workbench-form__group">来源与目标</h3>
+            <WorkbenchSection title="来源钱包">
               <SecretKeyInput
                 disabled={controlsLocked}
                 mode="solana"
                 onDirty={() => { invalidateTask(); invalidateHoldings(true); }}
                 onImportingChange={handleKeyImportingChange}
                 onLineCountChange={setSourceCount}
+                readInitialWallets={readInitialWallets}
                 ref={keyInputRef}
+                walletAssetOverviews={walletAssetOverviews}
                 walletBalances={walletBalances}
                 walletStatuses={walletStatuses}
               />
 
+            </WorkbenchSection>
+            <WorkbenchSection className="workbench-form__primary" title="资产与目标">
+              <div className="config-grid">
               <Field>
                 <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
                 <div className="erc20-token-editor">
@@ -1440,7 +1494,7 @@ export function SolCollectionPage() {
                   ) : null}
                 </div>
                 {holdingsIssues.length ? (
-                  <Alert variant={holdingsStatus === "error" ? "destructive" : "default"}>
+                  <Alert summary={holdingsIssues.length === 1 ? holdingsIssues[0] : `持仓扫描有 ${holdingsIssues.length} 项问题`} variant={holdingsStatus === "error" ? "destructive" : "default"}>
                     <AlertDescription>
                       <ul>{holdingsIssues.slice(0, 8).map((issue) => <li key={issue}>{issue}</li>)}</ul>
                     </AlertDescription>
@@ -1466,12 +1520,13 @@ export function SolCollectionPage() {
                   <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
                 ) : null}
               </Field>
-            </div>
+              </div>
+            </WorkbenchSection>
 
-            <div className="workbench-form__secondary">
-              <h3 className="workbench-form__group">归集配置</h3>
+            <WorkbenchSection className="workbench-form__secondary" title="归集配置">
+              <div className="config-grid">
 
-              <div className="network-rpc-row" aria-label="网络与 RPC">
+              <div className="network-rpc-row config-grid__full" aria-label="网络与 RPC">
                 <Field>
                   <FieldLabel htmlFor="sol-collection-network">网络</FieldLabel>
                   <SearchableSelect
@@ -1560,7 +1615,7 @@ export function SolCollectionPage() {
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
               {assetMode === "native" ? (
-                <AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
+                <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
                   <div className="field-row">
                     <Field>
                       <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
@@ -1571,18 +1626,11 @@ export function SolCollectionPage() {
                       <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
                     </Field>
                   </div>
-                </AdvancedSettings>
+                </AdvancedSettings></div>
               ) : null}
-            </div>
+              </div>
+            </WorkbenchSection>
 
-            {issues.length ? (
-              <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
-            ) : null}
-            {message ? (
-              <Alert aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"} variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}>
-                <AlertTitle>{solStatusLabels[workbenchStatus]}</AlertTitle><AlertDescription>{message}</AlertDescription>
-              </Alert>
-            ) : null}
           </div>
         </WorkbenchPanel>
         {archivedRounds.length ? (

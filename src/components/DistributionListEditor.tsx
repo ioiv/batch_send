@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import type { DistributionAmountMode } from "../lib/distribution-generator";
+import "./distribution-workbench.css";
 
 export type DistributionListEditorProps = {
   addressInputRef?: Ref<HTMLTextAreaElement>;
@@ -72,7 +73,7 @@ export function DistributionListEditor({
       </Field>
 
       <Tabs
-        className="generator-mode-row"
+        className="generator-mode-row distribution-amount-row"
         onValueChange={(value) => {
           if (value === "fixed" || value === "random") onModeChange(value);
         }}

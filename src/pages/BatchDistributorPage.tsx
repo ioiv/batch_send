@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CompactNotice, NoticeTitle, NoticeDetail } from "../components/CompactNotice";
+import { HelpTooltip } from "../components/HelpTooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { DistributionListGenerator } from "../components/DistributionListGenerator";
+import { DistributionListGenerator, type DistributionListGeneratorHandle } from "../components/DistributionListGenerator";
 import { DistributionSummary } from "../components/DistributionSummary";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
 import {
+  ActionBar,
+  WorkbenchSection,
   ConfirmActionDialog,
   ExecutionProgress,
   ReviewPanel,
@@ -134,6 +137,7 @@ export function BatchDistributorPage() {
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [listImporting, setListImporting] = useState(false);
   const listImportingRef = useRef(false);
+  const generatorRef = useRef<DistributionListGeneratorHandle>(null);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
   const previousWalletRef = useRef("");
@@ -179,7 +183,9 @@ export function BatchDistributorPage() {
         ? "--"
         : "未连接";
   const showFinalSummary = confirmVisible && sendState.status === "idle" && preflightState.status === "success";
-  const readinessMessage = !wallet.connected || !wallet.provider
+  const readinessMessage = archivedRound?.requiresAcknowledgement
+    ? "请先核对分发记录中的链上状态"
+    : !wallet.connected || !wallet.provider
     ? "请先连接发送钱包"
     : listImporting
       ? "正在导入清单，请稍候"
@@ -609,9 +615,9 @@ export function BatchDistributorPage() {
     ? sendState.message
     : confirmVisible
       ? preflightState.message
-      : readinessMessage;
+      : balanceLookup.status === "error" ? balanceLookup.message : readinessMessage;
   const reviewHasRisk = unresolvedSubmission || sendFailed || preflightFailed;
-  const reviewShouldOpen = reviewHasRisk || sendState.signatures.length > 0;
+  const reviewShouldOpen = reviewHasRisk;
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
@@ -656,8 +662,36 @@ export function BatchDistributorPage() {
           actions={<WalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
           className="min-w-0"
           footer={(
-            <div className="flex w-full flex-wrap items-center justify-end gap-3">
-              <div className="flex flex-wrap items-center justify-end gap-2">
+            <ActionBar
+              summary={(
+              <DistributionSummary
+                details={(
+                  <div className="summary-list">
+                    <div><span>预计交易</span><strong>{preflightState.status === "success" ? preflightState.transactionCount : transactionCount || 0}</strong></div>
+                    <div><span>钱包余额</span><strong>{walletBalance}{wallet.connected && balanceLookup.status === "success" ? " SOL" : ""}</strong></div>
+                    {preflightState.requiredLamports !== null ? <div><span>预计总扣款</span><strong>{formatLamports(preflightState.requiredLamports)} SOL</strong></div> : null}
+                  </div>
+                )}
+                rows={[
+                  { label: "有效地址", value: parsed.validRows.length },
+                  { label: "合计金额", value: `${parsed.total} SOL` },
+                  ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
+                  ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
+                  { label: "预估手续费", value: preflightState.estimatedFeeLamports === null ? "—" : `${formatLamports(preflightState.estimatedFeeLamports)} SOL` }
+                ]}
+              />
+              )}
+              feedback={(
+                <div className="distribution-status" role={sendFailed || preflightFailed || balanceLookup.status === "error" ? "alert" : "status"} aria-live={sendFailed || preflightFailed || balanceLookup.status === "error" ? "assertive" : "polite"}>
+                  <Badge variant={sendFailed || preflightFailed ? "destructive" : "outline"}>{statusTitle}</Badge>
+                  <span className="distribution-status__message">{statusMessage}</span>
+                  {statusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{statusMessage}</HelpTooltip> : null}
+                  {unresolvedSubmission ? <HelpTooltip label="禁止直接重试">已有交易提交到链上，请核对交易哈希后再开始新任务。</HelpTooltip> : null}
+                </div>
+              )}
+            >
+              <div className="action-group">
+                {balanceLookup.status === "error" ? <Button disabled={pageControlsLocked} onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button> : null}
                 {!confirmVisible && !sendComplete && !sendFailed ? (
                   <Button disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">运行预检</Button>
                 ) : null}
@@ -692,44 +726,30 @@ export function BatchDistributorPage() {
                 ) : null}
                 {sendComplete || sendFailed ? (
                   <>
-                    {unresolvedSubmission ? (
-                      <span className="collection-terminal-hint">
-                        核对链上状态后才可开始新的写入任务。
-                      </span>
-                    ) : null}
                     {/* Ending a round must not depend on finding a setting to edit;
                         the list stays for the next round. */}
                     <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
                   </>
                 ) : null}
               </div>
-            </div>
+            </ActionBar>
           )}
-          title="网络、钱包与清单"
+          segmented
+          title="批量分发"
         >
           <div className="form workbench-form">
             {mixedAmountWarningVisible ? (
-              <Alert>
-                <AlertTitle>旧清单金额未导入</AlertTitle>
-                <AlertDescription>已保留收款地址，请重新设置金额。</AlertDescription>
-              </Alert>
+              <CompactNotice>
+                <NoticeTitle>旧清单金额未导入</NoticeTitle>
+                <NoticeDetail>已保留收款地址，请重新设置金额。</NoticeDetail>
+              </CompactNotice>
             ) : null}
 
-            {balanceLookup.status === "error" ? (
-              <Alert variant="destructive">
-                <AlertTitle>{!rpcEndpointValid ? "RPC 地址无效" : "余额读取失败"}</AlertTitle>
-                <AlertDescription className="flex flex-col gap-2">
-                  <span>{balanceLookup.message}</span>
-                  <span>
-                    <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                  </span>
-                </AlertDescription>
-              </Alert>
-            ) : null}
 
-            <div className="workbench-form__primary">
-              <h3 className="workbench-form__group">收款清单</h3>
+
+            <WorkbenchSection className="workbench-form__primary">
               <DistributionListGenerator
+                controlRef={generatorRef}
                 addressKind="solana"
                 decimals={9}
                 disabled={controlsLocked}
@@ -740,10 +760,9 @@ export function BatchDistributorPage() {
                 onResultChange={handleGeneratedListChange}
                 symbol="SOL"
               />
-            </div>
+            </WorkbenchSection>
 
-            <div className="workbench-form__secondary">
-              <h3 className="workbench-form__group">网络与钱包</h3>
+            <WorkbenchSection className="workbench-form__secondary" title="网络与钱包">
               <div className="network-rpc-row" aria-label="网络与 RPC">
                 <Field>
                   <FieldLabel htmlFor="networkId">网络</FieldLabel>
@@ -779,31 +798,7 @@ export function BatchDistributorPage() {
                   />
                 </Field>
               </div>
-
-              <DistributionSummary
-                rows={[
-                  { label: "有效地址", value: parsed.validRows.length },
-                  { label: "合计金额", value: `${parsed.total} SOL` },
-                  { alert: invalidCount > 0, label: "需修正", value: invalidCount },
-                  { alert: duplicateCount > 0, label: "重复地址", value: duplicateCount },
-                  { label: "预计交易", value: preflightState.status === "success" ? preflightState.transactionCount : transactionCount || 0 },
-                  {
-                    label: "预估手续费",
-                    value: preflightState.estimatedFeeLamports === null
-                      ? "—"
-                      : `${formatLamports(preflightState.estimatedFeeLamports)} SOL`
-                  },
-                  {
-                    label: "钱包余额",
-                    value: (
-                      <span title={balanceLookup.message || undefined}>
-                        {walletBalance}{balanceLookup.status === "error" ? " · 读取失败" : wallet.connected ? " SOL" : ""}
-                      </span>
-                    )
-                  }
-                ]}
-              />
-            </div>
+            </WorkbenchSection>
           </div>
         </WorkbenchPanel>
 
@@ -839,14 +834,7 @@ export function BatchDistributorPage() {
               rows={parsed.rows}
             />
 
-            <Alert
-              aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}
-              role={sendFailed || preflightFailed ? "alert" : "status"}
-              variant={sendFailed || preflightFailed ? "destructive" : "default"}
-            >
-              <AlertTitle>{statusTitle}</AlertTitle>
-              <AlertDescription>{statusMessage}</AlertDescription>
-            </Alert>
+
 
             {sendState.progress.total > 0 ? (
               <div className="flex flex-col gap-2">
@@ -879,12 +867,7 @@ export function BatchDistributorPage() {
               </div>
             ) : null}
 
-            {unresolvedSubmission ? (
-              <Alert variant="destructive">
-                <AlertTitle>禁止直接重试</AlertTitle>
-                <AlertDescription>已有交易提交到链上。请先核对交易哈希，再创建空白任务。</AlertDescription>
-              </Alert>
-            ) : null}
+
           </div>
         </ReviewPanel>
         {archivedRound ? (

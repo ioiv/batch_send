@@ -39,6 +39,21 @@ function ControlledEditor() {
 }
 
 describe("DistributionListEditor interactions", () => {
+  it("keeps list actions in its heading and exposes regeneration only for random amounts", async () => {
+    const user = userEvent.setup();
+    render(
+      <DistributionListGenerator addressKind="solana" decimals={9} initialAddresses="11111111111111111111111111111111" onResultChange={() => undefined} symbol="SOL" />
+    );
+    for (const name of ["导入 TXT/CSV", "去重", "清空"]) {
+      expect(screen.getByRole("button", { name }).closest(".distribution-generator__heading")).not.toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: "重新随机" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "随机区间" }));
+    expect(screen.getByRole("button", { name: "重新随机" }).closest(".distribution-generator__heading")).not.toBeNull();
+    expect(screen.getByRole("spinbutton", { name: "随机最小值（SOL）" }).closest(".distribution-amount-row"))
+      .toBe(screen.getByRole("tab", { name: "随机区间" }).closest(".distribution-amount-row"));
+  });
+
   it("exposes one named file-import action instead of the hidden native input", () => {
     render(
       <DistributionListGenerator

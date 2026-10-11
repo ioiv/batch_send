@@ -27,6 +27,7 @@ export function ToolPageLayout({
   children,
   className = "",
   currentToolId,
+  modeSwitch,
   stickyActions = false,
   status = "editing",
   statusLabel,
@@ -36,6 +37,7 @@ export function ToolPageLayout({
   children: ReactNode;
   className?: string;
   currentToolId: string;
+  modeSwitch?: ReactNode;
   stickyActions?: boolean;
   status?: WorkbenchStatus;
   statusLabel?: string;
@@ -54,6 +56,7 @@ export function ToolPageLayout({
         <div className="site-tool-toolbar">
           <div className="site-tool-heading">
             <h1 id={headingId}>{title}</h1>
+            {modeSwitch ? <div className="site-tool-mode-switch">{modeSwitch}</div> : null}
           </div>
           <div aria-label="页面状态与快捷操作" className="site-tool-heading__actions">
             <Badge

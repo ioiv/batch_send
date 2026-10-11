@@ -792,13 +792,10 @@
   justify-content: space-between;
 }
 
-/* The primary action tracks the form instead of waiting a full scroll away at
-   the bottom; it settles into place once the panel's end is on screen. */
+/* Actions remain in document flow, so fields never sit underneath them. */
 .site-page[data-sticky-actions="true"] .workbench-panel--actionable .workbench-panel__footer {
-  position: sticky;
-  bottom: 0;
+  position: static;
   background: color-mix(in oklab, var(--card) 90%, transparent);
-  backdrop-filter: blur(18px) saturate(1.2);
 }
 
 .workbench-panel__footer > .collection-actions {
@@ -996,52 +993,24 @@
   gap: var(--space-md);
 }
 
-/* "归集什么" and "怎么归集" are independent decisions. Stacked, they made the page
-   a tall single column with empty gutters either side; side by side they fit one
-   screen and use the width the measure already reserves. */
-@media (min-width: 68rem) {
-  .workbench-form {
-    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-    align-items: start;
-    column-gap: var(--space-xl);
-  }
+/* The wallet list and configuration are successive steps in one workspace. */
+.workbench-form {
+  grid-template-columns: minmax(0, 1fr);
+}
 
-  .workbench-form > * {
-    grid-column: 1 / -1;
-  }
+.workbench-form > *,
+.workbench-form__primary,
+.workbench-form__secondary {
+  grid-column: 1 / -1;
+}
 
-  .workbench-form__primary {
-    grid-row: 1;
-    grid-column: 1;
-  }
+.workbench-form__secondary {
+  border-left: 0;
+  padding-left: 0;
+}
 
-  .workbench-form__secondary {
-    grid-row: 1;
-    grid-column: 2;
-    border-left: 1px solid var(--border);
-    padding-left: var(--space-xl);
-  }
-
-  /* The heading earns a rule above it only while the groups are stacked; beside
-     the subject column the divider already does that work. */
-  .workbench-form__secondary > .workbench-form__group {
-    border-top: 0;
-    padding-top: 0;
-  }
-
-  /* The address list and the amount each address gets are one decision; stacked,
-     the amount sat a scroll below the addresses on both distributor pages. */
-  .distribution-list-editor {
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    align-items: start;
-    column-gap: var(--space-xl);
-  }
-
-  /* Unless it is already inside a form column, where it has half the width and
-     the amount belongs back under the addresses. */
-  .workbench-form__primary .distribution-list-editor {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.distribution-list-editor {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .execution-settings-row {
@@ -1448,7 +1417,14 @@
 }
 
 .compact-notice {
-  padding: var(--space-xs) var(--space-sm);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: var(--text-caption);
+  line-height: var(--leading-normal);
 }
 
 /* The five execution counts read as one row, not three and a gap. */
@@ -2948,3 +2924,271 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Shared single-column workbench sections and compact help. */
+.site-tool-shell {
+  padding-bottom: var(--space-lg);
+  overflow-x: clip;
+}
+
+.site-tool-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+}
+
+.site-tool-mode-switch,
+.workbench-panel__heading,
+.workbench-section__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.workbench-panel {
+  gap: 0;
+  padding: 0;
+}
+
+.workbench-panel__summary {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: var(--text-caption);
+}
+
+.workbench-panel__actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.workbench-section {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-md);
+}
+
+.workbench-section + .workbench-section,
+.workbench-panel--segmented .workbench-section + .workbench-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-md);
+}
+
+.workbench-section__header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.workbench-section__heading h2 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+}
+
+.workbench-section__content,
+.config-grid {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-md);
+}
+
+.config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.config-grid > * {
+  min-width: 0;
+}
+
+.config-grid__full {
+  grid-column: 1 / -1;
+}
+
+.workbench-action-bar {
+  width: 100%;
+  min-width: 0;
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+}
+
+.workbench-action-bar__context {
+  flex: 1 1 18rem;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.workbench-action-bar__actions,
+.workbench-inline-summary,
+.compact-notice__actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.workbench-action-bar__actions {
+  justify-content: flex-end;
+}
+
+.workbench-inline-summary {
+  margin: 0;
+  font-size: var(--text-caption);
+}
+
+.workbench-inline-summary > div {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-3xs);
+}
+
+.workbench-inline-summary dt {
+  color: var(--muted-foreground);
+}
+
+.workbench-inline-summary dd {
+  min-width: 0;
+  margin: 0;
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.compact-notice__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-notice[data-tone="error"] { color: var(--destructive); }
+.compact-notice[data-tone="warning"] { color: var(--warning); }
+.compact-notice[data-tone="success"] { color: var(--success); }
+.compact-notice__actions { margin-left: auto; }
+
+.help-tooltip__trigger {
+  width: 1rem;
+  height: 1rem;
+  min-height: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  padding: 0;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.help-tooltip__trigger:hover,
+.help-tooltip__trigger:focus-visible,
+.help-tooltip__trigger[aria-expanded="true"] {
+  color: var(--foreground);
+  border-color: var(--ring);
+}
+
+.help-tooltip__trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.help-tooltip__positioner { z-index: 100; }
+
+.help-tooltip__content {
+  width: max-content;
+  max-width: min(24rem, calc(100vw - 1rem));
+  max-height: min(18rem, 60dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
+  text-align: left;
+  box-shadow: 0 var(--space-xs) var(--space-xl) rgb(0 0 0 / 0.4);
+  outline: 0;
+}
+
+.help-tooltip__content > * + * { margin-top: var(--space-xs); }
+.help-tooltip__content a { text-decoration: underline; text-underline-offset: 2px; }
+
+.execution-log-dialog {
+  width: min(64rem, calc(100vw - 2rem));
+  max-width: min(64rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+}
+
+.execution-log-dialog__content {
+  min-width: 0;
+  max-height: min(65dvh, 38rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.execution-log-dialog__actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+
+.site-tool-shell [data-slot="button"] { height: var(--control-h); }
+.site-tool-shell [data-slot="input"],
+.site-tool-shell .searchable-select-trigger,
+.site-tool-shell [data-slot="select-trigger"] { min-height: var(--control-h); height: var(--control-h); }
+.site-tool-shell [data-slot="button"][data-size="sm"] { height: var(--control-h-sm); }
+
+@media (max-width: 48rem) {
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .workbench-action-bar { align-items: stretch; flex-direction: column; }
+  .workbench-action-bar__context { flex: initial; }
+  .workbench-action-bar__actions { justify-content: flex-start; }
+  .workbench-action-bar__actions > button,
+  .workbench-action-bar__actions > [data-slot="alert-dialog-trigger"] { flex: 1 1 auto; }
+  .site-page[data-sticky-actions="true"] .site-tool-toolbar { position: relative; }
+}
+
+.config-grid > .nft-asset-builder,
+.config-grid > [data-slot="field-error"] { grid-column: 1 / -1; }
+
+.collection-page .address-balance-control__status,
+.collection-page .nft-discovery-card__status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deployment-transaction > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--text-caption);
+}
+
+.deployment-transaction span { color: var(--muted-foreground); }
+.deployment-transaction strong { min-width: 0; overflow-wrap: anywhere; }
+.collection-page .nft-token-scan { display: grid; gap: var(--space-sm); }

@@ -1,5 +1,5 @@
-import { EvmCollectionPage } from "./EvmCollectionPage";
+import { CollectionModePage } from "./CollectionModePage";
 
 export function EvmTokenCollectionPage() {
-  return <EvmCollectionPage fixedStandard="erc20" />;
+  return <CollectionModePage kind="evm" fixedStandard="erc20" />;
 }

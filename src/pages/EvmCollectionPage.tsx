@@ -9,13 +9,14 @@ import {
   zeroAddress,
   type Address
 } from "viem";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CompactNotice as Alert, NoticeDetail as AlertDescription, NoticeTitle as AlertTitle } from "@/components/CompactNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { buildWalletAssetOverview, type WalletAssetHolding } from "../lib/wallet-asset-overview";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { CollectionResults } from "../components/CollectionResults";
@@ -24,15 +25,19 @@ import { SearchableSelect, type SearchableSelectOption } from "../components/Sea
 import {
   SecretKeyInput,
   type SecretKeyInputHandle,
+  type SecretKeyInputSnapshot,
   type WalletExecutionItem
 } from "../components/SecretKeyInput";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
+  ActionBar,
   AdvancedSettings,
   CollectionExecutionControls,
   ConfirmActionDialog,
   ReviewPanel,
-  WorkbenchPanel
+  WorkbenchPanel,
+  WorkbenchSection,
+  WorkbenchSummary
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
 import {
@@ -102,6 +107,8 @@ import { getPreferredRpcEndpoint, isRpcEndpoint, rememberRpcEndpoint } from "../
 type CollectionStage = "editing" | "scanning" | "ready" | "running" | "complete" | "error";
 
 type NftNativeBalanceByAddress = Record<string, {
+  raw?: bigint;
+  decimals?: number;
   amount: string;
   symbol: string;
   zero?: boolean;
@@ -151,6 +158,8 @@ type TokenRecognitionState = {
 };
 
 type AddressBalanceAsset = {
+  raw?: bigint;
+  decimals?: number;
   amount: string;
   contractAddress?: Address;
   symbol: string;
@@ -158,6 +167,8 @@ type AddressBalanceAsset = {
 };
 
 type AddressBalanceRow = {
+  complete?: boolean;
+  overviewHoldings?: WalletAssetHolding[];
   address: Address;
   assets: AddressBalanceAsset[];
   label: string;
@@ -354,6 +365,8 @@ async function readNftNativeBalances({
       const balance = await publicClient.getBalance({ address: account.address });
       return [account.address.toLowerCase(), {
         amount: formatBalanceForDisplay(balance, nativeCurrency.decimals),
+        raw: balance,
+        decimals: nativeCurrency.decimals,
         symbol: nativeCurrency.symbol,
         zero: balance === 0n
       }] as const;
@@ -559,19 +572,25 @@ export function hasEvmCollectionPlanDrift(
 }
 
 export function EvmCollectionPage({
-  fixedStandard
+  fixedStandard,
+  onAutomatic,
+  readInitialWallets,
+  initialConfig
 }: {
   fixedStandard: "erc20" | "nft";
+  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: { networkId: string; rpcEndpoint: string; targetAddress: string }, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
+  readInitialWallets?: () => SecretKeyInputSnapshot | null;
+  initialConfig?: { networkId: string; rpcEndpoint: string; targetAddress: string };
 }) {
   const networks = useMemo(() => getEvmDistributionNetworks(), []);
-  const initialNetwork = useMemo(() => getPreferredEvmDistributionNetwork(networks), [networks]);
+  const initialNetwork = useMemo(() => initialConfig?.networkId ? getEvmNetworkConfig(initialConfig.networkId as EvmDistributionNetworkId, networks) : getPreferredEvmDistributionNetwork(networks), [initialConfig?.networkId, networks]);
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(initialNetwork.id);
-  const [rpcEndpoint, setRpcEndpoint] = useState(() => getPreferredRpcEndpoint(
+  const [rpcEndpoint, setRpcEndpoint] = useState(() => initialConfig?.rpcEndpoint ?? getPreferredRpcEndpoint(
     "evm",
     initialNetwork.id,
     initialNetwork.rpcEndpoint
   ));
-  const [targetAddress, setTargetAddress] = useState("");
+  const [targetAddress, setTargetAddress] = useState(initialConfig?.targetAddress || "");
   const [erc20AssetInput, setErc20AssetInput] = useState("");
   const [nftAssetInputs, setNftAssetInputs] = useState({ erc721: "", erc1155: "" });
   const [discoveryContract, setDiscoveryContract] = useState("");
@@ -659,6 +678,21 @@ export function EvmCollectionPage({
   const walletBalances = useMemo<Record<string, AddressBalanceAsset[]>>(() => Object.fromEntries(
     addressBalances.rows.map((row) => [row.address.toLowerCase(), row.assets])
   ), [addressBalances.rows]);
+  const walletAssetOverviews = useMemo(() => Object.fromEntries(addressBalances.rows.map((row) => {
+    const native = row.assets.find((asset) => !asset.contractAddress);
+    return [row.address.toLowerCase(), buildWalletAssetOverview({
+      complete: row.complete ?? row.assets.every((asset) => asset.raw !== undefined),
+      native: native ? { symbol: native.symbol, raw: native.raw ?? null, decimals: native.decimals ?? selectedNetwork.nativeCurrency.decimals } : null,
+      holdings: row.overviewHoldings ?? row.assets.filter((asset) => asset.contractAddress).map((asset) => ({
+        kind: "token" as const,
+        key: asset.contractAddress!,
+        address: asset.contractAddress!,
+        symbol: asset.symbol === "TOKEN" ? null : asset.symbol,
+        raw: asset.raw ?? null,
+        decimals: asset.decimals ?? null
+      }))
+    })];
+  })), [addressBalances.rows, selectedNetwork.nativeCurrency.decimals]);
   const tokenInputRows = useMemo(() => {
     const rows = erc20AssetInput.split(/\r?\n/);
     return rows.length ? rows : [""];
@@ -1058,6 +1092,8 @@ export function EvmCollectionPage({
           const nativeBalance = await publicClient.getBalance({ address: account.address });
           assets.push({
             amount: formatBalanceForDisplay(nativeBalance, selectedNetwork.nativeCurrency.decimals),
+            raw: nativeBalance,
+            decimals: selectedNetwork.nativeCurrency.decimals,
             symbol: selectedNetwork.nativeCurrency.symbol,
             zero: nativeBalance === 0n
           });
@@ -1078,6 +1114,8 @@ export function EvmCollectionPage({
               });
               return {
                 amount: formatBalanceForDisplay(balance, token.decimals),
+                raw: balance,
+                decimals: token.decimals,
                 contractAddress: token.contractAddress,
                 symbol: token.symbol,
                 zero: balance === 0n
@@ -1270,6 +1308,16 @@ export function EvmCollectionPage({
         };
         return {
           address: account.address,
+          complete: ownersFullyKnown && (discovery.standard !== "erc1155" || !discovery.assets.length || Boolean(discovery.holdings?.length)),
+          overviewHoldings: discovery.standard === "erc1155"
+            ? discovery.holdings?.length ? discovery.holdings.filter((holding) => holding.ownerAddress.toLowerCase() === accountKey).map((holding) => ({
+              kind: "nft" as const, key: holding.tokenId.toString(), address: discovery.contractAddress, symbol: contractInspection?.symbol || null, raw: holding.balance, decimals: 0
+            })) : discovery.assets.filter((asset) => asset.ownerAddress ? asset.ownerAddress.toLowerCase() === accountKey : selectedAccounts.length === 1).map((asset) => ({
+              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: null, decimals: 0
+            }))
+            : discovery.assets.filter((asset) => asset.ownerAddress ? asset.ownerAddress.toLowerCase() === accountKey : selectedAccounts.length === 1).map((asset) => ({
+              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: 1n, decimals: 0
+            })),
           assets: [nativeBalance, {
             amount: discovery.standard === "erc1155"
               ? `${holdingsByOwner.get(accountKey)?.tokenIds.size || 0} ID / ${holdingsByOwner.get(accountKey)?.units || 0n}`
@@ -1920,6 +1968,18 @@ export function EvmCollectionPage({
       )}
       className="collection-shell collection-page"
       currentToolId={currentToolId}
+      modeSwitch={onAutomatic ? (
+        <Tabs value="manual" onValueChange={(value) => {
+          if (value !== "automatic" || controlsLocked || acknowledgementRequired) return;
+          const snapshot = keyInputRef.current?.handoff();
+          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress }, [
+            ...archivedRounds.map((round) => ({ label: `归集记录 #${round.sequence}`, results: round.results })),
+            ...(roundIsTerminal && results.length ? [{ label: `归集记录 #${roundSequence}`, results }] : [])
+          ]);
+        }}>
+          <TabsList aria-label="归集模式"><TabsTrigger value="manual">手动归集</TabsTrigger><TabsTrigger disabled={controlsLocked || acknowledgementRequired} value="automatic">一键归集</TabsTrigger></TabsList>
+        </Tabs>
+      ) : undefined}
       stickyActions
       status={workbenchStatus}
       statusLabel={discoveryRunning
@@ -1976,8 +2036,39 @@ export function EvmCollectionPage({
             </Field>
           ) : undefined}
           className="collection-workbench-panel"
+          segmented
           footer={(
-            <div className="actions collection-actions">
+            <ActionBar
+              summary={<WorkbenchSummary items={[
+                { label: "已选钱包", value: sourceKeyLineCount },
+                { label: "资产项", value: parsedAssetCount },
+                { label: "并发", value: concurrency }
+              ]} />}
+              feedback={(
+                <>
+            {issues.length ? (
+              <Alert variant="destructive">
+                <AlertTitle>输入有误</AlertTitle>
+                <AlertDescription>
+                  <ul aria-label="输入问题">
+                    {issues.map((issue, index) => <li key={issue + "-" + index}>{issue}</li>)}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {message ? (
+              <Alert
+                aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
+                summary={message}
+                variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
+              >{message}</Alert>
+            ) : null}
+
+
+                </>
+              )}
+            >
               {stage === "running" ? (
                 <CollectionExecutionControls
                   current={completedResultCount}
@@ -2006,9 +2097,7 @@ export function EvmCollectionPage({
                     variant={retryableCount ? "outline" : "default"}
                   >开始新一轮归集</Button>
                   {currentRoundRequiresAcknowledgement ? (
-                    <span className="hint" role="status">
-                      本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。
-                    </span>
+                    <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。</Alert>
                   ) : null}
                 </>
               ) : (
@@ -2037,13 +2126,12 @@ export function EvmCollectionPage({
                   triggerLabel="确认并开始归集"
                 />
               )}
-            </div>
+            </ActionBar>
           )}
           title="归集设置"
         >
           <div className="form workbench-form">
-            <div className="workbench-form__primary">
-              <h3 className="workbench-form__group">来源与目标</h3>
+            <WorkbenchSection title="来源钱包">
               {fixedStandard === "erc20" ? (
                 <SecretKeyInput
                   disabled={controlsLocked || assetImporting}
@@ -2054,7 +2142,9 @@ export function EvmCollectionPage({
                   }}
                   onImportingChange={handleKeyImportingChange}
                   onLineCountChange={setSourceKeyLineCount}
+                  readInitialWallets={readInitialWallets}
                   ref={keyInputRef}
+                  walletAssetOverviews={walletAssetOverviews}
                   walletBalances={walletBalances}
                   walletStatuses={walletStatuses}
                 />
@@ -2075,12 +2165,17 @@ export function EvmCollectionPage({
                   }}
                   onImportingChange={handleKeyImportingChange}
                   onLineCountChange={setSourceKeyLineCount}
+                  readInitialWallets={readInitialWallets}
                   ref={keyInputRef}
+                  walletAssetOverviews={walletAssetOverviews}
                   walletBalances={walletBalances}
                   walletStatuses={walletStatuses}
                 />
               ) : null}
 
+            </WorkbenchSection>
+            <WorkbenchSection className="workbench-form__primary" title="资产与目标">
+              <div className="config-grid">
               {fixedStandard === "erc20" ? (
                 <>
                   <Field>
@@ -2202,7 +2297,7 @@ export function EvmCollectionPage({
                       </Button>
                     </div>
                     {!nativeCurrencyEnabled ? (
-                      <FieldDescription>当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。</FieldDescription>
+                      <HelpTooltip label="原生币信息">当前网络的原生币信息尚未确认；请填写 ERC20 Token 合约地址。</HelpTooltip>
                     ) : null}
                     <div aria-label="地址余额查询" className="address-balance-control">
                       <Button
@@ -2254,14 +2349,13 @@ export function EvmCollectionPage({
                 <>
                   <NftAssetInput
                     autoDiscovery={(
-                      <section aria-labelledby="nft-discovery-title" className="nft-discovery-card">
-                        <div className="nft-discovery-card__bar">
-                          <div className="nft-discovery-card__title">
-                            <h4 id="nft-discovery-title">持仓识别</h4>
-                            {discoveryComplete ? (
-                              <Badge variant="outline">{parsedAssetCount} 个 {nftStandard.toUpperCase()} Token ID</Badge>
-                            ) : null}
-                          </div>
+                      <ReviewPanel
+                        className="nft-discovery-card"
+                        autoOpen={Boolean(pendingTokenScan || pendingDiscovery || discoveryIssues.length)}
+                        stateKey={`${Boolean(pendingTokenScan)}:${Boolean(pendingDiscovery)}:${discoveryIssues.length}`}
+                        title="持仓识别"
+                        summary={discoveryMessage ? <span aria-live="polite" className="nft-discovery-card__status" role="status">{discoveryMessage}</span> : discoveryComplete ? <Badge variant="outline">{parsedAssetCount} 个 {nftStandard.toUpperCase()} Token ID</Badge> : "扫描后查看持仓明细"}
+                        actions={(
                           <Button
                             disabled={!discoveryRunning && (controlsLocked || !discoveryContractIsValid || !discoverySourceReady)}
                             onClick={() => discoveryRunning ? cancelNftDiscovery() : void discoverOwnedNft()}
@@ -2269,12 +2363,10 @@ export function EvmCollectionPage({
                             type="button"
                             variant={discoveryRunning ? "outline" : "default"}
                           >
-                            {discoveryRunning
-                              ? "停止识别"
-                              : discoveryComplete || assetInput.trim() ? "再次识别" : "识别持仓"}
+                            {discoveryRunning ? "停止识别" : discoveryComplete || assetInput.trim() ? "再次识别" : "识别持仓"}
                           </Button>
-                        </div>
-
+                        )}
+                      >
                         {contractInspection ? (
                           <div className="nft-discovery-card__contract">
                             <strong>{contractInspection.name || "NFT 合约"}</strong>
@@ -2287,13 +2379,13 @@ export function EvmCollectionPage({
                         ) : null}
 
                         {pendingTokenScan ? (
-                          <Alert className="nft-token-scan" data-scanning={discoveryRunning || undefined}>
-                            <AlertTitle>直接探测 Token ID</AlertTitle>
-                            <AlertDescription>
-                              <p>
+                          <section aria-label="直接探测 Token ID" className="nft-token-scan" data-scanning={discoveryRunning || undefined}>
+                            <div className="workbench-section__header"><strong>直接探测 Token ID</strong>
+                              <HelpTooltip label="Token ID 探测说明">
                                 OpenSea 与 Transfer 事件仍未完成余额对账。页面会在固定快照区块对指定范围调用
                                 <code> ownerOf </code>，并用来源地址的 <code>balanceOf</code> 继续复核。
-                              </p>
+                              </HelpTooltip>
+                            </div>
                               <div className="nft-token-scan__range" aria-label="Token ID 探测范围">
                                 <div>
                                   <span>快照区块</span>
@@ -2354,19 +2446,19 @@ export function EvmCollectionPage({
                                   variant="ghost"
                                 >{discoveryRunning ? "停止探测" : "取消"}</Button>
                               </div>
-                            </AlertDescription>
-                          </Alert>
+                          </section>
                         ) : null}
 
                         {pendingDiscovery ? (
                           <Alert>
-                            <AlertTitle>部分发现结果</AlertTitle>
+                            <AlertTitle>部分发现结果：{pendingDiscovery.assets.length} 个 Token ID</AlertTitle>
                             <AlertDescription>
                               <p>{pendingDiscovery.assets.length} 个 Token ID</p>
                               <code>
                                 {pendingDiscovery.assets.slice(0, 8).map((asset) => asset.tokenId.toString()).join(" · ")}
                                 {pendingDiscovery.assets.length > 8 ? " · …" : ""}
                               </code>
+                            </AlertDescription>
                               <ConfirmActionDialog
                                 confirmLabel="确认使用部分结果"
                                 description="只会使用当前已验证的 Token ID；未覆盖的资产不会自动归集，需另行核对。"
@@ -2376,14 +2468,7 @@ export function EvmCollectionPage({
                                 triggerLabel="确认使用部分结果"
                                 triggerVariant="outline"
                               />
-                            </AlertDescription>
                           </Alert>
-                        ) : null}
-
-                        {discoveryMessage ? (
-                          <p aria-live="polite" className="nft-discovery-card__status" role="status">
-                            {discoveryMessage}
-                          </p>
                         ) : null}
 
                         {discoveryIssues.length ? (
@@ -2398,7 +2483,7 @@ export function EvmCollectionPage({
                             </AlertDescription>
                           </Alert>
                         ) : null}
-                      </section>
+                      </ReviewPanel>
                     )}
                     contractAddress={discoveryContract}
                     contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
@@ -2460,12 +2545,13 @@ export function EvmCollectionPage({
 
                 </>
               )}
-            </div>
+              </div>
+            </WorkbenchSection>
 
-            <div className="workbench-form__secondary">
-              <h3 className="workbench-form__group">归集配置</h3>
+            <WorkbenchSection className="workbench-form__secondary" title="归集配置">
+              <div className="config-grid">
 
-              <div className="evm-network-row" aria-label="网络与 RPC">
+              <div className="evm-network-row config-grid__full" aria-label="网络与 RPC">
                 <Field>
                   <div className="evm-network-label-row">
                     <FieldLabel htmlFor="evm-collection-network">网络</FieldLabel>
@@ -2636,13 +2722,15 @@ export function EvmCollectionPage({
               </div>
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
 
+              <div className="config-grid__full">
               <EvmGasSettings
                 disabled={controlsLocked}
                 gas={gas}
                 onSettingsChange={() => invalidatePlan()}
               />
+              </div>
 
-              <AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
+              <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
                 <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
                   <FieldLabel htmlFor="evm-collection-max-fee">
                     单笔最高网络费（{selectedNetwork.nativeCurrency.symbol}）
@@ -2663,29 +2751,9 @@ export function EvmCollectionPage({
                   />
                   {maximumFeeAmount === null ? <FieldError>请输入大于 0 的有效金额</FieldError> : null}
                 </Field>
-              </AdvancedSettings>
-            </div>
-
-            {issues.length ? (
-              <Alert variant="destructive">
-                <AlertTitle>输入有误</AlertTitle>
-                <AlertDescription>
-                  <ul aria-label="输入问题">
-                    {issues.map((issue, index) => <li key={issue + "-" + index}>{issue}</li>)}
-                  </ul>
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            {message ? (
-              <Alert
-                aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
-                variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
-              >
-                <AlertTitle>{evmStatusLabels[workbenchStatus]}</AlertTitle>
-                <AlertDescription>{message}</AlertDescription>
-              </Alert>
-            ) : null}
+              </AdvancedSettings></div>
+              </div>
+            </WorkbenchSection>
 
           </div>
         </WorkbenchPanel>

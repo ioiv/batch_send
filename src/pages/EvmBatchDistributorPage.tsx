@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CompactNotice, NoticeTitle, NoticeDetail } from "../components/CompactNotice";
+import { HelpTooltip } from "../components/HelpTooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DistributionListGenerator } from "../components/DistributionListGenerator";
+import { DistributionListGenerator, type DistributionListGeneratorHandle } from "../components/DistributionListGenerator";
 import { DistributionSummary } from "../components/DistributionSummary";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
+  ActionBar,
+  WorkbenchSection,
   ConfirmActionDialog,
   ExecutionProgress,
   ReviewPanel,
@@ -189,6 +192,7 @@ export function EvmBatchDistributorPage() {
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [listImporting, setListImporting] = useState(false);
   const listImportingRef = useRef(false);
+  const generatorRef = useRef<DistributionListGeneratorHandle>(null);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
   const previousWalletRef = useRef("");
@@ -336,7 +340,9 @@ export function EvmBatchDistributorPage() {
       ? "正在读取 Token 精度，完成后即可按该资产生成金额。"
       : "请先识别 Token 合约。"
     : "";
-  const readinessMessage = !wallet.connected || !wallet.getProvider()
+  const readinessMessage = archivedRound?.requiresAcknowledgement
+    ? "请先核对分发记录中的链上状态"
+    : !wallet.connected || !wallet.getProvider()
     ? "请先连接发送钱包"
     : listImporting
       ? "正在导入清单，请稍候"
@@ -364,7 +370,8 @@ export function EvmBatchDistributorPage() {
           ? "预检中"
           : undefined;
   const reviewHasRisk = unresolvedSubmission || sendFailed || preflightFailed;
-  const reviewShouldOpen = reviewHasRisk || sendState.signatures.length > 0;
+  const actionStatusMessage = sendState.status !== "idle" ? sendState.message : preflightState.status !== "idle" ? preflightState.message : readinessMessage;
+  const reviewShouldOpen = reviewHasRisk;
   const reviewSummaryLabel = unresolvedSubmission
     ? "链上状态待核对"
     : sendComplete
@@ -883,8 +890,33 @@ export function EvmBatchDistributorPage() {
           actions={<Badge variant="outline">{selectedNetwork.label} · {assetSymbol}</Badge>}
           className="input-panel"
           footer={(
-            <div className="actions">
-              <span className="hint" role="status">{sending || sendComplete || sendFailed ? "" : readinessMessage}</span>
+            <ActionBar
+              summary={(
+                <DistributionSummary
+                  details={preflightState.result ? (
+                    <div className="summary-list">
+                      <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
+                      <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
+                    </div>
+                  ) : undefined}
+                  rows={[
+                    { label: "有效地址", value: parsed.validRows.length },
+                    { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
+                    ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
+                    ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
+                    { label: "预估网络费", value: preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "—" }
+                  ]}
+                />
+              )}
+              feedback={(
+                <div className="distribution-status" role={sendFailed || preflightFailed ? "alert" : "status"} aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}>
+                  <Badge variant={reviewHasRisk ? "destructive" : "outline"}>{sendComplete ? "分发完成" : reviewSummaryLabel}</Badge>
+                  <span className="distribution-status__message">{actionStatusMessage}</span>
+                  {actionStatusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{actionStatusMessage}</HelpTooltip> : null}
+                  {unresolvedSubmission ? <HelpTooltip label="不可安全整批重试">已有交易提交到链上。请先核对交易哈希，再开始新任务。</HelpTooltip> : null}
+                </div>
+              )}
+            >
               <div className="action-group">
                 {!sendComplete && !sendFailed && !sending ? (
                   <Button
@@ -923,40 +955,36 @@ export function EvmBatchDistributorPage() {
                 ) : null}
                 {sendComplete || sendFailed ? (
                   <>
-                    {unresolvedSubmission ? (
-                      <span className="collection-terminal-hint">
-                        核对链上状态后才可开始新的写入任务。
-                      </span>
-                    ) : null}
                     {/* Ending a round must not depend on finding a setting to edit;
                         the list stays for the next round. */}
                     <Button onClick={resetForEdit} type="button">开始新一轮分发</Button>
                   </>
                 ) : null}
               </div>
-            </div>
+            </ActionBar>
           )}
-          title="分发配置"
+          segmented
+          title="批量分发"
         >
           <div className="form workbench-form">
             {mixedAmountWarningVisible ? (
-              <Alert>
-                <AlertTitle>旧清单金额未导入</AlertTitle>
-                <AlertDescription>已保留收款地址，请重新设置金额。</AlertDescription>
-              </Alert>
+              <CompactNotice>
+                <NoticeTitle>旧清单金额未导入</NoticeTitle>
+                <NoticeDetail>已保留收款地址，请重新设置金额。</NoticeDetail>
+              </CompactNotice>
             ) : null}
 
             {!nativeCurrencyEnabled ? (
-              <Alert>
-                <AlertTitle>仅开放 Token 分发</AlertTitle>
-                <AlertDescription>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></AlertDescription>
-              </Alert>
+              <CompactNotice>
+                <NoticeTitle>仅开放 Token 分发</NoticeTitle>
+                <NoticeDetail>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></NoticeDetail>
+              </CompactNotice>
             ) : null}
 
-            <div className="workbench-form__primary">
-              <h3 className="workbench-form__group">收款清单</h3>
+            <WorkbenchSection className="workbench-form__primary">
 
               <DistributionListGenerator
+                controlRef={generatorRef}
                 addressKind="evm"
                 decimals={assetDecimals}
                 disabled={controlsLocked}
@@ -970,10 +998,10 @@ export function EvmBatchDistributorPage() {
                 unavailableMessage={generatorUnavailableMessage}
                 validateAddress={isValidEvmAddress}
               />
-            </div>
+            </WorkbenchSection>
 
-            <div className="workbench-form__secondary">
-              <h3 className="workbench-form__group">网络、资产与费用</h3>
+            <WorkbenchSection className="workbench-form__secondary" title="网络、资产与费用">
+              <div className="config-grid distribution-config-grid">
               <div className="evm-network-row" aria-label="网络与 RPC">
                 <Field>
                   <div className="evm-network-label-row">
@@ -1021,6 +1049,7 @@ export function EvmBatchDistributorPage() {
               </div>
 
               <Tabs
+                className="distribution-asset-controls"
                 aria-label="资产类型"
                 onValueChange={(nextMode) => {
                   if (nextMode !== "native" && nextMode !== "token") return;
@@ -1040,11 +1069,9 @@ export function EvmBatchDistributorPage() {
                     <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
                   </div>
                   {nativeBalanceLookup.status === "error" ? (
-                    <Alert variant="destructive">
-                      <AlertTitle>钱包余额读取失败</AlertTitle>
-                      <AlertDescription>{nativeBalanceLookup.message}</AlertDescription>
+                    <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
                       <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                    </Alert>
+                    </CompactNotice>
                   ) : null}
                 </TabsContent>
                 <TabsContent value="token">
@@ -1077,16 +1104,20 @@ export function EvmBatchDistributorPage() {
                     <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
                   ) : null}
                   {tokenDetails && tokenBalanceLookup.status === "error" ? (
-                    <Alert variant="destructive">
-                      <AlertTitle>Token 余额读取失败</AlertTitle>
-                      <AlertDescription>{tokenBalanceLookup.message}</AlertDescription>
+                    <CompactNotice role="alert" tone="error"><NoticeTitle>{tokenBalanceLookup.message}</NoticeTitle>
                       <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                    </Alert>
+                    </CompactNotice>
                   ) : null}
                 </TabsContent>
               </Tabs>
 
+
+
+              <div className="distribution-gas-settings">
+                <EvmGasSettings disabled={pageControlsLocked} gas={gas} onSettingsChange={resetForEdit} />
+              </div>
               {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
+              <div className="distribution-remove-network">
                 <ConfirmActionDialog
                   confirmLabel="移除链配置"
                   description={(
@@ -1101,29 +1132,11 @@ export function EvmBatchDistributorPage() {
                   triggerLabel="移除此链配置"
                   triggerVariant="destructive"
                 />
+              </div>
               ) : null}
 
-              <EvmGasSettings
-                disabled={pageControlsLocked}
-                gas={gas}
-                onSettingsChange={resetForEdit}
-              />
-
-              <DistributionSummary
-                rows={[
-                  { label: "有效地址", value: parsed.validRows.length },
-                  { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
-                  { alert: invalidCount > 0, label: "需修正", value: invalidCount },
-                  { alert: duplicateCount > 0, label: "重复地址", value: duplicateCount },
-                  {
-                    label: "预估网络费",
-                    value: preflightState.result
-                      ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
-                      : "—"
-                  }
-                ]}
-              />
-            </div>
+              </div>
+            </WorkbenchSection>
           </div>
         </WorkbenchPanel>
 
@@ -1134,25 +1147,6 @@ export function EvmBatchDistributorPage() {
           summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
           title={sendState.signatures.length > 0 || sendComplete || sendFailed ? "分发结果" : confirmVisible ? "预检结果" : "清单预览"}
         >
-          {preflightState.status !== "idle" && sendState.status === "idle" ? (
-            <Alert variant={preflightFailed ? "destructive" : "default"}>
-              <AlertTitle>{preflightFailed ? "预检未通过" : preflighting ? "正在预检" : "预检通过"}</AlertTitle>
-              <AlertDescription>{preflightState.message}</AlertDescription>
-            </Alert>
-          ) : null}
-          {sendState.status !== "idle" ? (
-            <Alert variant={sendFailed ? "destructive" : "default"}>
-              <AlertTitle>{sendComplete ? "分发完成" : sendFailed ? "分发未完成" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "交易处理中"}</AlertTitle>
-              <AlertDescription>{sendState.message}</AlertDescription>
-            </Alert>
-          ) : null}
-          {preflightState.result ? (
-            <div className="summary-list" aria-label="预检摘要">
-              <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
-              <div><span>网络费</span><strong>{formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
-              <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
-            </div>
-          ) : null}
           {sendState.progress.total > 0 ? (
             <>
               <ExecutionProgress current={sendState.progress.confirmed} label="交易确认进度" total={sendState.progress.total} />
@@ -1232,12 +1226,7 @@ export function EvmBatchDistributorPage() {
               rows={reviewRows}
             />
           )}
-          {unresolvedSubmission ? (
-            <Alert>
-              <AlertTitle>不可安全整批重试</AlertTitle>
-              <AlertDescription>已有交易提交到链上。请先核对交易哈希，再创建空白任务。</AlertDescription>
-            </Alert>
-          ) : null}
+
         </ReviewPanel>
         {archivedRound ? (
           <ReviewPanel

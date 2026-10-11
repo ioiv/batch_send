@@ -314,7 +314,7 @@ describe("readErc20Metadata", () => {
       contractAddress: tokenAddress,
       decimals: 6,
       name: "ERC20 Token",
-      symbol: "TOKEN"
+      symbol: `${tokenAddress.slice(0, 6)}…${tokenAddress.slice(-4)}`
     });
   });
 

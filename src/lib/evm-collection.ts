@@ -614,7 +614,7 @@ export async function readErc20Metadata(
       abi: erc20CollectionAbi,
       address: contractAddress,
       functionName: "symbol"
-    }).catch(() => "TOKEN"),
+    }).catch(() => ""),
     publicClient.readContract({
       abi: erc20CollectionAbi,
       address: contractAddress,
@@ -631,7 +631,7 @@ export async function readErc20Metadata(
     contractAddress,
     decimals,
     name: typeof name === "string" && name.trim() ? name : "ERC20 Token",
-    symbol: typeof symbol === "string" && symbol.trim() ? symbol : "TOKEN"
+    symbol: typeof symbol === "string" && symbol.trim() ? symbol : `${contractAddress.slice(0, 6)}…${contractAddress.slice(-4)}`
   };
 }
 

@@ -61,40 +61,40 @@ export const tools: ToolDefinition[] = [
     id: "evm-token-collection",
     title: "EVM 代币归集",
     shortTitle: "代币归集",
-    description: "归集多个 EVM 钱包的原生币或 ERC20 余额，交易前完成余额与费用预检。",
+    description: "支持手动清单与一键扫描归集，按 Token、NFT、可选原生币顺序执行。",
     href: "/evm/collect/",
     category: "collection",
     ecosystems: ["evm"],
     icon: "collect",
     featured: true,
     badge: "新增",
-    keywords: ["原生币", "ERC20", "Token", "归集", "EVM"]
+    keywords: ["原生币", "ERC20", "Token", "NFT", "一键归集", "扫描", "归集", "EVM"]
   },
   {
     id: "evm-nft-collection",
     title: "EVM NFT 归集",
     shortTitle: "NFT 归集",
-    description: "按来源钱包归集 ERC721 与 ERC1155 资产，交易前完成所有权校验。",
+    description: "手动归集 ERC721 / ERC1155，或一键扫描钱包资产并按阶段归集。",
     href: "/evm/nft-collect/",
     category: "collection",
     ecosystems: ["evm"],
     icon: "nft",
     featured: true,
     badge: "新增",
-    keywords: ["NFT", "ERC721", "ERC1155", "归集"]
+    keywords: ["NFT", "ERC721", "ERC1155", "一键归集", "扫描", "归集"]
   },
   {
     id: "sol-collection",
     title: "SOL / SPL Token 归集",
     shortTitle: "SOL / SPL 归集",
-    description: "Token 清单留空归集 SOL，填写 Mint 后归集所列 SPL Token / Token-2022，并预检 ATA 租金和网络费。",
+    description: "支持手动清单与全量 SPL / Token-2022 扫描，先归集资产，再可选归集 SOL。",
     href: "/sol/collect/",
     category: "collection",
     ecosystems: ["solana"],
     icon: "sol",
     featured: true,
     badge: "新增",
-    keywords: ["SOL", "Solana", "SPL Token", "Token-2022", "ATA", "持仓", "余额", "归集"]
+    keywords: ["SOL", "Solana", "SPL Token", "Token-2022", "NFT", "ATA", "持仓", "余额", "一键归集", "扫描", "归集"]
   },
   {
     id: "sol-distribution",

@@ -285,6 +285,22 @@ describe("EVM collection fee protection defaults", () => {
 });
 
 describe("EvmCollectionPage workbench", () => {
+  it("hands imported wallets and public configuration to automatic mode", async () => {
+    const automatic = vi.fn();
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" onAutomatic={automatic} />);
+    await importEvmSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.click(screen.getByRole("tab", { name: "一键归集" }));
+    expect(automatic).toHaveBeenCalledOnce();
+    const [snapshot, config, rounds] = automatic.mock.calls[0];
+    expect(snapshot.keys).toContain(privateKey);
+    expect(snapshot.selectedIds).toContain(signerAccount.address.toLowerCase());
+    expect(config).toEqual({ networkId: "ethereum", rpcEndpoint: "https://ethereum.publicnode.com", targetAddress });
+    expect(rounds).toEqual([]);
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
   it("keeps the optional Token list compact and defaults a blank list to the native asset", async () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
@@ -335,15 +351,14 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("spinbutton", { name: /单笔最高网络费/ })).toHaveValue(0.01);
   });
 
-  it("groups the form so the two columns hold what they claim to", () => {
+  it("groups assets and configuration in successive single-column sections", () => {
     const { container } = render(<EvmCollectionPage fixedStandard="erc20" />);
 
     const subject = container.querySelector(".workbench-form__primary");
     const config = container.querySelector(".workbench-form__secondary");
     expect(subject).not.toBeNull();
     expect(config).not.toBeNull();
-    // "归集什么" on one side, "怎么归集" on the other. A field added to the wrong
-    // group renders in the wrong column on a wide screen and fails nothing else.
+    // Each step stays together while the source wallet table occupies full width.
     expect(subject).toContainElement(screen.getByRole("textbox", { name: "Token 清单" }));
     expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标地址" }));
     expect(config).toContainElement(screen.getByLabelText("网络与 RPC"));
@@ -448,19 +463,19 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
     const walletList = screen.getByLabelText("已导入来源钱包");
-    const secondBalances = await within(walletList).findByLabelText(`${secondSignerAccount.address} 余额`);
+    const secondBalances = await within(walletList).findByLabelText(`${secondSignerAccount.address} 原生币余额`);
     expect(within(secondBalances).getByText("3")).toBeVisible();
 
     await user.click(within(walletList).getByRole("button", { name: "选中余额为零 (1)" }));
     expect(within(walletList).getByRole("checkbox", { name: new RegExp(signerAccount.address, "i") })).toBeChecked();
     expect(within(walletList).getByRole("checkbox", { name: new RegExp(secondSignerAccount.address, "i") })).not.toBeChecked();
-    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 余额`)).toBeVisible();
+    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 原生币余额`)).toBeVisible();
 
     const concurrency = screen.getByRole("spinbutton", { name: "并发钱包数" });
     await user.clear(concurrency);
     await user.type(concurrency, "5");
-    expect(within(walletList).getByLabelText(`${signerAccount.address} 余额`)).toBeVisible();
-    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 余额`)).toBeVisible();
+    expect(within(walletList).getByLabelText(`${signerAccount.address} 原生币余额`)).toBeVisible();
+    expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 原生币余额`)).toBeVisible();
   });
 
   it("drops balances read before a round once the round has moved funds", async () => {
@@ -479,12 +494,12 @@ describe("EvmCollectionPage workbench", () => {
     await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
     const walletList = screen.getByLabelText("已导入来源钱包");
-    expect(await within(walletList).findByLabelText(`${signerAccount.address} 余额`)).toBeVisible();
+    expect(await within(walletList).findByLabelText(`${signerAccount.address} 原生币余额`)).toBeVisible();
 
     await confirmEvmExecution(user);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "开始新一轮归集" })).toBeEnabled());
-    expect(within(walletList).queryByLabelText(`${signerAccount.address} 余额`)).not.toBeInTheDocument();
+    expect(within(walletList).queryByLabelText(`${signerAccount.address} 原生币余额`)).not.toBeInTheDocument();
     expect(within(walletList).getByRole("button", { name: "选中余额为零" })).toBeDisabled();
   });
 
@@ -611,7 +626,9 @@ describe("EvmCollectionPage workbench", () => {
     expect(await screen.findByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("失败")).toBeVisible();
-    expect(within(walletList).getByText("模拟失败")).toBeVisible();
+    expect(within(walletList).queryByText("模拟失败")).not.toBeInTheDocument();
+    await user.click(within(walletList).getByRole("button", { name: /归集详情/ }));
+    expect(within(screen.getByRole("dialog", { name: "归集详情" })).getByText("模拟失败")).toBeVisible();
   });
 
   it("does not render a separate preflight or result section", () => {
@@ -624,15 +641,15 @@ describe("EvmCollectionPage workbench", () => {
   it("summarizes complete discovery results in the source wallet row", async () => {
     const user = await discoverNft();
     const walletList = screen.getByLabelText("已导入来源钱包");
-    expect(await within(walletList).findByText("ERC721")).toBeVisible();
+    expect(await within(walletList).findByText("NFT 1")).toBeVisible();
     const walletRow = within(walletList).getByTitle(signerAccount.address).closest('[role="listitem"]') as HTMLElement;
-    const walletBalances = within(walletRow).getByLabelText(`${signerAccount.address} 余额`);
+    const walletBalances = within(walletRow).getByLabelText(`${signerAccount.address} 原生币余额`);
     expect(within(walletBalances).getByText("3")).toBeVisible();
-    expect([...walletBalances.querySelectorAll("small")].map((item) => item.textContent)).toEqual(["ETH", "ERC721"]);
-    expect(within(walletBalances).getByText("1")).toBeVisible();
+    expect([...walletBalances.querySelectorAll("small")].map((item) => item.textContent)).toEqual(["ETH"]);
+    expect(within(walletRow).getByLabelText(`${signerAccount.address} 代币与 NFT 概览`)).toHaveTextContent("NFT 1");
     expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
     expect(screen.getByText(/共有 1 个可归集 ERC721/)).toHaveAttribute("role", "status");
-    expect(screen.getByLabelText("归集数量说明")).toHaveTextContent("?");
+    expect(screen.getByLabelText("说明：归集数量说明")).toHaveTextContent("?");
     expect(screen.queryByText(/归集全部：归集所有已识别的 ERC721/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
     expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(1);
@@ -695,8 +712,8 @@ describe("EvmCollectionPage workbench", () => {
     const walletList = screen.getByLabelText("已导入来源钱包");
     const firstRow = within(walletList).getByTitle(signerAccount.address).closest('[role="listitem"]') as HTMLElement;
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
-    expect(await within(firstRow).findByText("1")).toBeVisible();
-    expect(within(secondRow).getByText("2")).toBeVisible();
+    expect(await within(firstRow).findByText("NFT 1")).toBeVisible();
+    expect(within(secondRow).getByText("NFT 2")).toBeVisible();
     expect(screen.getByText(/共有 3 个可归集 ERC721/)).toBeVisible();
     const concurrencyInput = screen.getByRole("spinbutton", { name: "并发钱包数" });
     expect(concurrencyInput).toBeEnabled();
@@ -765,11 +782,11 @@ describe("EvmCollectionPage workbench", () => {
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
     expect(await within(firstRow).findByText("读取失败")).toBeVisible();
     expect(within(firstRow).getByText("ETH")).toBeVisible();
-    expect(within(firstRow).getByText("ERC721")).toBeVisible();
-    expect(within(firstRow).getByText("1")).toBeVisible();
+    expect(within(firstRow).getByText("NFT 1")).toBeVisible();
+    expect(within(firstRow).getByText("NFT 1")).toBeVisible();
     expect(within(secondRow).getByText("2")).toBeVisible();
     expect(within(secondRow).getByText("ETH")).toBeVisible();
-    expect(within(secondRow).getByText("ERC721")).toBeVisible();
+    expect(within(secondRow).getByText("NFT 1")).toBeVisible();
     expect(screen.getByText(/共有 2 个可归集 ERC721/)).toBeVisible();
   });
 
@@ -825,7 +842,7 @@ describe("EvmCollectionPage workbench", () => {
       openSeaApiKey: "temporary-opensea-key",
       ownerAddresses: [signerAccount.address]
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
     expect(window.localStorage.getItem("chainkit.opensea-api-key.v1")).toBe("temporary-opensea-key");
 
     view.unmount();
@@ -892,7 +909,7 @@ describe("EvmCollectionPage workbench", () => {
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("3")).toBeVisible();
     expect(within(walletList).getByText("ETH")).toBeVisible();
-    expect(within(walletList).getByText("1 ID / 4")).toBeVisible();
+    expect(within(walletList).getByText("NFT 4")).toBeVisible();
     expect(screen.getByText("归集全部余额")).toBeVisible();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
@@ -1029,7 +1046,7 @@ describe("EvmCollectionPage workbench", () => {
       ownerAddresses: [signerAccount.address],
       snapshotBlock: 100n
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
     expect(screen.queryByText(/回溯|历史扫描/)).not.toBeInTheDocument();
   });
 
@@ -1088,14 +1105,14 @@ describe("EvmCollectionPage workbench", () => {
       fromTokenId: 40n,
       toTokenId: 45n
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
   it("reconciles a repeated complete discovery and clears stale zero-holding rows", async () => {
     const user = await discoverNft();
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
     evmMocks.discoverEnumerable.mockResolvedValueOnce({
       assets: [],
       issues: [],
@@ -1111,7 +1128,7 @@ describe("EvmCollectionPage workbench", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "再次识别" }));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("0")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("无资产")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("3")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("ETH")).toBeVisible();
     expect(screen.getByText(/当前没有该合约的可归集 ERC721/)).toHaveAttribute("role", "status");
@@ -1147,7 +1164,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(trigger);
     dialog = screen.getByRole("alertdialog", { name: "使用部分识别结果？" });
     await user.click(within(dialog).getByRole("button", { name: "确认使用部分结果" }));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("3")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("ETH")).toBeVisible();
   });
@@ -1261,7 +1278,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(await screen.findByText(/归集完成：1 项确认成功/)).toBeInTheDocument();
     expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
-    expect(screen.getByRole("link", { name: "查看交易" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^查看交易/ })).toBeInTheDocument();
 
     const target = screen.getByRole("textbox", { name: "目标地址" });
     expect(target).toBeEnabled();
@@ -1337,7 +1354,7 @@ describe("EvmCollectionPage workbench", () => {
     ]);
 
     const user = await discoverNft();
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("2")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 2")).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "指定总数量" }));
     const nftTotal = screen.getByRole("spinbutton", { name: "ERC721 归集总数量" });
     await user.clear(nftTotal);
@@ -1373,7 +1390,7 @@ describe("EvmCollectionPage workbench", () => {
     });
     await user.click(screen.getByRole("button", { name: "再次识别" }));
     await screen.findByText(/持仓识别完成/);
-    expect(within(walletList).getByText("1")).toBeVisible();
+    expect(within(walletList).getByText("NFT 1")).toBeVisible();
     expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
     expect(screen.getByRole("spinbutton", { name: "ERC721 归集总数量" })).toHaveValue(1);
@@ -1464,8 +1481,13 @@ describe("EvmCollectionPage workbench", () => {
 
     expect(await screen.findByText(/归集完成：1 项确认成功，1 项失败/)).toBeInTheDocument();
     const walletList = screen.getByLabelText("已导入来源钱包");
-    expect(within(walletList).getByText(/TOK · 1/)).toBeVisible();
-    expect(within(walletList).getByText(/TOK2 · 1/)).toBeVisible();
+    expect(within(walletList).getByText("2 项结果")).toBeVisible();
+    await user.click(within(walletList).getByRole("button", { name: /归集详情/ }));
+    const details = screen.getByRole("dialog", { name: "归集详情" });
+    expect(within(details).getByText(/TOK · 1/)).toBeVisible();
+    expect(within(details).getByText(/TOK2 · 1/)).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(details).not.toBeInTheDocument());
     expect(within(walletList).getByText("失败")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "error");
     expect(screen.getByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();

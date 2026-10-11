@@ -138,6 +138,30 @@ async function prepareReadyTokenDistributionPage() {
 }
 
 describe("EvmBatchDistributorPage safety", () => {
+  it("keeps the summary beside the actions and selects problem lines without sending", async () => {
+    const user = userEvent.setup();
+    render(createElement(EvmBatchDistributorPage));
+    const summary = screen.getByRole("region", { name: "清单摘要" });
+    expect(summary.closest(".workbench-action-bar")).not.toBeNull();
+    expect(within(summary).queryByText("需修正")).not.toBeInTheDocument();
+    expect(within(summary).queryByText("重复地址")).not.toBeInTheDocument();
+
+    const input = screen.getByRole("textbox", { name: "收款地址" }) as HTMLTextAreaElement;
+    const list = `${recipient}\n\nbad\n${recipient}`;
+    await user.type(input, list);
+    await user.click(await screen.findByRole("button", { name: "定位需修正：1" }));
+    expect(input).toHaveFocus();
+    expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe("bad");
+
+    await user.click(screen.getByRole("button", { name: "定位重复地址：1" }));
+    expect(input).toHaveFocus();
+    expect(input.selectionStart).toBe(list.length - recipient.length);
+    expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe(recipient);
+    expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
+    expect(pageMocks.preflight).not.toHaveBeenCalled();
+    expect(pageMocks.sendNative).not.toHaveBeenCalled();
+  });
+
   it("shows live Gas and passes a custom Gas Price into preflight", async () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
@@ -152,7 +176,7 @@ describe("EvmBatchDistributorPage safety", () => {
 
     const gasSettings = screen.getByLabelText("Gas 设置");
     expect(gasSettings).toBeVisible();
-    // The fee sits with the list it pays for, in the summary under the settings.
+    // The compact summary stays beside the operation buttons, after the fee settings.
     const summary = screen.getByRole("region", { name: "清单摘要" });
     const summaryValue = (label: string) => within(summary).getByText(label).nextElementSibling;
     expect(summaryValue("预估网络费")).toHaveTextContent("—");
@@ -368,6 +392,8 @@ describe("EvmBatchDistributorPage safety", () => {
 
     expect(await screen.findByText("分发完成")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "success");
+    expect(screen.queryByRole("table", { name: "EVM 分发交易结果" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开分发结果" }));
     expect(screen.getByRole("table", { name: "EVM 分发交易结果" })).toBeInTheDocument();
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);
@@ -404,7 +430,7 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(within(dialog).getByText("余额、授权与 Gas 通过后才分发")).toBeVisible();
     await user.click(within(dialog).getByRole("button", { name: "授权并分发" }));
 
-    expect(await screen.findByText("不可安全整批重试")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "说明：不可安全整批重试" })).toBeVisible();
     const resultTable = screen.getByRole("table", { name: "EVM 分发交易结果" });
     expect(within(resultTable).getByText("授权")).toBeInTheDocument();
     expect(within(resultTable).getByText("分发")).toBeInTheDocument();
@@ -424,14 +450,16 @@ describe("EvmBatchDistributorPage safety", () => {
     const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
     await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
 
-    expect(await screen.findByText("不可安全整批重试")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "说明：不可安全整批重试" })).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
     expect(addressInput).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认分发" })).not.toBeInTheDocument();
     // Nothing wipes an unverified submission; acknowledging it is the only way on.
     expect(screen.queryByRole("button", { name: "清空清单" })).not.toBeInTheDocument();
-    expect(screen.getByText("核对链上状态后才可开始新的写入任务。")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "说明：不可安全整批重试" }));
+    expect(screen.getByRole("dialog", { name: "不可安全整批重试" })).toHaveTextContent("请先核对交易哈希，再开始新任务");
+    await user.keyboard("{Escape}");
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);
     expect(pageMocks.ensureNetwork).toHaveBeenCalledTimes(1);
 
@@ -444,7 +472,7 @@ describe("EvmBatchDistributorPage safety", () => {
     const acknowledgement = screen.getByRole("alertdialog", { name: "已核对记录中的链上状态？" });
     await user.click(within(acknowledgement).getByRole("button", { name: "确认已核对" }));
 
-    expect(screen.queryByText("不可安全整批重试")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "说明：不可安全整批重试" })).not.toBeInTheDocument();
     expect(addressInput).toHaveValue(`${recipient}\n0x00000000000000000000000000000000000000b2`);
     await waitFor(() => expect(screen.getByRole("button", { name: "运行预检" })).toBeEnabled());
   });

@@ -1,21 +1,25 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CompactNotice as Alert, NoticeDetail as AlertDescription, NoticeTitle as AlertTitle } from "@/components/CompactNotice";
+import { HelpTooltip } from "@/components/HelpTooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { EvmWalletConnectionControl } from "../components/EvmWalletConnectionControl";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import {
+  ActionBar,
   AdvancedSettings,
   ConfirmActionDialog,
   ExecutionProgress,
   ReviewPanel,
   ResultTable,
-  WorkbenchPanel
+  WorkbenchPanel,
+  WorkbenchSection,
+  WorkbenchSummary
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
 import { useEvmWallet } from "../hooks/useEvmWallet";
@@ -650,6 +654,13 @@ export function EvmContractDeployPage() {
       )}
       className="page-deploy"
       currentToolId="evm-contract-deploy"
+      modeSwitch={(
+        <Tabs aria-label="网络来源" onValueChange={(value) => {
+          if (value === "known" || value === "custom") selectNetworkSource(value);
+        }} value={networkSource}>
+          <TabsList><TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger><TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger></TabsList>
+        </Tabs>
+      )}
       stickyActions
       status={workbenchStatus}
       statusLabel={workbenchStatusLabel}
@@ -659,10 +670,46 @@ export function EvmContractDeployPage() {
         <WorkbenchPanel
           actions={<Badge variant="outline">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "网络待校验"}</Badge>}
           className="deploy-panel"
+          segmented
           footer={(
-            <div className="actions">
-              <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : !effectiveRpcEndpoint ? "请输入 HTTPS RPC" : ""}</span>
-              <div className="action-group">
+            <ActionBar
+              summary={<WorkbenchSummary items={[
+                { label: "目标", value: <span title={disperseContractAddress}>{shortenAddress(disperseContractAddress)}</span> },
+                ...(preflight?.status === "ready" ? [{ label: "执行费上限", value: estimatedFee }] : [])
+              ]} />}
+              feedback={(
+                <>
+                  {!wallet.connected || !effectiveRpcEndpoint ? <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : "请输入 HTTPS RPC"}</span> : null}
+          {message ? (
+            <Alert variant={status === "error" ? "destructive" : "default"}>
+              <AlertTitle>{status === "ready"
+                ? "部署校验通过"
+                : status === "success"
+                  ? "部署与 runtime 验证完成"
+                  : status === "already-deployed"
+                    ? "合约已存在"
+                    : status === "error"
+                      ? submittedButUncertain ? "禁止直接重试部署" : "部署已阻断"
+                      : "部署处理中"}</AlertTitle>
+              <AlertDescription>{message}{submittedButUncertain ? "。交易已提交，请先核对哈希与目标地址状态。" : ""}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {hash ? (
+            <div className="deployment-transaction" aria-label="部署交易">
+              <div>
+                <span>交易哈希</span>
+                <strong title={hash}>{explorerUrl
+                  ? <a href={explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(hash)}</a>
+                  : shortenAddress(hash)}</strong>
+              </div>
+            </div>
+          ) : null}
+
+
+                </>
+              )}
+            >
                 {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
                   <Button disabled={!canValidate} onClick={() => void runValidation()} type="button">
                     {status === "idle" ? "校验部署条件" : "重新校验"}
@@ -693,91 +740,60 @@ export function EvmContractDeployPage() {
                     <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
                   </>
                 ) : null}
-                {submittedButUncertain ? (
-                  <span className="collection-terminal-hint">核对交易状态后才可再次部署。</span>
-                ) : null}
-              </div>
-            </div>
+            </ActionBar>
           )}
           title="部署配置"
         >
           <div className="form workbench-form">
-            <div className="workbench-form__primary">
-              <h3 className="workbench-form__group">部署网络</h3>
-            <Tabs
-              aria-label="网络来源"
-              onValueChange={(value) => {
-                if (value === "known" || value === "custom") selectNetworkSource(value);
-              }}
-              value={networkSource}
-            >
-              <TabsList>
-                <TabsTrigger disabled={configurationLocked} value="known">已知网络</TabsTrigger>
-                <TabsTrigger disabled={configurationLocked} value="custom">自定义 RPC</TabsTrigger>
-              </TabsList>
-              <TabsContent value="known">
+            <WorkbenchSection title="部署网络">
+              <div className="config-grid">
+                {networkSource === "known" ? (
+                  <Field>
+                    <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
+                    <SearchableSelect
+                      disabled={configurationLocked}
+                      emptyMessage="未找到匹配的 EVM 链"
+                      id="deployKnownNetwork"
+                      listboxLabel="已知 EVM 网络"
+                      metaLabel="Chain ID"
+                      metaPrefix="ID "
+                      onChange={selectKnownNetwork}
+                      options={knownNetworkOptions}
+                      placeholder="搜索链名称或 Chain ID"
+                      searchLabel="搜索已知 EVM 网络"
+                      value={knownNetworkId}
+                    />
+                  </Field>
+                ) : (
+                  <Field>
+                    <FieldLabel htmlFor="deployDiscoveredNetwork">网络</FieldLabel>
+                    <Input id="deployDiscoveredNetwork" readOnly value={displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "校验后识别网络"} />
+                  </Field>
+                )}
                 <Field>
-                  <FieldLabel htmlFor="deployKnownNetwork">网络</FieldLabel>
-                  <SearchableSelect
-                    disabled={configurationLocked}
-                    emptyMessage="未找到匹配的 EVM 链"
-                    id="deployKnownNetwork"
-                    listboxLabel="已知 EVM 网络"
-                    metaLabel="Chain ID"
-                    metaPrefix="ID "
-                    onChange={selectKnownNetwork}
-                    options={knownNetworkOptions}
-                    placeholder="搜索链名称或 Chain ID"
-                    searchLabel="搜索已知 EVM 网络"
-                    value={knownNetworkId}
-                  />
-                </Field>
-              </TabsContent>
-              <TabsContent value="custom">
-                <Field>
-                  <FieldLabel htmlFor="deployCustomRpcEndpoint">HTTPS RPC</FieldLabel>
+                  <FieldLabel aria-label="HTTPS RPC" htmlFor={networkSource === "known" ? "deployKnownRpcEndpoint" : "deployCustomRpcEndpoint"}>HTTPS RPC <HelpTooltip label="部署 RPC">自定义 RPC 需使用 HTTPS。校验会确认 Chain ID、CreateX 与部署目标，不会发送交易。</HelpTooltip></FieldLabel>
                   <Input
                     autoComplete="off"
                     disabled={configurationLocked}
-                    id="deployCustomRpcEndpoint"
+                    id={networkSource === "known" ? "deployKnownRpcEndpoint" : "deployCustomRpcEndpoint"}
                     inputMode="url"
-                    onChange={(event) => {
-                      setRpcEndpoint(event.target.value);
-                      resetDiscoveredNetwork();
-                    }}
+                    onChange={(event) => { setRpcEndpoint(event.target.value); resetDiscoveredNetwork(); }}
                     placeholder="https://your-evm-rpc.example"
+                    readOnly={networkSource === "known"}
                     spellCheck={false}
                     type="url"
                     value={rpcEndpoint}
                   />
                 </Field>
-              </TabsContent>
-            </Tabs>
-            </div>
-
-            <div className="workbench-form__secondary">
-              <h3 className="workbench-form__group">RPC 与 Gas</h3>
-            {networkSource === "known" ? (
-              <Field>
-                <FieldLabel htmlFor="deployKnownRpcEndpoint">HTTPS RPC</FieldLabel>
-                <Input
-                  autoComplete="off"
-                  disabled={configurationLocked}
-                  id="deployKnownRpcEndpoint"
-                  inputMode="url"
-                  readOnly
-                  spellCheck={false}
-                  type="url"
-                  value={rpcEndpoint}
-                />
-              </Field>
-            ) : null}
-
+              </div>
+            </WorkbenchSection>
+            <WorkbenchSection title="Gas">
             <EvmGasSettings
               disabled={configurationLocked}
               gas={gas}
               onSettingsChange={resetForEdit}
             />
+            </WorkbenchSection>
 
               <AdvancedSettings disabled={configurationLocked} label="浏览器与链元数据">
             <Field data-invalid={!blockExplorerUrlIsValid || undefined}>
@@ -939,40 +955,6 @@ export function EvmContractDeployPage() {
               </FieldGroup>
             ) : null}
               </AdvancedSettings>
-            </div>
-
-          {message ? (
-            <Alert variant={status === "error" ? "destructive" : "default"}>
-              <AlertTitle>{status === "ready"
-                ? "部署校验通过"
-                : status === "success"
-                  ? "部署与 runtime 验证完成"
-                  : status === "already-deployed"
-                    ? "合约已存在"
-                    : status === "error"
-                      ? submittedButUncertain ? "交易状态待确认" : "部署已阻断"
-                      : "部署处理中"}</AlertTitle>
-              <AlertDescription>{message}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {hash ? (
-            <div className="summary-list" aria-label="部署交易">
-              <div>
-                <span>交易哈希</span>
-                <strong title={hash}>{explorerUrl
-                  ? <a href={explorerUrl} rel="noreferrer" target="_blank">{shortenAddress(hash)}</a>
-                  : shortenAddress(hash)}</strong>
-              </div>
-            </div>
-          ) : null}
-
-          {submittedButUncertain ? (
-            <Alert>
-              <AlertTitle>禁止直接重试部署</AlertTitle>
-              <AlertDescription>交易已提交。请先在区块浏览器或 RPC 中核对哈希与目标地址状态。</AlertDescription>
-            </Alert>
-          ) : null}
 
           {deploymentComplete && network ? (
             <FieldGroup aria-label="加入 EVM 分发">

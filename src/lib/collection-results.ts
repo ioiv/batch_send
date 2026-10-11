@@ -8,6 +8,7 @@ export type CollectionResultStatus =
   | "error";
 
 export type CollectionDisplayResult = {
+  phase?: "token" | "nft" | "native";
   address: string;
   amount?: string;
   asset: string;
@@ -27,7 +28,7 @@ export function shortenTransactionHash(hash: string) {
 }
 
 export function sanitizeRoundArchiveText(value: string) {
-  return value.replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, "[敏感 URL 已隐藏]");
+  return value.replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, "[敏感 URL 已隐藏]").replace(/\b(?:0x)?[a-fA-F0-9]{64}\b/g, "[敏感数据已隐藏]");
 }
 
 export type CollectionResultCounts = {
@@ -89,6 +90,7 @@ function escapeCsvCell(value: string) {
 }
 
 export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
+  const includePhase = results.some(result => result.phase);
   const header = ["label", "address", "asset", "amount", "status", "message", "transaction_hash", "explorer_url"];
   const rows = results.map((result) => [
     result.label || "",
@@ -101,6 +103,7 @@ export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
     result.explorerUrl || ""
   ]);
 
+  if (includePhase) { header.push("phase"); rows.forEach((row, index) => row.push(results[index].phase || "")); }
   return [header, ...rows]
     .map((row) => row.map((cell) => escapeCsvCell(cell)).join(","))
     .join("\r\n");

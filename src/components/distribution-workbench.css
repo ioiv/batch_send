@@ -1,0 +1,201 @@
+.distribution-generator,
+.distribution-list-editor {
+  min-width: 0;
+}
+
+.distribution-generator__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.distribution-generator__heading h3 {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: var(--weight-strong);
+}
+
+.distribution-generator .generator-heading-actions {
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.distribution-generator .distribution-list-editor {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.distribution-generator .address-only-input {
+  min-height: 12rem;
+  max-height: 28rem;
+  overflow: auto;
+}
+
+.distribution-list-editor .distribution-amount-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.distribution-amount-row > [data-slot="tabs-list"] {
+  margin: 0;
+}
+
+.distribution-amount-row > [data-slot="tabs-content"] {
+  min-width: 0;
+  margin: 0;
+}
+
+.distribution-amount-row .generator-amount-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.65rem;
+}
+
+.distribution-amount-row .generator-amount-grid[data-mode="random"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.distribution-amount-row input[type="number"] {
+  max-width: none;
+  width: 100%;
+}
+
+.distribution-generator__notice,
+.distribution-inline-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: var(--text-caption);
+  color: var(--muted-foreground);
+}
+
+.distribution-generator__notice[data-tone="error"] {
+  color: var(--destructive);
+}
+
+.distribution-summary.distribution-summary--compact {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.distribution-summary.distribution-summary--compact dl {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  margin: 0;
+}
+
+.distribution-summary.distribution-summary--compact dl > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  min-width: 0;
+}
+
+.distribution-summary.distribution-summary--compact dt {
+  font-size: var(--text-caption);
+  color: var(--muted-foreground);
+}
+
+.distribution-summary.distribution-summary--compact dd {
+  font-size: var(--text-label);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.distribution-summary.distribution-summary--compact [data-alert="true"] {
+  color: var(--destructive);
+}
+
+.distribution-summary.distribution-summary--compact button {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.distribution-summary.distribution-summary--compact button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.distribution-config-grid > .evm-network-row,
+.distribution-config-grid > .network-rpc-row,
+.distribution-config-grid > .distribution-inline-note,
+.distribution-config-grid > .distribution-remove-network {
+  grid-column: 1 / -1;
+}
+
+.distribution-asset-controls,
+.distribution-gas-settings {
+  min-width: 0;
+}
+
+.distribution-asset-controls .summary-list {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+}
+
+.distribution-asset-controls .summary-list > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.distribution-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: var(--text-caption);
+}
+
+.distribution-status__message {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 36rem) {
+  .distribution-list-editor .distribution-amount-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .distribution-generator .generator-heading-actions {
+    justify-content: flex-start;
+  }
+
+  .distribution-generator__heading {
+    align-items: flex-start;
+  }
+}

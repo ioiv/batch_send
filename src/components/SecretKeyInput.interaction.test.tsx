@@ -7,6 +7,7 @@ import { Keypair } from "@solana/web3.js";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecretKeyInput, type SecretKeyInputHandle } from "@/components/SecretKeyInput";
+import { buildWalletAssetOverview } from "@/lib/wallet-asset-overview";
 
 afterEach(() => {
   cleanup();
@@ -24,6 +25,50 @@ async function importWallets(user: ReturnType<typeof userEvent.setup>, secret: s
 }
 
 describe("SecretKeyInput DOM-only lifecycle", () => {
+  it("hands off every wallet and restores just the selected subset without storage", async () => {
+    const user = userEvent.setup();
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const ref = createRef<SecretKeyInputHandle>();
+    const secrets = ["71", "72"].map((byte) => (`0x${byte.repeat(32)}`) as `0x${string}`);
+    const addresses = secrets.map((secret) => privateKeyToAccount(secret).address);
+    const { unmount } = render(<SecretKeyInput mode="evm" ref={ref} />);
+    await importWallets(user, secrets.join("\n"));
+    await user.click(screen.getByRole("checkbox", { name: new RegExp(addresses[1], "i") }));
+    const snapshot = ref.current!.handoff();
+    expect(snapshot).toEqual({ keys: secrets.join("\n"), selectedIds: [addresses[0].toLowerCase()] });
+    const store = document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!;
+    unmount();
+    expect(store.value).toBe("");
+    const readInitialWallets = vi.fn(() => snapshot);
+    const mounted = render(<SecretKeyInput mode="evm" ref={ref} readInitialWallets={readInitialWallets} />);
+    expect(screen.getByText("已选择 1 / 2")).toBeVisible();
+    expect(ref.current!.read()).toBe(secrets[0]);
+    expect(ref.current!.handoff().keys).toBe(secrets.join("\n"));
+    mounted.rerender(<SecretKeyInput mode="evm" ref={ref} readInitialWallets={readInitialWallets} />);
+    expect(readInitialWallets).toHaveBeenCalledTimes(1);
+    expect(storageWrite).not.toHaveBeenCalled();
+  });
+
+  it("never selects incomplete scans or positive native dust as zero balances", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const secrets = ["73", "74", "75", "76"].map((byte) => (`0x${byte.repeat(32)}`) as `0x${string}`);
+    const ids = secrets.map((secret) => privateKeyToAccount(secret).address.toLowerCase());
+    const zero = { holdings: [], complete: true, native: { symbol: "ETH", raw: 0n, decimals: 18 } };
+    const overviews = {
+      [ids[0]]: buildWalletAssetOverview(zero),
+      [ids[1]]: buildWalletAssetOverview({ ...zero, complete: false }),
+      [ids[2]]: buildWalletAssetOverview({ ...zero, native: { ...zero.native, raw: 1n } }),
+      [ids[3]]: buildWalletAssetOverview({ ...zero, native: { ...zero.native, raw: null } })
+    };
+    render(<SecretKeyInput mode="evm" ref={ref} walletAssetOverviews={overviews} />);
+    await importWallets(user, secrets.join("\n"));
+    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    expect(ref.current!.read()).toBe(secrets[0]);
+    expect(screen.getByText("已选择 1 / 4")).toBeVisible();
+    expect(screen.getAllByText("扫描不完整")).toHaveLength(2);
+  });
+
   it("imports, selects, deletes, reads and clears without writing storage", async () => {
     const user = userEvent.setup();
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");

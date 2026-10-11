@@ -1,4 +1,4 @@
-import { SolCollectionPage } from "../pages/SolCollectionPage";
+import { CollectionModePage } from "../pages/CollectionModePage";
 import { renderSensitivePage } from "./render-sensitive";
 
-renderSensitivePage(<SolCollectionPage />);
+renderSensitivePage(<CollectionModePage kind="solana" />);

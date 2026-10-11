@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loading03Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+export { CompactNotice, NoticeTitle, NoticeDetail } from "./CompactNotice";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,23 +45,91 @@ export function WorkbenchPanel({
   children,
   className = "",
   footer,
+  segmented = false,
+  summary,
   title
 }: {
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
   footer?: ReactNode;
+  segmented?: boolean;
+  summary?: ReactNode;
   title: ReactNode;
 }) {
   return (
-    <Card className={`workbench-panel${footer ? " workbench-panel--actionable" : ""} overflow-visible ${className}`.trim()}>
+    <Card className={`workbench-panel${footer ? " workbench-panel--actionable" : ""}${segmented ? " workbench-panel--segmented" : ""} overflow-visible ${className}`.trim()}>
       <CardHeader className="workbench-panel__header">
-        <CardTitle>{title}</CardTitle>
+        <div className="workbench-panel__heading"><CardTitle>{title}</CardTitle>{summary ? <div className="workbench-panel__summary">{summary}</div> : null}</div>
         {actions ? <div className="workbench-panel__actions">{actions}</div> : null}
       </CardHeader>
       <CardContent className="workbench-panel__content">{children}</CardContent>
       {footer ? <CardFooter className="workbench-panel__footer">{footer}</CardFooter> : null}
     </Card>
+  );
+}
+
+export function WorkbenchSection({ title, actions, summary, children, className = "" }: {
+  title?: ReactNode;
+  actions?: ReactNode;
+  summary?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`workbench-section ${className}`.trim()}>
+      {title || actions || summary ? (
+        <div className="workbench-section__header">
+          <div className="workbench-section__heading">{title ? <h2>{title}</h2> : null}{summary ? <div className="workbench-panel__summary">{summary}</div> : null}</div>
+          {actions ? <div className="workbench-panel__actions">{actions}</div> : null}
+        </div>
+      ) : null}
+      <div className="workbench-section__content">{children}</div>
+    </section>
+  );
+}
+
+export function ActionBar({ summary, feedback, children, className = "" }: {
+  summary?: ReactNode;
+  feedback?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`workbench-action-bar ${className}`.trim()}>
+      <div className="workbench-action-bar__context">{summary}{feedback}</div>
+      {children ? <div className="workbench-action-bar__actions">{children}</div> : null}
+    </div>
+  );
+}
+
+export function WorkbenchSummary({ items, className = "" }: {
+  items: readonly { label: ReactNode; value: ReactNode }[];
+  className?: string;
+}) {
+  return (
+    <dl className={`workbench-inline-summary ${className}`.trim()}>
+      {items.map((item, index) => <div key={index}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
+    </dl>
+  );
+}
+
+export function ExecutionLogDialog({ children, disabled = false, title = "执行日志", triggerLabel = "查看日志", actions }: {
+  children: ReactNode;
+  disabled?: boolean;
+  title?: string;
+  triggerLabel?: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger disabled={disabled} render={<Button disabled={disabled} type="button" variant="outline" size="sm" />}>{triggerLabel}</DialogTrigger>
+      <DialogContent className="execution-log-dialog">
+        <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription className="sr-only">查看任务记录、交易状态和详细原因</DialogDescription></DialogHeader>
+        {actions ? <div className="execution-log-dialog__actions">{actions}</div> : null}
+        <div className="execution-log-dialog__content">{children}</div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

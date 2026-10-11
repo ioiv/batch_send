@@ -66,7 +66,7 @@ export function getIndexedCollectionResults(
 export function getCollectionResultSourceCount(results: CollectionDisplayResult[]) {
   return new Set(
     results
-      .map((result) => result.address.trim().toLowerCase())
+      .map((result) => /^0x[\da-f]{40}$/i.test(result.address.trim()) ? result.address.trim().toLowerCase() : result.address.trim())
       .filter((address) => Boolean(address) && address !== "—")
   ).size;
 }
@@ -145,7 +145,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
                         {statusLabels[result.status]}
                       </Badge>
                     </TableCell>
-                    <TableCell>{result.asset}</TableCell>
+                    <TableCell>{result.phase ? <Badge variant="outline">{result.phase === "token" ? "Token" : result.phase === "nft" ? "NFT" : "原生币"}</Badge> : null} {result.asset}</TableCell>
                     <TableCell className="mono">{result.amount || "—"}</TableCell>
                     <TableCell>
                       {result.explorerUrl && result.hash ? (

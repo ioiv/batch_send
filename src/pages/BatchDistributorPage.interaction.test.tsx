@@ -154,10 +154,8 @@ describe("BatchDistributorPage network safety", () => {
 
     fireEvent.change(rpcInput, { target: { value: "h" } });
 
-    const invalidRpcTitle = await screen.findByText("RPC 地址无效");
-    expect(invalidRpcTitle).toBeVisible();
-    expect(within(invalidRpcTitle.closest("[role='alert']") as HTMLElement)
-      .getByText("RPC 地址无效：请输入完整的 HTTP 或 HTTPS 地址")).toBeVisible();
+    expect(await screen.findByText("RPC 地址无效：请输入完整的 HTTP 或 HTTPS 地址")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("RPC 地址无效");
     expect(rpcInput).toHaveAttribute("aria-invalid", "true");
     expect(solanaMocks.connectionEndpoints).toHaveLength(connectionCount);
     expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
@@ -315,6 +313,8 @@ describe("BatchDistributorPage network safety", () => {
       .getByRole("button", { name: "确认并签名" }));
 
     expect(await screen.findByText(/已完成 1 笔交易确认/)).toBeVisible();
+    expect(screen.queryByRole("link", { name: /交易 1:/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开预检与结果" }));
     expect(screen.getByRole("link", { name: /交易 1:/ })).toHaveAttribute("href", expect.stringContaining("solana-signature-1"));
     expect(screen.queryByRole("button", { name: "清空清单" })).not.toBeInTheDocument();
 
@@ -352,7 +352,7 @@ describe("BatchDistributorPage network safety", () => {
       .getByRole("button", { name: "确认并签名" }));
 
     expect(await screen.findByText(/已提交 1\/2 笔交易/)).toBeVisible();
-    expect(screen.getByText("禁止直接重试")).toBeVisible();
+    expect(screen.getByRole("button", { name: "说明：禁止直接重试" })).toBeVisible();
     expect(editor).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toBeVisible();

@@ -7,7 +7,6 @@ import {
   useState,
   type ChangeEvent
 } from "react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -32,6 +31,10 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmActionDialog } from "./WorkbenchPrimitives";
+import { CompactNotice } from "./CompactNotice";
+import { HelpTooltip } from "./HelpTooltip";
+import { WalletAssetCell, WalletNativeAssetCell } from "./WalletAssetCell";
+import { buildWalletAssetOverview, isWalletOverviewZeroBalance, type WalletAssetOverview } from "../lib/wallet-asset-overview";
 import { parseEvmPrivateKeyInput } from "../lib/evm-collection";
 import {
   shortenTransactionHash,
@@ -45,7 +48,11 @@ export type SecretKeyInputHandle = {
   clear: () => void;
   focus: () => void;
   read: () => string;
+  handoff: () => SecretKeyInputSnapshot;
 };
+
+/** Transient handoff between workbench modes; never written to storage. */
+export type SecretKeyInputSnapshot = { keys: string; selectedIds: string[] };
 
 export type SecretKeyInputChangeReason = "import" | "remove" | "selection";
 
@@ -194,6 +201,28 @@ function shortenAddress(value: string, edge = 8) {
   return value.length > edge * 2 + 1 ? `${value.slice(0, edge)}…${value.slice(-edge)}` : value;
 }
 
+function legacyBalanceOverview(balances: readonly WalletBalanceItem[]): WalletAssetOverview | undefined {
+  if (!balances.length) return undefined;
+  const asRaw = (balance: WalletBalanceItem) => {
+    if (!/^\d+(?:\.\d+)?$/u.test(balance.amount)) return { raw: null, decimals: null };
+    const [whole, fraction = ""] = balance.amount.split(".");
+    return { raw: BigInt(`${whole}${fraction}`), decimals: fraction.length };
+  };
+  const nativeIndex = balances.findIndex((balance) => !balance.contractAddress);
+  const native = nativeIndex >= 0 ? balances[nativeIndex] : null;
+  return buildWalletAssetOverview({
+    complete: balances.every((balance) => asRaw(balance).raw !== null),
+    native: native ? { symbol: native.symbol, ...asRaw(native) } : null,
+    holdings: balances.filter((_, index) => index !== nativeIndex).map((balance, index) => ({
+      kind: "token",
+      key: balance.contractAddress || `legacy:${index}:${balance.symbol}`,
+      address: balance.contractAddress || balance.symbol,
+      symbol: balance.symbol,
+      ...asRaw(balance)
+    }))
+  });
+}
+
 function WalletStatusSummary({
   accessibleName,
   address,
@@ -318,15 +347,18 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   onDirty?: (reason: SecretKeyInputChangeReason, addresses?: readonly string[]) => void;
   onImportingChange?: (importing: boolean) => void;
   onLineCountChange?: (lineCount: number) => void;
+  readInitialWallets?: () => SecretKeyInputSnapshot | null;
+  walletAssetOverviews?: Readonly<Record<string, WalletAssetOverview>>;
   walletBalances?: Readonly<Record<string, readonly WalletBalanceItem[]>>;
   walletStatuses?: Readonly<Record<string, readonly WalletExecutionItem[]>>;
 }>(function SecretKeyInput({
-  compactStatuses = false,
   disabled = false,
   mode,
   onDirty,
   onImportingChange,
   onLineCountChange,
+  readInitialWallets,
+  walletAssetOverviews = {},
   walletBalances = {},
   walletStatuses = {}
 }, ref) {
@@ -339,6 +371,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const secretStoreRef = useRef<HTMLTextAreaElement>(null);
   const selectedIdsRef = useRef<Set<string>>(new Set());
   const walletListRef = useRef<HTMLDivElement>(null);
+  const initialWalletsReadRef = useRef(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draftLineCount, setDraftLineCount] = useState(0);
   const [fileStatus, setFileStatus] = useState<
@@ -424,6 +457,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         .map((wallet, index) => selected.has(wallet.id) ? parsed.lines[index] : "")
         .filter(Boolean)
         .join("\n");
+    },
+    handoff() {
+      return {
+        keys: secretStoreRef.current?.value || "",
+        selectedIds: [...selectedIdsRef.current]
+      };
     }
   }), [clearDomValue, mode]);
 
@@ -480,11 +519,16 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     }
   };
 
-  const importWallets = () => {
-    const draft = draftTextareaRef.current?.value || "";
+  const importWallets = useCallback((initialKeys?: string, initialSelectedIds?: readonly string[]) => {
+    const draft = initialKeys ?? draftTextareaRef.current?.value ?? "";
     if (!draft.trim()) {
       setImportIssues(["请粘贴私钥或选择钱包文件"]);
       draftTextareaRef.current?.focus();
+      return;
+    }
+
+    if (draft.length > maximumSecretInputCharacters || countSecretInputLines(draft) > maximumSecretInputLines) {
+      setImportIssues([`来源钱包不能超过 ${maximumSecretInputLines.toLocaleString("zh-CN")} 个`]);
       return;
     }
 
@@ -508,8 +552,10 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
 
     if (secretStoreRef.current) secretStoreRef.current.value = parsed.lines.join("\n");
     const existingIds = new Set(wallets.map((wallet) => wallet.id));
-    const nextSelectedIds = new Set(selectedIdsRef.current);
-    parsed.wallets.forEach((wallet) => {
+    const nextSelectedIds = initialSelectedIds
+      ? new Set(initialSelectedIds.filter((id) => parsed.wallets.some((wallet) => wallet.id === id)))
+      : new Set(selectedIdsRef.current);
+    if (!initialSelectedIds) parsed.wallets.forEach((wallet) => {
       if (!existingIds.has(wallet.id)) nextSelectedIds.add(wallet.id);
     });
     setWallets(parsed.wallets);
@@ -521,7 +567,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     if (parsed.wallets.some((wallet) => !existingIds.has(wallet.id))) onDirty?.("import");
     setDialogOpen(false);
     resetDraft();
-  };
+  }, [mode, onDirty, resetDraft, updateSelectedIds, wallets]);
+
+  useEffect(() => {
+    if (initialWalletsReadRef.current) return;
+    initialWalletsReadRef.current = true;
+    const snapshot = readInitialWallets?.();
+    if (snapshot?.keys) importWallets(snapshot.keys, snapshot.selectedIds);
+  }, [importWallets, readInitialWallets]);
 
   const copyWalletAddress = async (wallet: ImportedWallet) => {
     const copied = await copyText(wallet.address);
@@ -571,16 +624,21 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     || walletBalances[wallet.address]
     || walletBalances[wallet.address.toLowerCase()]
     || [];
+  const getWalletOverview = (wallet: ImportedWallet) => walletAssetOverviews[wallet.id]
+    || walletAssetOverviews[wallet.address]
+    || walletAssetOverviews[wallet.address.toLowerCase()];
 
   // Only wallets whose every queried balance is exactly zero; unread or
   // failed reads never count, because the usual next step is deleting them.
   const zeroBalanceWalletIds = wallets
     .filter((wallet) => {
+      const overview = getWalletOverview(wallet);
+      if (overview) return isWalletOverviewZeroBalance(overview);
       const balances = getWalletBalances(wallet);
       return balances.length > 0 && balances.every((balance) => balance.zero === true);
     })
     .map((wallet) => wallet.id);
-  const balancesKnown = wallets.some((wallet) => getWalletBalances(wallet).length > 0);
+  const balancesKnown = wallets.some((wallet) => getWalletOverview(wallet)?.scanned || getWalletBalances(wallet).length > 0);
 
   const selectZeroBalanceWallets = () => {
     updateSelectedIds(new Set(zeroBalanceWalletIds));
@@ -628,7 +686,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       />
 
       <div className="secret-input-heading">
-        <FieldLabel>来源钱包</FieldLabel>
+        <div className="secret-input-heading__label">
+          <FieldLabel>来源钱包</FieldLabel>
+          <HelpTooltip label="来源钱包与私钥说明">
+            私钥仅在当前页面中解析和签名；页面关闭或刷新后清除。钱包列表只展示地址，支持粘贴和文件导入，最多 1,000 个钱包。
+          </HelpTooltip>
+        </div>
         <span aria-live="polite">
           {wallets.length ? <Badge variant="outline">已选择 {selectedIds.size} / {wallets.length}</Badge> : null}
         </span>
@@ -644,7 +707,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         <DialogContent className="secret-import-dialog">
           <DialogHeader>
             <DialogTitle>导入来源钱包</DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="sr-only">
               私钥仅在当前页面内存中解析和签名。关闭或刷新页面后会清除。
             </DialogDescription>
           </DialogHeader>
@@ -694,21 +757,19 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             </span>
           </div>
           {fileStatus.kind === "error" ? (
-            <Alert variant="destructive"><AlertDescription>{fileStatus.message}</AlertDescription></Alert>
+            <CompactNotice summary={fileStatus.message} tone="error">{fileStatus.message}</CompactNotice>
           ) : null}
           {importIssues.length ? (
-            <Alert variant="destructive">
-              <AlertDescription>
-                <ul>{importIssues.slice(0, 6).map((issue) => <li key={issue}>{issue}</li>)}</ul>
-              </AlertDescription>
-            </Alert>
+            <CompactNotice summary={importIssues.length === 1 ? importIssues[0] : `${importIssues.length} 项导入问题`} tone="error">
+              <ul>{importIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+            </CompactNotice>
           ) : null}
           <DialogFooter>
             <Button onClick={() => handleDialogOpenChange(false)} type="button" variant="outline">取消</Button>
             <Button
               aria-label="确认导入"
               disabled={!draftLineCount || draftLineCount > maximumSecretInputLines}
-              onClick={importWallets}
+              onClick={() => importWallets()}
               type="button"
             >
               {draftLineCount ? `导入 ${draftLineCount.toLocaleString("zh-CN")} 个钱包` : "确认导入"}
@@ -754,6 +815,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
               </div>
             ) : null}
           </div>
+          <div aria-hidden="true" className="imported-wallet-heading">
+            <span />
+            <span>钱包地址</span>
+            <span>原生币余额</span>
+            <span>代币 / NFT</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
           <div
             className="imported-wallet-list"
             onScroll={handleWalletListScroll}
@@ -762,6 +831,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
           >
             {visibleWallets.map((wallet) => {
               const balances = getWalletBalances(wallet);
+              const overview = getWalletOverview(wallet) || legacyBalanceOverview(balances);
               const statuses = walletStatuses[wallet.id]
                 || walletStatuses[wallet.address]
                 || walletStatuses[wallet.address.toLowerCase()]
@@ -798,41 +868,16 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                       </Button>
                     </div>
                   </div>
-                  {balances.length ? (
-                    <div aria-label={`${accessibleName} 余额`} className="imported-wallet-balances">
-                      {balances.map((balance) => (
-                        <span key={balance.contractAddress || balance.symbol}>
-                          <strong>{balance.amount}</strong>
-                          <small>{balance.symbol}</small>
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
+                  <WalletNativeAssetCell accessibleName={accessibleName} overview={overview} />
+                  <WalletAssetCell accessibleName={accessibleName} overview={overview} />
                   {statuses.length ? (
-                    compactStatuses ? (
                       <WalletStatusSummary
                         accessibleName={accessibleName}
                         address={wallet.address}
                         label={wallet.label}
                         statuses={statuses}
                       />
-                    ) : (
-                      <div aria-label={`${accessibleName} 归集状态`} className="imported-wallet-statuses">
-                        {statuses.map((status, index) => (
-                          <div className="imported-wallet-status" data-status={status.status} key={`${status.asset}-${index}`}>
-                            <Badge variant={status.status === "error" ? "destructive" : "outline"}>
-                              {walletStatusLabels[status.status]}
-                            </Badge>
-                            <strong>{status.asset}{status.amount ? ` · ${status.amount}` : ""}</strong>
-                            <span className="imported-wallet-status__message" title={status.message}>{status.message}</span>
-                            {status.explorerUrl && status.hash ? (
-                              <a href={status.explorerUrl} rel="noreferrer" target="_blank" title={status.hash}>查看交易</a>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  ) : null}
+                  ) : <span aria-label={`${accessibleName} 归集状态`} className="imported-wallet-status-placeholder">未执行</span>}
                   <Button
                     aria-label={`删除 ${accessibleName}`}
                     className="imported-wallet-remove"

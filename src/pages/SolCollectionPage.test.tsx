@@ -206,6 +206,21 @@ async function confirmExecution(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("SolCollectionPage workbench", () => {
+  it("hands selected source wallets and configuration to automatic mode", async () => {
+    const automatic = vi.fn();
+    const user = userEvent.setup();
+    render(<SolCollectionPage onAutomatic={automatic} initialConfig={{ networkId: "mainnet-beta", rpcEndpoint: "https://rpc.example.com", targetAddress }} />);
+    await importSolSecret(user);
+    await user.click(screen.getByRole("tab", { name: "一键归集" }));
+    expect(automatic).toHaveBeenCalledOnce();
+    const [snapshot, config, rounds] = automatic.mock.calls[0];
+    expect(snapshot.keys).not.toBe("");
+    expect(snapshot.selectedIds).toContain(firstSourceAddress);
+    expect(config).toEqual({ networkId: "mainnet-beta", rpcEndpoint: "https://rpc.example.com", targetAddress });
+    expect(rounds).toEqual([]);
+    expect(solMocks.collect).not.toHaveBeenCalled();
+  });
+
   it("uses an optional Token list like EVM collection and defaults a blank list to SOL", async () => {
     const user = userEvent.setup();
     render(<SolCollectionPage />);
@@ -295,11 +310,11 @@ describe("SolCollectionPage workbench", () => {
     const walletRow = within(walletList)
       .getByTitle(firstSourceAddress)
       .closest('[role="listitem"]') as HTMLElement;
-    const balances = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*余额`));
-    const balanceItems = Array.from(balances.children);
-    expect(balanceItems).toHaveLength(2);
-    expect(balanceItems[0]).toHaveTextContent("SOL");
-    expect(balanceItems[1]).toHaveTextContent("SPL");
+    const balances = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*原生币余额$`));
+    expect(balances).toHaveTextContent("SOL");
+    const assets = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*代币与 NFT 概览$`));
+    expect(assets.querySelectorAll(".wallet-asset-cell__token")).toHaveLength(1);
+    expect(assets).toHaveTextContent("1");
 
     await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
@@ -341,7 +356,7 @@ describe("SolCollectionPage workbench", () => {
     await user.type(screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
     resolveFirstQuery?.(holdingsResult([tokenHolding()], 50_000_000n));
 
-    await waitFor(() => expect(screen.queryByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*余额`)))
+    await waitFor(() => expect(screen.queryByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*原生币余额$`)))
       .not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
     await waitFor(() => expect(solMocks.discoverHoldings).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -357,7 +372,7 @@ describe("SolCollectionPage workbench", () => {
 
     await importSolSecret(user);
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
-    const balanceLabel = new RegExp(`来源一.*${firstSourceAddress}.*余额`);
+    const balanceLabel = new RegExp(`来源一.*${firstSourceAddress}.*原生币余额$`);
     expect(await screen.findByLabelText(balanceLabel)).toBeVisible();
 
     const walletCheckbox = screen.getByRole("checkbox", { name: new RegExp(firstSourceAddress) });
@@ -427,15 +442,13 @@ describe("SolCollectionPage workbench", () => {
     })));
     const walletList = screen.getByLabelText("已导入来源钱包");
     const walletRow = within(walletList).getByTitle(firstSourceAddress).closest('[role="listitem"]') as HTMLElement;
-    const balances = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*余额`));
-    const balanceItems = Array.from(balances.children);
-
-    expect(balanceItems).toHaveLength(2);
-    expect(balanceItems[0]).toHaveTextContent("0");
-    expect(balanceItems[0]).toHaveTextContent("SOL");
-    expect(balanceItems[1]).toHaveTextContent("3");
-    expect(balanceItems[1]).toHaveTextContent("SPL");
-    expect(balanceItems[0].compareDocumentPosition(balanceItems[1]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const balances = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*原生币余额$`));
+    const assets = within(walletRow).getByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*代币与 NFT 概览$`));
+    expect(balances).toHaveTextContent("0");
+    expect(balances).toHaveTextContent("SOL");
+    expect(assets.querySelectorAll(".wallet-asset-cell__token")).toHaveLength(1);
+    expect(assets).toHaveTextContent("3");
+    expect(balances.compareDocumentPosition(assets) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("uses the Token list directly and executes every underlying token-account job", async () => {
@@ -577,7 +590,9 @@ describe("SolCollectionPage workbench", () => {
 
     await waitFor(() => expect(solMocks.collectTokenJobs).toHaveBeenCalledTimes(1));
     expect([...solMocks.createTokenJobs.mock.calls[0][0].selectedHoldingIds]).toEqual([ready.id]);
-    expect(await screen.findByText("TransferHook 账户暂不支持归集")).toBeVisible();
+    const walletList = screen.getByLabelText("已导入来源钱包");
+    await user.click(within(walletList).getByRole("button", { name: /归集详情/ }));
+    expect(await within(screen.getByRole("dialog", { name: "归集详情" })).findByText("TransferHook 账户暂不支持归集")).toBeVisible();
   });
 
   it("keeps progress controls visible and cooperatively pauses the collection runner", async () => {
@@ -611,7 +626,7 @@ describe("SolCollectionPage workbench", () => {
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("已完成")).toBeVisible();
     expect(within(walletList).getByText("SOL · 0.999995")).toBeVisible();
-    expect(within(walletList).getByRole("link", { name: "查看交易" })).toBeVisible();
+    expect(within(walletList).getByRole("link", { name: /^查看交易/ })).toBeVisible();
     expect(screen.queryByRole("table", { name: "归集结果" })).not.toBeInTheDocument();
 
     const target = screen.getByRole("textbox", { name: "目标钱包" });
@@ -705,7 +720,7 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toBeVisible();
   });
 
-  it("groups the form so the two columns hold what they claim to", () => {
+  it("groups assets and configuration in successive single-column sections", () => {
     const { container } = render(<SolCollectionPage />);
     const subject = container.querySelector(".workbench-form__primary");
     const config = container.querySelector(".workbench-form__secondary");

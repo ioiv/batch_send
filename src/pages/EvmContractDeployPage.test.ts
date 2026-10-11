@@ -162,6 +162,10 @@ describe("EvmContractDeployPage safety", () => {
     await user.click(screen.getByRole("button", { name: "校验部署条件" }));
 
     expect(await screen.findByText("部署已阻断")).toBeVisible();
+    expect(screen.queryByText("Gas 余额不足")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "说明：部署已阻断" }));
+    expect(screen.getByRole("dialog", { name: "部署已阻断" })).toHaveTextContent("Gas 余额不足");
+    await user.keyboard("{Escape}");
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "error");
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
     expect(deployMocks.deploy).not.toHaveBeenCalled();
