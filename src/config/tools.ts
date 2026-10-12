@@ -1,8 +1,8 @@
-export type ToolCategory = "distribution" | "collection" | "contract";
+export type ToolCategory = "distribution" | "collection" | "contract" | "network";
 
-export type ToolEcosystem = "evm" | "solana";
+export type ToolEcosystem = "evm" | "solana" | "web";
 
-export type ToolIcon = "send" | "collect" | "nft" | "sol" | "contract";
+export type ToolIcon = "send" | "collect" | "nft" | "sol" | "contract" | "domain" | "path";
 
 export interface ToolDefinition {
   id: string;
@@ -48,12 +48,19 @@ export const toolCategories: ToolCategoryDefinition[] = [
     label: "合约工具",
     description: "部署、校验并管理 EVM 合约",
     href: "/#contract"
+  },
+  {
+    id: "network",
+    label: "网络工具",
+    description: "扫描域名解析与网站路径响应",
+    href: "/#network"
   }
 ];
 
 export const supportedEcosystems: EcosystemDefinition[] = [
   { id: "evm", label: "EVM" },
-  { id: "solana", label: "Solana" }
+  { id: "solana", label: "Solana" },
+  { id: "web", label: "网络" }
 ];
 
 export const tools: ToolDefinition[] = [
@@ -132,10 +139,38 @@ export const tools: ToolDefinition[] = [
     ecosystems: ["evm"],
     icon: "contract",
     keywords: ["CreateX", "CREATE2", "合约", "部署"]
+  },
+  {
+    id: "subdomain-scan",
+    title: "子域名扫描",
+    shortTitle: "子域名扫描",
+    description: "汇总证书记录、被动 DNS、网站链接与历史网页，去重验证子域名并标记发现来源。",
+    href: "/network/subdomains/",
+    category: "network",
+    ecosystems: ["web"],
+    icon: "domain",
+    badge: "新增",
+    keywords: ["子域名", "域名", "DNS", "subdomain", "扫描", "网络", "证书", "CT", "OSINT", "被动发现"]
+  },
+  {
+    id: "website-path-scan",
+    title: "网站路径扫描",
+    shortTitle: "网站路径扫描",
+    description: "从网页、脚本、站点地图与历史记录自动发现路径，验证响应并导出结果。",
+    href: "/network/paths/",
+    category: "network",
+    ecosystems: ["web"],
+    icon: "path",
+    badge: "新增",
+    keywords: ["网站", "路径", "目录", "HTTP", "path", "扫描", "网络", "状态码", "爬取", "脚本", "sitemap", "robots", "Wayback", "自动发现"]
   }
 ];
 
 export const featuredTools = tools.filter((tool) => tool.featured);
+
+export function getToolEcosystemLabel(tool: ToolDefinition) {
+  return tool.ecosystems.map(ecosystem => ecosystem === "evm" ? "EVM" : ecosystem === "solana" ? "SOL" : "网络").join(" · ");
+}
 
 export function getToolById(toolId?: string) {
   return tools.find((tool) => tool.id === toolId);

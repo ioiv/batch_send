@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { getToolsByCategory, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
+import { getToolsByCategory, getToolEcosystemLabel, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
 import { Button } from "@/components/ui/button";
 import { ToolSearch } from "./ToolSearch";
 import {
@@ -52,6 +52,12 @@ function ToolIcon({ name }: { name: ToolIconName }) {
   if (name === "sol") {
     return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.2 5h13l-2.5 3h-13l2.5-3Zm0 11h13l-2.5 3h-13l2.5-3Zm1.1-5.5h13l-2.5 3h-13l2.5-3Z" fill="currentColor" /></svg>;
   }
+  if (name === "domain") {
+    return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" /><ellipse cx="12" cy="12" rx="4" ry="9" stroke="currentColor" strokeWidth="1.5" /><path d="M3 12h18M5 7h14M5 17h14" stroke="currentColor" strokeWidth="1.5" /></svg>;
+  }
+  if (name === "path") {
+    return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7V5h6l2 2h10v5M3 7v12h8" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><circle cx="16" cy="16" r="3.5" stroke="currentColor" strokeWidth="1.5" /><path d="m18.5 18.5 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
+  }
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7V3Z" stroke="currentColor" strokeWidth="1.5" /><path d="M14 3v5h4M10 12h5M10 16h5" stroke="currentColor" strokeWidth="1.5" /></svg>;
 }
 
@@ -80,7 +86,7 @@ function SidebarNavigation({ currentToolId, mobile = false }: { currentToolId?: 
               {getToolsByCategory(category.id).map((tool) => (
                 <a
                   aria-current={currentToolId === tool.id ? "page" : undefined}
-                  aria-label={`${tool.shortTitle} · ${tool.ecosystems.includes("evm") ? "EVM" : "Solana"}`}
+                  aria-label={`${tool.shortTitle} · ${getToolEcosystemLabel(tool)}`}
                   className="site-sidebar__link"
                   data-active={currentToolId === tool.id || undefined}
                   href={tool.href}
@@ -90,7 +96,7 @@ function SidebarNavigation({ currentToolId, mobile = false }: { currentToolId?: 
                   <span className="site-sidebar__icon"><ToolIcon name={tool.icon} /></span>
                   <span className="site-sidebar__link-copy">
                     <strong>{tool.shortTitle}</strong>
-                    <small>{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</small>
+                    <small>{getToolEcosystemLabel(tool)}</small>
                   </span>
                 </a>
               ))}
@@ -141,7 +147,7 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
               <SheetContent className="site-mobile-menu" side="left">
                 <SheetHeader>
                   <SheetTitle>ChainKit</SheetTitle>
-                  <SheetDescription>选择要使用的链上工具</SheetDescription>
+                  <SheetDescription>选择要使用的工具</SheetDescription>
                 </SheetHeader>
                 <ToolSearch mobile />
                 <SidebarNavigation currentToolId={currentToolId} mobile />
@@ -164,7 +170,7 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
         >
           <CollapseIcon />
         </Button>
-        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.0</span></p>
+        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.1</span></p>
       </aside>
     </>
   );

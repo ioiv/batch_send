@@ -1,6 +1,6 @@
 import "./tool-search.css";
 import { useEffect, useId, useRef, useState } from "react";
-import { tools } from "@/config/tools";
+import { getToolEcosystemLabel, tools } from "@/config/tools";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 
 export function ToolSearch({ mobile = false }: { mobile?: boolean }) {
@@ -63,12 +63,12 @@ export function ToolSearch({ mobile = false }: { mobile?: boolean }) {
         {!mobile ? <InputGroupAddon align="inline-end"><kbd aria-hidden="true">{shortcut}</kbd></InputGroupAddon> : null}
       </InputGroup>
       {open ? <div className="site-tool-search__results">
-        <p id={`${id}-message`} role="status">{matches.length ? `${matches.length} 个工具 · 选择后进入` : "没有匹配的工具，试试 EVM、SOL 或归集"}</p>
+        <p id={`${id}-message`} role="status">{matches.length ? `${matches.length} 个工具 · 选择后进入` : "没有匹配的工具，试试 EVM、SOL 或扫描"}</p>
         <ul id={`${id}-options`} role="listbox" aria-label="工具搜索结果">
           {matches.map((tool, index) => <li key={tool.id} role="presentation">
             <a id={`${id}-${tool.id}`} href={tool.href} role="option" aria-selected={activeIndex === index}
               tabIndex={-1} onMouseDown={event => event.preventDefault()} onMouseMove={() => setActiveIndex(index)}>
-              <span className="site-tool-search__result-heading"><strong>{tool.title}</strong><small>{tool.ecosystems.includes("evm") ? "EVM" : "Solana"}</small></span>
+              <span className="site-tool-search__result-heading"><strong>{tool.title}</strong><small>{getToolEcosystemLabel(tool)}</small></span>
               <span>{tool.description}</span>
             </a>
           </li>)}

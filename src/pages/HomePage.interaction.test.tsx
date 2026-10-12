@@ -17,6 +17,8 @@ describe("HomePage ecosystem filter", () => {
     expect(screen.queryByRole("navigation", { name: "工具分类" })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "页脚导航" })).not.toBeInTheDocument();
     expect(main.getByRole("link", { name: /代币归集/ })).toBeVisible();
+    expect(main.getByRole("link", { name: /子域名扫描/ })).toHaveAttribute("href", "/network/subdomains/");
+    expect(main.getByRole("link", { name: /网站路径扫描/ })).toHaveAttribute("href", "/network/paths/");
     expect(screen.queryByRole("tab", { name: "Ethereum" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Solana" }));
@@ -27,5 +29,12 @@ describe("HomePage ecosystem filter", () => {
     await user.click(screen.getByRole("tab", { name: "EVM" }));
     expect(main.getByRole("link", { name: /EVM 分发/ })).toBeVisible();
     expect(main.queryByRole("link", { name: /SOL.*归集/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "网络" }));
+    expect(main.getByRole("link", { name: /子域名扫描/ })).toBeVisible();
+    expect(main.getByRole("link", { name: /网站路径扫描/ })).toBeVisible();
+    expect(main.queryByRole("link", { name: /EVM 分发/ })).not.toBeInTheDocument();
+    expect(within(main.getByRole("link", { name: /子域名扫描/ })).getByText("网络")).toBeVisible();
+    expect(within(main.getByRole("link", { name: /网站路径扫描/ })).getByText("网络")).toBeVisible();
   });
 });

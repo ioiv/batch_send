@@ -6,6 +6,7 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import {
   supportedEcosystems,
+  getToolEcosystemLabel,
   toolCategories,
   tools,
   type ToolEcosystem,
@@ -24,6 +25,12 @@ function ToolIcon({ name }: { name: ToolIconName }) {
   }
   if (name === "sol") {
     return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.2 5h13l-2.5 3h-13l2.5-3Zm0 11h13l-2.5 3h-13l2.5-3Zm1.1-5.5h13l-2.5 3h-13l2.5-3Z" fill="currentColor" /></svg>;
+  }
+  if (name === "domain") {
+    return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" /><ellipse cx="12" cy="12" rx="4" ry="9" stroke="currentColor" strokeWidth="1.5" /><path d="M3 12h18M5 7h14M5 17h14" stroke="currentColor" strokeWidth="1.5" /></svg>;
+  }
+  if (name === "path") {
+    return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7V5h6l2 2h10v5M3 7v12h8" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><circle cx="16" cy="16" r="3.5" stroke="currentColor" strokeWidth="1.5" /><path d="m18.5 18.5 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
   }
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7V3Z" stroke="currentColor" strokeWidth="1.5" /><path d="M14 3v5h4M10 12h5M10 16h5" stroke="currentColor" strokeWidth="1.5" /></svg>;
 }
@@ -71,7 +78,7 @@ export function HomePage() {
                           <CardHeader>
                             <CardTitle>{tool.shortTitle}</CardTitle>
                             <CardAction>
-                              <Badge variant="outline">{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</Badge>
+                              <Badge variant="outline">{getToolEcosystemLabel(tool)}</Badge>
                             </CardAction>
                           </CardHeader>
                           <CardContent>

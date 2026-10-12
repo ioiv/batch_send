@@ -9,6 +9,16 @@ beforeEach(() => window.localStorage.clear());
 afterEach(cleanup);
 
 describe("SiteHeader sidebar navigation", () => {
+  it("labels network tools consistently in navigation and search", async () => {
+    const user = userEvent.setup();
+    render(<SiteHeader currentToolId="subdomain-scan" />);
+    expect(screen.getByRole("link", { name: "子域名扫描 · 网络" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "网站路径扫描 · 网络" })).toHaveAttribute("href", "/network/paths/");
+    await user.type(screen.getByRole("combobox", { name: "搜索工具" }), "DNS");
+    const result = screen.getByRole("option");
+    expect(result).toHaveAttribute("href", "/network/subdomains/");
+    expect(within(result).getByText("网络")).toBeVisible();
+  });
   it("offers all matching tools and a visible empty state instead of choosing the first match", async () => {
     const user = userEvent.setup();
     render(<SiteHeader />);
