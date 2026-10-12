@@ -8,7 +8,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.65rem;
+  gap: var(--space-sm);
 }
 
 .distribution-generator__heading h3 {
@@ -23,7 +23,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.4rem;
+  gap: var(--space-xs);
 }
 
 .distribution-generator .distribution-list-editor {
@@ -40,7 +40,7 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: end;
-  gap: 0.75rem;
+  gap: var(--space-sm);
 }
 
 .distribution-amount-row > [data-slot="tabs-list"] {
@@ -55,7 +55,7 @@
 .distribution-amount-row .generator-amount-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.65rem;
+  gap: var(--space-sm);
 }
 
 .distribution-amount-row .generator-amount-grid[data-mode="random"] {
@@ -72,7 +72,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--space-xs);
   min-width: 0;
   font-size: var(--text-caption);
   color: var(--muted-foreground);
@@ -119,8 +119,9 @@
 }
 
 .distribution-summary.distribution-summary--compact dd {
-  font-size: var(--text-label);
-  font-weight: var(--weight-strong);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-normal);
+  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
   margin: 0;
   overflow-wrap: anywhere;
@@ -166,14 +167,14 @@
   align-items: baseline;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 0.35rem;
+  gap: var(--space-xs);
 }
 
 .distribution-status {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
   min-width: 0;
   font-size: var(--text-caption);
 }

@@ -1,3 +1,4 @@
+import "./collection-results.css";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -15,17 +16,21 @@ import {
   TableRow
 } from "@/components/ui/table";
 import { Metric } from "@/components/Metric";
+import { CopyButton } from "./CopyButton";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import {
   downloadCollectionResults,
   filterCollectionResults,
   getCollectionResultCounts,
+  getCollectionResultDisplayStatus,
   shortenTransactionHash,
   type CollectionDisplayResult,
   type CollectionResultFilter,
-  type CollectionResultStatus
+  type CollectionResultDisplayStatus
 } from "@/lib/collection-results";
 
-const statusLabels: Record<CollectionResultStatus, string> = {
+const statusLabels: Record<CollectionResultDisplayStatus, string> = {
+  uncertain: "待核对",
   confirming: "确认中",
   error: "失败",
   pending: "待处理",
@@ -40,8 +45,31 @@ const filterOptions: Array<{ label: string; value: CollectionResultFilter }> = [
   { label: "处理中", value: "active" },
   { label: "完成", value: "success" },
   { label: "跳过", value: "skipped" },
-  { label: "失败", value: "error" }
+  { label: "失败", value: "error" },
+  { label: "待核对", value: "uncertain" }
 ];
+
+function ResultDetails({ result, label }: { result: CollectionDisplayResult; label: string }) {
+  const status = getCollectionResultDisplayStatus(result);
+  return <Dialog>
+    <DialogTrigger render={<Button size="sm" type="button" variant="outline" />} aria-label={`查看${label}的详情`}>查看详情</DialogTrigger>
+    <DialogContent className="result-detail-dialog">
+      <DialogHeader><DialogTitle>{label} · {statusLabels[status]}</DialogTitle>
+        <DialogDescription>{status === "uncertain" ? "交易已提交，请先核对链上结果；此项不会自动重试。" : "完整执行记录与交易信息"}</DialogDescription>
+      </DialogHeader>
+      <dl className="result-detail-list">
+        <div><dt>来源地址</dt><dd><code>{result.address}</code><CopyButton value={result.address} label="复制地址" /></dd></div>
+        <div><dt>资产</dt><dd>{result.asset}</dd></div>
+        {result.assetKey ? <div><dt>资产标识</dt><dd><code>{result.assetKey}</code><CopyButton value={result.assetKey} label="复制资产标识" /></dd></div> : null}
+        <div><dt>数量</dt><dd className="mono">{result.amount || "—"}</dd></div>
+        <div><dt>执行说明</dt><dd>{result.message || "—"}</dd></div>
+        {result.hash ? <div><dt>交易哈希</dt><dd><code>{result.hash}</code><CopyButton value={result.hash} label="复制交易哈希" />
+          {result.explorerUrl ? <a className={buttonVariants({ variant: "outline", size: "sm" })} href={result.explorerUrl} target="_blank" rel="noreferrer">在区块浏览器查看</a> : null}
+        </dd></div> : null}
+      </dl>
+    </DialogContent>
+  </Dialog>;
+}
 
 type IndexedCollectionResult = {
   originalIndex: number;
@@ -99,6 +127,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
         <Metric label="完成" value={String(counts.success)} />
         <Metric label="跳过" value={String(counts.skipped)} />
         <Metric label="失败" value={String(counts.error)} />
+        <Metric label="待核对" value={String(counts.uncertain)} />
       </div>
 
       <div className="collection-result-toolbar">
@@ -128,26 +157,28 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
                 <TableHead>资产</TableHead>
                 <TableHead>数量</TableHead>
                 <TableHead>交易</TableHead>
+                <TableHead>详情</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredResults.map(({ originalIndex, result }) => {
                 const resultLabel = result.label || `来源 ${originalIndex + 1}`;
+                const displayStatus = getCollectionResultDisplayStatus(result);
                 return (
-                  <TableRow data-status={result.status} key={originalIndex}>
-                    <TableCell>
+                  <TableRow data-status={displayStatus} key={originalIndex}>
+                    <TableCell className="collection-result-source">
                       <strong>{resultLabel}</strong>
                       <code className="collection-result-address">{result.address}</code>
                       <span className="collection-result-message">{result.message}</span>
                     </TableCell>
-                    <TableCell>
-                      <Badge data-status={result.status} variant={result.status === "error" ? "destructive" : "outline"}>
-                        {statusLabels[result.status]}
+                    <TableCell className="collection-result-status">
+                      <Badge data-status={displayStatus} variant={displayStatus === "error" ? "destructive" : "outline"}>
+                        {statusLabels[displayStatus]}
                       </Badge>
                     </TableCell>
-                    <TableCell>{result.phase ? <Badge variant="outline">{result.phase === "token" ? "Token" : result.phase === "nft" ? "NFT" : "原生币"}</Badge> : null} {result.asset}</TableCell>
-                    <TableCell className="mono">{result.amount || "—"}</TableCell>
-                    <TableCell>
+                    <TableCell data-label="资产" className="collection-result-asset">{result.phase ? <Badge variant="outline">{result.phase === "token" ? "Token" : result.phase === "nft" ? "NFT" : "原生币"}</Badge> : null} {result.asset}</TableCell>
+                    <TableCell data-label="数量" className="mono collection-result-amount">{result.amount || "—"}</TableCell>
+                    <TableCell className="collection-result-transaction">
                       {result.explorerUrl && result.hash ? (
                         <a
                           aria-label={`查看${resultLabel}的交易`}
@@ -159,6 +190,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
                         >{shortenTransactionHash(result.hash)}</a>
                       ) : result.hash ? <code title={result.hash}>{shortenTransactionHash(result.hash)}</code> : "—"}
                     </TableCell>
+                    <TableCell className="collection-result-detail"><ResultDetails result={result} label={resultLabel} /></TableCell>
                   </TableRow>
                 );
               })}
@@ -197,7 +229,7 @@ export function CollectionResults({
   const titleId = useId();
   const resultSetIdentity = useMemo(() => getCollectionResultSetIdentity(results), [results]);
   const reviewResults = useMemo(
-    () => results.filter((result) => result.status === "error" || result.status === "skipped"),
+    () => results.filter((result) => ["error", "skipped", "uncertain"].includes(getCollectionResultDisplayStatus(result))),
     [results]
   );
   const reviewExportFilename = exportFilename.replace(/\.csv$/i, "-needs-review.csv");
@@ -211,7 +243,7 @@ export function CollectionResults({
         </div>
         <div className="action-group">
           <Button disabled={!results.length} onClick={() => downloadCollectionResults(results, exportFilename)} type="button" variant="outline">导出全部 CSV</Button>
-          <Button disabled={!reviewResults.length} onClick={() => downloadCollectionResults(reviewResults, reviewExportFilename)} type="button" variant="outline">导出失败/跳过项</Button>
+          <Button disabled={!reviewResults.length} onClick={() => downloadCollectionResults(reviewResults, reviewExportFilename)} type="button" variant="outline">导出待处理项</Button>
         </div>
       </div>
 
@@ -221,7 +253,7 @@ export function CollectionResults({
         <Empty className="collection-empty">
           <EmptyHeader>
             <EmptyTitle>{emptyTitle}</EmptyTitle>
-            <EmptyDescription className="sr-only">{emptyMessage}</EmptyDescription>
+            <EmptyDescription>{emptyMessage}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}

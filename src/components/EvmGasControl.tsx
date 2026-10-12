@@ -3,6 +3,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { FieldError } from "./ui/field";
 import type { EvmGasChoice, EvmGasController } from "@/hooks/useEvmGas";
 import { formatGasPriceGwei, getEvmFeeCapPerGas } from "@/lib/evm-gas";
 
@@ -95,7 +96,7 @@ export function EvmGasSettings({
     <div className="gas-settings" aria-label="Gas 设置">
       <div className="gas-settings__bar">
         <div className="gas-settings__label" title="行情每 3 秒刷新；推荐值分别为 RPC 报价的 90%、100% 和 120%">
-          <strong>Gas</strong>
+          <strong>费率</strong>
         </div>
 
         <Tabs className="gas-settings__choices" onValueChange={changeChoice} value={gas.choice}>
@@ -125,6 +126,7 @@ export function EvmGasSettings({
             <InputGroup className="gas-settings__input-wrap">
               <InputGroupInput
                 aria-invalid={!gas.customGasPriceIsValid || undefined}
+                aria-describedby={!gas.customGasPriceIsValid ? `${customGasPriceId}-error` : undefined}
                 autoComplete="off"
                 disabled={disabled}
                 id={customGasPriceId}
@@ -151,6 +153,8 @@ export function EvmGasSettings({
           </div>
         ) : null}
       </div>
+
+      {customOpen && !gas.customGasPriceIsValid ? <FieldError id={`${customGasPriceId}-error`}>请输入有效的 Gas Price（Gwei）</FieldError> : null}
 
       <span className={gas.live.status === "error" ? "gas-settings__status" : "sr-only"} role="status">
         {gas.live.message}

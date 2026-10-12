@@ -1,3 +1,6 @@
+import { isRpcEndpoint } from "../lib/rpc-preferences";
+import { RpcSettings } from "../components/RpcSettings";
+import { WorkflowFeedback } from "../components/WorkflowFeedback";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompactNotice, NoticeTitle, NoticeDetail } from "../components/CompactNotice";
 import { HelpTooltip } from "../components/HelpTooltip";
@@ -265,7 +268,8 @@ export function EvmBatchDistributorPage() {
     ? nativeCurrencyEnabled
     : tokenLookup.status === "success" && Boolean(tokenDetails);
   const generatedListReady = generatedList.invalid === 0 && generatedList.duplicates === 0;
-  const readyToSend = wallet.connected
+  const rpcEndpointValid = isRpcEndpoint(effectiveRpcEndpoint);
+  const readyToSend = rpcEndpointValid && wallet.connected
     && Boolean(wallet.getProvider())
     && assetReady
     && generatedListReady
@@ -344,6 +348,7 @@ export function EvmBatchDistributorPage() {
     ? "请先核对分发记录中的链上状态"
     : !wallet.connected || !wallet.getProvider()
     ? "请先连接发送钱包"
+    : !rpcEndpointValid ? "请填写有效的 RPC 地址"
     : listImporting
       ? "正在导入清单，请稍候"
       : !gas.gasSettings
@@ -870,285 +875,8 @@ export function EvmBatchDistributorPage() {
     }
   };
 
-  return (
-    <ToolPageLayout
-      actionBar={(
-        <ActionBar
-          summary={(
-            <DistributionSummary
-              details={preflightState.result ? (
-                <div className="summary-list">
-                  <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
-                  <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
-                </div>
-              ) : undefined}
-              rows={[
-                { label: "有效地址", value: parsed.validRows.length },
-                { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
-                ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
-                ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
-                { label: "预估网络费", value: preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "—" }
-              ]}
-            />
-          )}
-          feedback={(
-            <div className="distribution-status" role={sendFailed || preflightFailed ? "alert" : "status"} aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}>
-              <Badge variant={reviewHasRisk ? "destructive" : "outline"}>{sendComplete ? "分发完成" : reviewSummaryLabel}</Badge>
-              <span className="distribution-status__message">{actionStatusMessage}</span>
-              {actionStatusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{actionStatusMessage}</HelpTooltip> : null}
-              {unresolvedSubmission ? <HelpTooltip label="不可安全整批重试">已有交易提交到链上。请先核对交易哈希，再开始新任务。</HelpTooltip> : null}
-            </div>
-          )}
-        >
-          <div className="action-group">
-            {!sendComplete && !sendFailed && !sending ? (
-              <Button
-                size="lg"
-                disabled={!readyToSend}
-                onClick={() => void prepareDistribution()}
-                type="button"
-                variant={showFinalSummary ? "outline" : "default"}
-              >{preflighting ? "预检中" : showFinalSummary || preflightFailed ? "重新预检" : listImporting ? "正在导入清单" : "运行预检"}</Button>
-            ) : null}
-            {sending ? <Button size="lg" disabled type="button">{sendState.status === "preparing" ? "签名前复检" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
-            {showFinalSummary ? (
-              <ConfirmActionDialog
-                triggerSize="lg"
-                confirmLabel={preflightState.result?.needsApproval ? "授权并分发" : "签名并分发"}
-                description={(
-                  <div className="summary-list">
-                    <div><span>网络</span><strong>{selectedNetwork.label} · {selectedNetwork.chainId}</strong></div>
-                    <div><span>资产</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
-                    <div><span>收款地址</span><strong>{parsed.validRows.length}</strong></div>
-                    <div><span>分发总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
-                    <div><span>资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
-                    <div><span>发送账户</span><strong className="address" title={wallet.address}>{shortenAddress(wallet.address)}</strong></div>
-                    <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
-                    <div><span>授权</span><strong>{preflightState.result?.needsApproval ? "1 次 Token 授权" : "无需授权"}</strong></div>
-                    {preflightState.result?.needsApproval ? (
-                      <div><span>授权后复检</span><strong>余额、授权与 Gas 通过后才分发</strong></div>
-                    ) : null}
-                    <div><span>钱包确认</span><strong>{preflightState.result?.totalTransactions ?? 0} 次</strong></div>
-                    <div><span>地址抽样</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
-                  </div>
-                )}
-                disabled={!readyToSend}
-                onConfirm={sendDistribution}
-                title="确认 EVM 分发"
-                triggerLabel="确认分发"
-              />
-            ) : null}
-            {sendComplete || sendFailed ? (
-              <>
-                {/* Ending a round must not depend on finding a setting to edit;
-                    the list stays for the next round. */}
-                <Button size="lg" onClick={resetForEdit} type="button">开始新一轮分发</Button>
-              </>
-            ) : null}
-          </div>
-        </ActionBar>
-      )}
-      actions={(
-        <>
-          <EvmGasBadge gas={gas} networkLabel={selectedNetwork.label} />
-        </>
-      )}
-      className="page-distributor"
-      currentToolId="evm-distribution"
-      walletControl={<EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
-      stickyActions
-      status={pageStatus}
-      statusLabel={pageStatusLabel}
-      title="EVM 批量分发"
-    >
-      <div className="workbench-grid">
-        <WorkbenchPanel
-          actions={<Badge variant="outline">{selectedNetwork.label} · {assetSymbol}</Badge>}
-          className="input-panel"
-          segmented
-          title="批量分发"
-        >
-          <div className="form workbench-form">
-            {mixedAmountWarningVisible ? (
-              <CompactNotice>
-                <NoticeTitle>旧清单金额未导入</NoticeTitle>
-                <NoticeDetail>已保留收款地址，请重新设置金额。</NoticeDetail>
-              </CompactNotice>
-            ) : null}
+  const taskRecords = (<>
 
-            {!nativeCurrencyEnabled ? (
-              <CompactNotice>
-                <NoticeTitle>仅开放 Token 分发</NoticeTitle>
-                <NoticeDetail>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></NoticeDetail>
-              </CompactNotice>
-            ) : null}
-
-            <WorkbenchSection className="workbench-form__primary">
-
-              <DistributionListGenerator
-                controlRef={generatorRef}
-                addressKind="evm"
-                decimals={assetDecimals}
-                disabled={controlsLocked}
-                generationDisabled={Boolean(generatorUnavailableMessage)}
-                initialAddresses={initialDistribution.addresses}
-                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
-                onDirty={handleGeneratorDirty}
-                onImportingChange={handleListImportingChange}
-                onResultChange={handleGeneratedListChange}
-                symbol={assetSymbol}
-                unavailableMessage={generatorUnavailableMessage}
-                validateAddress={isValidEvmAddress}
-              />
-            </WorkbenchSection>
-
-            <WorkbenchSection className="workbench-form__secondary" title="网络、资产与费用">
-              <div className="config-grid distribution-config-grid">
-              <div className="evm-network-row" aria-label="网络与 RPC">
-                <Field>
-                  <div className="evm-network-label-row">
-                    <FieldLabel htmlFor="networkId">网络</FieldLabel>
-                    <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
-                  </div>
-                  <SearchableSelect
-                    disabled={pageControlsLocked}
-                    emptyMessage="未找到匹配的 EVM 链"
-                    id="networkId"
-                    listboxLabel="EVM 链"
-                    metaLabel="Chain ID"
-                    metaPrefix="ID "
-                    onChange={(nextNetworkId) => {
-                      resetForEdit();
-                      const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
-                      setNetworkId(nextNetworkId);
-                      setRpcEndpoint(nextNetwork.rpcEndpoint);
-                      if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
-                      setTokenLookup(initialTokenLookupState);
-                      rememberPreferredEvmDistributionNetwork(nextNetworkId);
-                    }}
-                    options={networkOptions}
-                    placeholder="搜索链名称或 Chain ID"
-                    searchLabel="搜索 EVM 链名称或 Chain ID"
-                    value={networkId}
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
-                  <Input
-                    autoComplete="off"
-                    disabled={pageControlsLocked}
-                    id="rpcEndpoint"
-                    onChange={(event) => {
-                      resetForEdit();
-                      setRpcEndpoint(event.target.value);
-                      setTokenLookup(initialTokenLookupState);
-                    }}
-                    spellCheck={false}
-                    type="url"
-                    value={rpcEndpoint}
-                  />
-                </Field>
-              </div>
-
-              <Tabs
-                className="distribution-asset-controls"
-                aria-label="资产类型"
-                onValueChange={(nextMode) => {
-                  if (nextMode !== "native" && nextMode !== "token") return;
-                  if (nextMode === "native" && !nativeCurrencyEnabled) return;
-                  resetForEdit();
-                  setAssetMode(nextMode);
-                  setTokenLookup(initialTokenLookupState);
-                }}
-                value={assetMode}
-              >
-                <TabsList>
-                  <TabsTrigger disabled={pageControlsLocked || !nativeCurrencyEnabled} value="native">原生币</TabsTrigger>
-                  <TabsTrigger disabled={pageControlsLocked} value="token">Token</TabsTrigger>
-                </TabsList>
-                <TabsContent value="native">
-                  <div className="summary-list" aria-label="原生币余额">
-                    <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
-                  </div>
-                  {nativeBalanceLookup.status === "error" ? (
-                    <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
-                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                    </CompactNotice>
-                  ) : null}
-                </TabsContent>
-                <TabsContent value="token">
-                  <Field data-invalid={tokenLookup.status === "error" || undefined}>
-                    <FieldLabel htmlFor="tokenAddress">Token 合约地址</FieldLabel>
-                    <Input
-                      aria-invalid={tokenLookup.status === "error" || undefined}
-                      autoComplete="off"
-                      disabled={pageControlsLocked}
-                      id="tokenAddress"
-                      onChange={(event) => {
-                        resetForEdit();
-                        setTokenAddress(event.target.value);
-                        setTokenLookup(initialTokenLookupState);
-                      }}
-                      placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-                      spellCheck={false}
-                      type="text"
-                      value={tokenAddress}
-                    />
-                    {tokenLookup.status === "error" ? <FieldError>{tokenLookup.message}</FieldError> : null}
-                  </Field>
-                  {tokenDetails ? (
-                    <div className="summary-list" aria-label="Token 信息">
-                      <div><span>{tokenDetails.name}</span><strong>{tokenDetails.symbol} · {tokenDetails.decimals} decimals</strong></div>
-                      <div><span>钱包余额</span><strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong></div>
-                    </div>
-                  ) : null}
-                  {tokenLookup.status === "error" ? (
-                    <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
-                  ) : null}
-                  {tokenDetails && tokenBalanceLookup.status === "error" ? (
-                    <CompactNotice role="alert" tone="error"><NoticeTitle>{tokenBalanceLookup.message}</NoticeTitle>
-                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
-                    </CompactNotice>
-                  ) : null}
-                </TabsContent>
-              </Tabs>
-
-
-
-              <div className="distribution-gas-settings">
-                <EvmGasSettings disabled={pageControlsLocked} gas={gas} onSettingsChange={resetForEdit} />
-              </div>
-              {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
-              <div className="distribution-remove-network">
-                <ConfirmActionDialog
-                  confirmLabel="移除链配置"
-                  description={(
-                    <div className="summary-list">
-                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                      <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
-                    </div>
-                  )}
-                  disabled={pageControlsLocked}
-                  onConfirm={removeSelectedVerifiedNetwork}
-                  title="移除此链配置"
-                  triggerLabel="移除此链配置"
-                  triggerVariant="destructive"
-                />
-              </div>
-              ) : null}
-
-              </div>
-            </WorkbenchSection>
-          </div>
-        </WorkbenchPanel>
-
-        <ReviewPanel
-          autoOpen={reviewShouldOpen}
-          className="review-panel"
-          stateKey={`${preflightState.status}:${sendState.status}:${sendState.signatures.length > 0 ? "submitted" : "local"}`}
-          summary={<Badge variant={reviewHasRisk ? "destructive" : "outline"}>{reviewSummaryLabel}</Badge>}
-          title={sendState.signatures.length > 0 || sendComplete || sendFailed ? "分发结果" : confirmVisible ? "预检结果" : "清单预览"}
-        >
           {sendState.progress.total > 0 ? (
             <>
               <ExecutionProgress current={sendState.progress.confirmed} label="交易确认进度" total={sendState.progress.total} />
@@ -1229,7 +957,290 @@ export function EvmBatchDistributorPage() {
             />
           )}
 
-        </ReviewPanel>
+  </>);
+
+  const taskActions = (
+        <ActionBar
+          details={taskRecords}
+          detailsAutoOpen={reviewShouldOpen}
+          detailsStateKey={`${preflightState.status}:${sendState.status}:${sendState.signatures.length > 0 ? "submitted" : "local"}`}
+          summary={(
+            <DistributionSummary
+              details={preflightState.result ? (
+                <div className="summary-list">
+                  <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
+                  <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
+                </div>
+              ) : undefined}
+              rows={[
+                { label: "有效地址", value: parsed.validRows.length },
+                { label: "合计金额", value: `${parsed.total} ${assetSymbol}` },
+                ...(invalidCount > 0 ? [{ alert: true, label: "需修正", onClick: () => generatorRef.current?.focusProblem("invalid"), value: invalidCount }] : []),
+                ...(duplicateCount > 0 ? [{ alert: true, label: "重复地址", onClick: () => generatorRef.current?.focusProblem("duplicate"), value: duplicateCount }] : []),
+                { label: "预估网络费", value: preflightState.result ? `${formatWei(preflightState.result.estimatedNetworkFeeWei, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}` : "—" }
+              ]}
+            />
+          )}
+          secondaryActions={showFinalSummary ? <Button disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button" variant="outline">重新预检</Button> : null}
+          feedback={(
+            <div className="distribution-status" role={sendFailed || preflightFailed ? "alert" : "status"} aria-live={sendFailed || preflightFailed ? "assertive" : "polite"}>
+              <Badge variant={reviewHasRisk ? "destructive" : "outline"}>{sendComplete ? "分发完成" : reviewSummaryLabel}</Badge>
+              <WorkflowFeedback requirement={{ message: actionStatusMessage, targetId: !sending && !preflighting && !sendComplete && !sendFailed && !showFinalSummary && !archivedRound?.requiresAcknowledgement && !listImporting && !readyToSend ? (!wallet.connected ? "wallet-connection" : !rpcEndpointValid ? "rpcEndpoint" : !gas.gasSettings ? "distribution-gas" : !assetReady && assetMode === "token" ? "tokenAddress" : "distribution-input") : undefined }} />
+              {actionStatusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{actionStatusMessage}</HelpTooltip> : null}
+              {unresolvedSubmission ? <HelpTooltip label="不可安全整批重试">已有交易提交到链上。请先核对交易哈希，再开始新任务。</HelpTooltip> : null}
+            </div>
+          )}
+        >
+          <div className="action-group">
+            {!sendComplete && !sendFailed && !sending && !showFinalSummary ? (
+              <Button
+                size="lg"
+                disabled={!readyToSend}
+                onClick={() => void prepareDistribution()}
+                type="button"
+                variant="default"
+              >{preflighting ? "预检中" : preflightFailed ? "重新预检" : listImporting ? "正在导入清单" : "运行预检"}</Button>
+            ) : null}
+            {sending ? <Button size="lg" disabled type="button">{sendState.status === "preparing" ? "签名前复检" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
+            {showFinalSummary ? (
+              <ConfirmActionDialog
+                triggerSize="lg"
+                confirmLabel={preflightState.result?.needsApproval ? "授权并分发" : "签名并分发"}
+                description={(
+                  <div className="summary-list">
+                    <div><span>网络</span><strong>{selectedNetwork.label} · {selectedNetwork.chainId}</strong></div>
+                    <div><span>资产</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
+                    <div><span>收款地址</span><strong>{parsed.validRows.length}</strong></div>
+                    <div><span>分发总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
+                    <div><span>资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
+                    <div><span>发送账户</span><strong className="address" title={wallet.address}>{shortenAddress(wallet.address)}</strong></div>
+                    <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                    <div><span>授权</span><strong>{preflightState.result?.needsApproval ? "1 次 Token 授权" : "无需授权"}</strong></div>
+                    {preflightState.result?.needsApproval ? (
+                      <div><span>授权后复检</span><strong>余额、授权与 Gas 通过后才分发</strong></div>
+                    ) : null}
+                    <div><span>钱包确认</span><strong>{preflightState.result?.totalTransactions ?? 0} 次</strong></div>
+                    <div><span>地址抽样</span><strong>{parsed.validRows.slice(0, 3).map((row) => shortenAddress(row.address)).join(" / ")}</strong></div>
+                  </div>
+                )}
+                disabled={!readyToSend}
+                onConfirm={sendDistribution}
+                title="确认 EVM 分发"
+                triggerLabel="确认分发"
+              />
+            ) : null}
+            {sendComplete || sendFailed ? (
+              <>
+                {/* Ending a round must not depend on finding a setting to edit;
+                    the list stays for the next round. */}
+                <Button size="lg" onClick={resetForEdit} type="button">开始新一轮分发</Button>
+              </>
+            ) : null}
+          </div>
+        </ActionBar>
+  );
+
+  return (
+    <ToolPageLayout
+      actions={(
+        <>
+          <EvmGasBadge gas={gas} networkLabel={selectedNetwork.label} />
+        </>
+      )}
+      className="page-distributor"
+      currentToolId="evm-distribution"
+      walletControl={<EvmWalletConnectionControl disabled={pageControlsLocked} wallet={wallet} />}
+      status={pageStatus}
+      statusLabel={pageStatusLabel}
+      title="EVM 批量分发"
+    >
+      <div className="workbench-grid">
+        <WorkbenchPanel
+          footer={taskActions}
+          actions={<Badge variant="outline">{selectedNetwork.label} · {assetSymbol}</Badge>}
+          className="input-panel"
+          segmented
+          title="批量分发"
+        >
+          <div className="form workbench-form">
+            {mixedAmountWarningVisible ? (
+              <CompactNotice>
+                <NoticeTitle>旧清单金额未导入</NoticeTitle>
+                <NoticeDetail>已保留收款地址，请重新设置金额。</NoticeDetail>
+              </CompactNotice>
+            ) : null}
+
+            {!nativeCurrencyEnabled ? (
+              <CompactNotice>
+                <NoticeTitle>仅开放 Token 分发</NoticeTitle>
+                <NoticeDetail>当前链的原生币元数据未确认。 <a href="/evm/deploy/">前往 CreateX 部署</a></NoticeDetail>
+              </CompactNotice>
+            ) : null}
+
+            <WorkbenchSection className="workbench-form__primary">
+
+              <DistributionListGenerator
+                controlRef={generatorRef}
+                addressKind="evm"
+                decimals={assetDecimals}
+                disabled={controlsLocked}
+                generationDisabled={Boolean(generatorUnavailableMessage)}
+                initialAddresses={initialDistribution.addresses}
+                initialFixedAmount={initialDistribution.hadAmounts ? initialDistribution.fixedAmount : "0.1"}
+                onDirty={handleGeneratorDirty}
+                onImportingChange={handleListImportingChange}
+                onResultChange={handleGeneratedListChange}
+                symbol={assetSymbol}
+                unavailableMessage={generatorUnavailableMessage}
+                validateAddress={isValidEvmAddress}
+              />
+            </WorkbenchSection>
+
+            <WorkbenchSection className="workbench-form__secondary" title="网络、资产与费用">
+              <div className="config-grid distribution-config-grid">
+              <div className="evm-network-row" aria-label="网络与 RPC">
+                <Field>
+                  <div className="evm-network-label-row">
+                    <FieldLabel htmlFor="networkId">网络</FieldLabel>
+                    <span className="evm-network-chain-id">Chain ID <strong>{selectedNetwork.chainId}</strong></span>
+                  </div>
+                  <SearchableSelect
+                    disabled={pageControlsLocked}
+                    emptyMessage="未找到匹配的 EVM 链"
+                    id="networkId"
+                    listboxLabel="EVM 链"
+                    metaLabel="Chain ID"
+                    metaPrefix="ID "
+                    onChange={(nextNetworkId) => {
+                      resetForEdit();
+                      const nextNetwork = getEvmNetworkConfig(nextNetworkId, networkState.networks);
+                      setNetworkId(nextNetworkId);
+                      setRpcEndpoint(nextNetwork.rpcEndpoint);
+                      if (!isEvmNativeCurrencyEnabled(nextNetwork)) setAssetMode("token");
+                      setTokenLookup(initialTokenLookupState);
+                      rememberPreferredEvmDistributionNetwork(nextNetworkId);
+                    }}
+                    options={networkOptions}
+                    placeholder="搜索链名称或 Chain ID"
+                    searchLabel="搜索 EVM 链名称或 Chain ID"
+                    value={networkId}
+                  />
+                </Field>
+                <RpcSettings endpoint={effectiveRpcEndpoint} disabled={pageControlsLocked} invalid={!rpcEndpointValid}>
+                <Field data-invalid={!rpcEndpointValid || undefined}>
+                  <FieldLabel htmlFor="rpcEndpoint">RPC</FieldLabel>
+                  <Input
+                    aria-invalid={!rpcEndpointValid || undefined}
+                    autoComplete="off"
+                    disabled={pageControlsLocked}
+                    id="rpcEndpoint"
+                    aria-describedby={!rpcEndpointValid ? "rpc-endpoint-error" : undefined}
+                    onChange={(event) => {
+                      resetForEdit();
+                      setRpcEndpoint(event.target.value);
+                      setTokenLookup(initialTokenLookupState);
+                    }}
+                    spellCheck={false}
+                    type="url"
+                    value={rpcEndpoint}
+                  />
+                  {!rpcEndpointValid ? <FieldError id="rpc-endpoint-error">请输入有效的 HTTP(S) RPC 地址</FieldError> : null}
+                </Field>
+                </RpcSettings>
+              </div>
+
+              <Tabs
+                className="distribution-asset-controls"
+                aria-label="资产类型"
+                onValueChange={(nextMode) => {
+                  if (nextMode !== "native" && nextMode !== "token") return;
+                  if (nextMode === "native" && !nativeCurrencyEnabled) return;
+                  resetForEdit();
+                  setAssetMode(nextMode);
+                  setTokenLookup(initialTokenLookupState);
+                }}
+                value={assetMode}
+              >
+                <TabsList>
+                  <TabsTrigger disabled={pageControlsLocked || !nativeCurrencyEnabled} value="native">原生币</TabsTrigger>
+                  <TabsTrigger disabled={pageControlsLocked} value="token">Token</TabsTrigger>
+                </TabsList>
+                <TabsContent value="native">
+                  <div className="summary-list" aria-label="原生币余额">
+                    <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
+                  </div>
+                  {nativeBalanceLookup.status === "error" ? (
+                    <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
+                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
+                    </CompactNotice>
+                  ) : null}
+                </TabsContent>
+                <TabsContent value="token">
+                  <Field data-invalid={tokenLookup.status === "error" || undefined}>
+                    <FieldLabel htmlFor="tokenAddress">Token 合约地址</FieldLabel>
+                    <Input
+                      aria-invalid={tokenLookup.status === "error" || undefined}
+                      autoComplete="off"
+                      disabled={pageControlsLocked}
+                      id="tokenAddress"
+                      onChange={(event) => {
+                        resetForEdit();
+                        setTokenAddress(event.target.value);
+                        setTokenLookup(initialTokenLookupState);
+                      }}
+                      placeholder="0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+                      spellCheck={false}
+                      type="text"
+                      value={tokenAddress}
+                    />
+                    {tokenLookup.status === "error" ? <FieldError>{tokenLookup.message}</FieldError> : null}
+                  </Field>
+                  {tokenDetails ? (
+                    <div className="summary-list" aria-label="Token 信息">
+                      <div><span>{tokenDetails.name}</span><strong>{tokenDetails.symbol} · {tokenDetails.decimals} decimals</strong></div>
+                      <div><span>钱包余额</span><strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong></div>
+                    </div>
+                  ) : null}
+                  {tokenLookup.status === "error" ? (
+                    <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
+                  ) : null}
+                  {tokenDetails && tokenBalanceLookup.status === "error" ? (
+                    <CompactNotice role="alert" tone="error"><NoticeTitle>{tokenBalanceLookup.message}</NoticeTitle>
+                      <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
+                    </CompactNotice>
+                  ) : null}
+                </TabsContent>
+              </Tabs>
+
+
+
+              <div className="distribution-gas-settings" id="distribution-gas">
+                <EvmGasSettings disabled={pageControlsLocked} gas={gas} onSettingsChange={resetForEdit} />
+              </div>
+              {networkState.verifiedChainIds.includes(selectedNetwork.chainId) ? (
+              <div className="distribution-remove-network">
+                <ConfirmActionDialog
+                  confirmLabel="移除链配置"
+                  description={(
+                    <div className="summary-list">
+                      <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
+                      <div><span>Chain ID</span><strong>{selectedNetwork.chainId}</strong></div>
+                    </div>
+                  )}
+                  disabled={pageControlsLocked}
+                  onConfirm={removeSelectedVerifiedNetwork}
+                  title="移除此链配置"
+                  triggerLabel="移除此链配置"
+                  triggerVariant="destructive"
+                />
+              </div>
+              ) : null}
+
+              </div>
+            </WorkbenchSection>
+          </div>
+        </WorkbenchPanel>
+
         {archivedRound ? (
           <ReviewPanel
             actions={archivedRound.requiresAcknowledgement ? (

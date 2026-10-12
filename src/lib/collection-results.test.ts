@@ -3,6 +3,7 @@ import {
   createCollectionResultsCsv,
   filterCollectionResults,
   getCollectionResultCounts,
+  getCollectionResultDisplayStatus,
   sanitizeRoundArchiveText,
   shortenTransactionHash,
   type CollectionDisplayResult
@@ -41,7 +42,19 @@ describe("collection result helpers", () => {
     expect(getCollectionResultCounts([
       ...results,
       { address: "0x4", asset: "USDC", message: "正在提交", status: "submitting" }
-    ])).toEqual({ active: 1, error: 1, skipped: 1, success: 1, total: 4 });
+    ])).toEqual({ active: 1, error: 1, skipped: 1, success: 1, total: 4, uncertain: 0 });
+  });
+
+  it("separates uncertain submissions from failures in counts, filters and CSV", () => {
+    const uncertain: CollectionDisplayResult = { ...results[2], hash: "submitted-hash", uncertain: true, retryable: false };
+    const knownFailure: CollectionDisplayResult = { ...uncertain, uncertain: false };
+    expect(getCollectionResultDisplayStatus(knownFailure)).toBe("error");
+    expect(getCollectionResultDisplayStatus({ ...uncertain, uncertain: undefined })).toBe("uncertain");
+    expect(getCollectionResultCounts([uncertain, knownFailure])).toMatchObject({ uncertain: 1, error: 1, active: 0 });
+    expect(filterCollectionResults([uncertain, knownFailure], { status: "error" })).toEqual([knownFailure]);
+    expect(filterCollectionResults([uncertain, knownFailure], { status: "uncertain" })).toEqual([uncertain]);
+    expect(filterCollectionResults([uncertain], { status: "active" })).toEqual([]);
+    expect(createCollectionResultsCsv([uncertain])).toContain(",uncertain,");
   });
 
   it("creates a spreadsheet-safe csv without secret material", () => {

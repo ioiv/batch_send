@@ -42,6 +42,7 @@ export function HomePage() {
       <SiteHeader />
       <div className="site-content" data-region="main">
         <main className="home-main" id="main">
+          <div className="home-heading"><div><h1>链上工具箱</h1><p>选择网络生态，找到需要的工具。</p></div>
           <Tabs
             className="home-tool-tabs"
             onValueChange={(value) => setSelectedEcosystem(value as "all" | ToolEcosystem)}
@@ -54,6 +55,7 @@ export function HomePage() {
               ))}
             </TabsList>
           </Tabs>
+          </div>
 
           <div aria-live="polite" className="home-tool-groups">
             {toolCategories.map((category) => {

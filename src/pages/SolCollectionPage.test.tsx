@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandSettings, expandTaskDetails } from "../test/workbench";
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -672,6 +674,7 @@ describe("SolCollectionPage workbench", () => {
     const user = await prepareSolPage();
     await confirmExecution(user);
 
+    expandTaskDetails();
     const retryTrigger = await screen.findByRole("button", { name: "重试失败项 (1)" });
     expect(screen.getByLabelText(new RegExp(`来源二.*${secondSourceAddress}.*归集状态`))).toHaveTextContent("失败");
     await user.click(retryTrigger);
@@ -702,6 +705,7 @@ describe("SolCollectionPage workbench", () => {
     await confirmExecution(user);
 
     expect(await screen.findByText(/已显示签名的项目请先核对链上状态/)).toBeVisible();
+    expandTaskDetails();
     expect(screen.queryByRole("button", { name: /重试失败项/ })).not.toBeInTheDocument();
     const target = screen.getByRole("textbox", { name: "目标钱包" });
     expect(target).toBeEnabled();
@@ -712,9 +716,11 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
-  it("keeps RPC and execution settings on the surface, as the EVM page does", () => {
+  it("keeps RPC and execution summaries visible and reveals their fields on demand", () => {
     render(<SolCollectionPage />);
+    expandSettings("修改 RPC");
     expect(screen.getByRole("textbox", { name: "RPC 地址" })).toBeVisible();
+    expandSettings("执行节奏");
     expect(screen.getByRole("spinbutton", { name: "并发钱包数" })).toBeVisible();
     expect(screen.getByRole("spinbutton", { name: "随机延迟最小秒数" })).toBeVisible();
     expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toBeVisible();
@@ -729,13 +735,16 @@ describe("SolCollectionPage workbench", () => {
     // "归集什么" on one side, "怎么归集" on the other; a field in the wrong group
     // lands in the wrong column on a wide screen without failing anything else.
     expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标钱包" }));
+    expandSettings("修改 RPC");
     expect(config).toContainElement(screen.getByRole("textbox", { name: "RPC 地址" }));
+    expandSettings("执行节奏");
     expect(config).toContainElement(screen.getByRole("spinbutton", { name: "并发钱包数" }));
   });
 
   it("persists a replacement RPC and uses it on the next mount", async () => {
     const user = userEvent.setup();
     const firstRender = render(<SolCollectionPage />);
+    expandSettings("修改 RPC");
     const rpc = screen.getByRole("textbox", { name: "RPC 地址" });
     await user.clear(rpc);
     await user.type(rpc, "https://custom.sol.example/rpc");
@@ -743,6 +752,7 @@ describe("SolCollectionPage workbench", () => {
     firstRender.unmount();
 
     render(<SolCollectionPage />);
+    expandSettings("修改 RPC");
     expect(screen.getByRole("textbox", { name: "RPC 地址" })).toHaveValue("https://custom.sol.example/rpc");
   });
 

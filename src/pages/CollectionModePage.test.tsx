@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandSettings } from "../test/workbench";
+
 import { useRef, useState, type ReactNode } from "react";
 import { Keypair } from "@solana/web3.js";
 import { privateKeyToAccount } from "viem/accounts";
@@ -73,6 +75,7 @@ describe("CollectionModePage DOM handoff", () => {
     expect(screen.getByRole("textbox", { name: "接收地址" })).toHaveValue(target);
     expect(document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!.value).toBe(keys.join("\n"));
     const changedRpc = "https://changed-rpc.example.com";
+    expandSettings("修改 RPC");
     fireEvent.change(screen.getByRole("textbox", { name: "RPC 节点" }), { target: { value: changedRpc } });
     const automaticStore = document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!;
     await user.click(screen.getByRole("tab", { name: "手动归集" }));

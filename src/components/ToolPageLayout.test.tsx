@@ -1,20 +1,21 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ToolPageLayout } from "./ToolPageLayout";
+import { ActionBar, WorkbenchPanel } from "./WorkbenchPrimitives";
 
 describe("ToolPageLayout", () => {
-  it("keeps task actions outside the form scroll viewport", () => {
+  it("keeps a single execution action inside its configuration panel", () => {
     const markup = renderToStaticMarkup(
-      <ToolPageLayout actionBar={<button>确认并开始归集</button>} currentToolId="sol-collection" stickyActions title="归集">
-        <div>长表单内容</div>
+      <ToolPageLayout currentToolId="sol-collection" title="归集">
+        <WorkbenchPanel title="配置" footer={<ActionBar><button>确认并开始归集</button></ActionBar>}><div>长表单内容</div></WorkbenchPanel>
       </ToolPageLayout>
     );
-    const dock = markup.indexOf('class="site-action-dock"');
+    const action = markup.indexOf("确认并开始归集");
     expect(markup).toContain('class="site-tool-scroll"');
-    expect(dock).toBeGreaterThan(markup.indexOf("</main>"));
-    expect(dock).toBeGreaterThan(markup.indexOf("</footer>"));
+    expect(markup).not.toContain("site-action-dock");
+    expect(action).toBeGreaterThan(markup.indexOf("长表单内容"));
+    expect(action).toBeLessThan(markup.indexOf("</main>"));
     expect(markup.match(/确认并开始归集/g)).toHaveLength(1);
-    expect(markup.indexOf("确认并开始归集")).toBeGreaterThan(dock);
   });
   it("keeps the optional mode switch beside the title before the workspace", () => {
     const markup = renderToStaticMarkup(
@@ -31,7 +32,6 @@ describe("ToolPageLayout", () => {
       <ToolPageLayout
         actions={<span>清空任务</span>}
         currentToolId="sol-distribution"
-        stickyActions
         status="uncertain"
         statusLabel="已提交，等待链上确认"
         title="测试工具"
@@ -46,7 +46,6 @@ describe("ToolPageLayout", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('aria-atomic="true"');
-    expect(markup).toContain('data-sticky-actions="true"');
     expect(markup).not.toContain("操作步骤");
     expect(markup).not.toContain("site-tool-step");
   });

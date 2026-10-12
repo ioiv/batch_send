@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildWalletAssetOverview, type WalletAssetHolding } from "../lib/wallet-asset-overview";
+import { WorkflowFeedback, type WorkflowRequirement } from "../components/WorkflowFeedback";
+import { RpcSettings } from "../components/RpcSettings";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { CollectionResults } from "../components/CollectionResults";
@@ -77,6 +79,7 @@ import {
   type EvmNativeCurrency
 } from "../lib/evm";
 import {
+  getCollectionResultDisplayStatus,
   sanitizeRoundArchiveText,
   type CollectionDisplayResult,
   type CollectionResultStatus
@@ -460,7 +463,7 @@ function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
       explorerUrl: result.explorerUrl,
       hash: result.hash,
       message: result.message,
-      status: result.status
+      status: getCollectionResultDisplayStatus(result)
     });
   });
   return grouped;
@@ -1880,9 +1883,10 @@ export function EvmCollectionPage({
         ...executionPlan.filter((item) => resultById.get(item.id)?.retryable)
       ];
       const success = executionResults.filter((result) => result.status === "success").length;
-      const failed = executionResults.filter((result) => result.status === "failed").length;
+      const failed = executionResults.filter((result) => result.status === "failed" && !result.uncertain).length;
+      const uncertain = executionResults.filter((result) => result.uncertain).length;
       setStage("complete");
-      setMessage(`归集完成：${success} 项确认成功${failed ? `，${failed} 项失败` : ""}`
+      setMessage(`归集完成：${success} 项确认成功${failed ? `，${failed} 项失败` : ""}${uncertain ? `，${uncertain} 项待核对` : ""}`
         + (retryPlanRef.current.length ? `；${retryPlanRef.current.length} 项可直接重试` : ""));
     } catch (error) {
       retryPlanRef.current = [
@@ -1940,6 +1944,18 @@ export function EvmCollectionPage({
     && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
     && executionSettingsValid && rpcEndpointValid && !running
     && !acknowledgementRequired;
+  const requirement: WorkflowRequirement | null = running || (roundIsTerminal && !acknowledgementRequired) ? null
+    : acknowledgementRequired ? { message: "请先在归集记录中核对已提交交易的链上状态" }
+    : !sourceKeyLineCount ? { message: "请先导入并选择来源钱包", targetId: "source-wallet-import" }
+    : !targetIsValid ? { message: targetAddress.trim() ? "请修正目标地址" : "请填写目标地址", targetId: "evm-collection-target" }
+    : !executableAssetCount ? { message: "请添加或识别要归集的资产", targetId: fixedStandard === "nft" ? "nft-quick-contract" : "evm-collection-asset-0" }
+    : !rpcEndpointValid ? { message: "请填写有效的 RPC 地址", targetId: "evm-collection-rpc" }
+    : !amountPolicyValid ? { message: "请修正归集数量", targetId: "collection-amount" }
+    : !executionSettingsValid ? { message: "请修正并发数或随机延迟", targetId: "evm-collection-concurrency" }
+    : maximumFeeAmount === null ? { message: "单笔最高网络费必须大于 0", targetId: "evm-collection-max-fee" }
+    : !gas.gasSettings ? { message: "请修正 Gas 费率", targetId: "collection-gas" }
+    : !canStart ? { message: "请完成输入检查后再归集" } : { message: "配置已就绪，确认后将按实时余额执行" };
+
   const parsedTokenRangeStart = /^\d+$/.test(tokenRangeStart.trim())
     ? BigInt(tokenRangeStart.trim())
     : null;
@@ -1971,9 +1987,7 @@ export function EvmCollectionPage({
         : "—"
       : "按实时余额计算";
 
-  return (
-    <ToolPageLayout
-      actionBar={(
+  const taskActions = (
         <ActionBar
           summary={<WorkbenchSummary items={[
             { label: "已选钱包", value: sourceKeyLineCount },
@@ -1981,8 +1995,23 @@ export function EvmCollectionPage({
             { label: "资产项", value: parsedAssetCount },
             { label: "并发", value: concurrency }
           ]} />}
+          secondaryActions={<>
+              {results.length && roundIsTerminal && retryableCount ? (
+                <ConfirmActionDialog
+                  triggerSize="lg"
+                  confirmLabel={`重试 ${retryableCount} 个失败项`}
+                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                  disabled={running}
+                  onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
+                  title="确认重试失败项？"
+                  triggerLabel={`重试失败项 (${retryableCount})`}
+                  triggerVariant="outline"
+                />
+              ) : null}
+          </>}
           feedback={(
             <>
+              <WorkflowFeedback requirement={requirement} />
               {issues.length ? (
                 <Alert variant="destructive">
                   <AlertTitle>输入有误</AlertTitle>
@@ -1998,7 +2027,7 @@ export function EvmCollectionPage({
                 <Alert
                   aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"}
                   summary={message}
-                  variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}
+                  tone={workbenchStatus === "uncertain" ? "warning" : workbenchStatus === "error" ? "error" : "info"}
                 >{message}</Alert>
               ) : null}
 
@@ -2016,24 +2045,13 @@ export function EvmCollectionPage({
             />
           ) : results.length && roundIsTerminal ? (
             <>
-              {retryableCount ? (
-                <ConfirmActionDialog
-                  triggerSize="lg"
-                  confirmLabel={`重试 ${retryableCount} 个失败项`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : null}
+
               <Button
                 size="lg"
                 disabled={running}
                 onClick={startNewRound}
                 type="button"
-                variant={retryableCount ? "outline" : "default"}
+                variant="default"
               >开始新一轮归集</Button>
               {currentRoundRequiresAcknowledgement ? (
                 <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能提交新的写入任务。</Alert>
@@ -2067,7 +2085,10 @@ export function EvmCollectionPage({
             />
           )}
         </ActionBar>
-      )}
+  );
+
+  return (
+    <ToolPageLayout
       actions={(
         <>
           <EvmGasBadge gas={gas} networkLabel={selectedNetwork.label} />
@@ -2087,7 +2108,6 @@ export function EvmCollectionPage({
           <TabsList aria-label="归集模式"><TabsTrigger value="manual">手动归集</TabsTrigger><TabsTrigger disabled={controlsLocked || acknowledgementRequired} value="automatic">一键归集</TabsTrigger></TabsList>
         </Tabs>
       ) : undefined}
-      stickyActions
       status={workbenchStatus}
       statusLabel={discoveryRunning
         ? "Token ID 探测中"
@@ -2096,6 +2116,7 @@ export function EvmCollectionPage({
     >
       <div className={"workspace collection-workspace" + (results.length ? " has-results" : "")}>
         <WorkbenchPanel
+          footer={taskActions}
           actions={fixedStandard === "nft" ? (
             <Field className="nft-opensea-key">
               <FieldLabel htmlFor="nft-opensea-api-key">OpenSea Key</FieldLabel>
@@ -2352,6 +2373,7 @@ export function EvmCollectionPage({
                       autoComplete="off"
                       disabled={controlsLocked}
                       id="evm-collection-target"
+                      aria-describedby={targetAddress.trim() && !targetIsValid ? "evm-target-error" : undefined}
                       onChange={(event) => {
                         setTargetAddress(event.target.value);
                         invalidatePlan();
@@ -2360,7 +2382,7 @@ export function EvmCollectionPage({
                       spellCheck={false}
                       value={targetAddress}
                     />
-                    {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                    {targetAddress.trim() && !targetIsValid ? <FieldError id="evm-target-error">请输入有效的非零 EVM 地址</FieldError> : null}
                   </Field>
                 </>
               ) : (
@@ -2550,6 +2572,7 @@ export function EvmCollectionPage({
                       autoComplete="off"
                       disabled={controlsLocked}
                       id="evm-collection-target"
+                      aria-describedby={targetAddress.trim() && !targetIsValid ? "evm-target-error" : undefined}
                       onChange={(event) => {
                         setTargetAddress(event.target.value);
                         invalidatePlan();
@@ -2558,7 +2581,7 @@ export function EvmCollectionPage({
                       spellCheck={false}
                       value={targetAddress}
                     />
-                    {targetAddress.trim() && !targetIsValid ? <FieldError>请输入有效的非零 EVM 地址</FieldError> : null}
+                    {targetAddress.trim() && !targetIsValid ? <FieldError id="evm-target-error">请输入有效的非零 EVM 地址</FieldError> : null}
                   </Field>
 
                 </>
@@ -2587,6 +2610,7 @@ export function EvmCollectionPage({
                     value={networkId}
                   />
                 </Field>
+                <RpcSettings endpoint={effectiveRpcEndpoint} disabled={controlsLocked} invalid={!rpcEndpointValid}>
                 <Field data-invalid={!rpcEndpointValid ? true : undefined}>
                   <FieldLabel htmlFor="evm-collection-rpc">RPC</FieldLabel>
                   <Input
@@ -2609,10 +2633,11 @@ export function EvmCollectionPage({
                   />
                   {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
                 </Field>
+                </RpcSettings>
               </div>
 
               {fixedStandard === "erc20" ? (
-                <Field data-invalid={!amountPolicyValid ? true : undefined}>
+                <Field id="collection-amount" data-invalid={!amountPolicyValid ? true : undefined}>
                   <FieldLabel>归集数量</FieldLabel>
                   <Tabs
                     onValueChange={(value) => {
@@ -2667,7 +2692,7 @@ export function EvmCollectionPage({
                     <Badge variant="outline">归集全部余额</Badge>
                   </Field>
                 ) : (
-                  <Field data-invalid={!nftAmountPolicyValid ? true : undefined}>
+                  <Field id="collection-amount" data-invalid={!nftAmountPolicyValid ? true : undefined}>
                     <div className="flex w-fit items-center gap-1">
                       <FieldLabel>归集数量</FieldLabel>
                       <HelpTooltip label="归集数量说明">
@@ -2709,6 +2734,8 @@ export function EvmCollectionPage({
                 )
               ) : null}
 
+              <div className="config-grid__full"><AdvancedSettings label="执行节奏" disabled={controlsLocked}
+                invalid={!executionSettingsValid} summary={`并发 ${concurrency} · 延迟 ${minimumDelay}–${maximumDelay} 秒`}>
               <div className="field-row execution-settings-row">
                 <Field>
                   <FieldLabel htmlFor="evm-collection-concurrency">并发钱包数</FieldLabel>
@@ -2739,8 +2766,9 @@ export function EvmCollectionPage({
                 </Field>
               </div>
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
+              </AdvancedSettings></div>
 
-              <div className="config-grid__full">
+              <div className="config-grid__full" id="collection-gas">
                 <EvmGasSettings
                   disabled={controlsLocked}
                   gas={gas}
@@ -2748,7 +2776,7 @@ export function EvmCollectionPage({
                 />
               </div>
 
-              <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级网络费保护">
+              <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级网络费保护" invalid={maximumFeeAmount === null} summary={`单笔上限 ${maxFeeAmount} ${selectedNetwork.nativeCurrency.symbol}`}>
                 <Field data-invalid={maximumFeeAmount === null ? true : undefined}>
                   <FieldLabel htmlFor="evm-collection-max-fee">
                     单笔最高网络费（{selectedNetwork.nativeCurrency.symbol}）

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandSettings, expandTaskDetails } from "../test/workbench";
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { privateKeyToAccount } from "viem/accounts";
@@ -355,6 +357,7 @@ describe("EvmCollectionPage workbench", () => {
     const feeProtection = screen.getByRole("button", { name: /高级网络费保护/ });
 
     expect(within(networkAndRpc).getByRole("combobox")).toBeVisible();
+    expandSettings("修改 RPC");
     expect(within(networkAndRpc).getByRole("textbox", { name: "RPC" }))
       .toHaveValue("https://ethereum.publicnode.com");
     expect(within(networkAndRpc).getByText(/Chain ID/)).toHaveTextContent("Chain ID 1");
@@ -383,6 +386,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(subject).toContainElement(screen.getByRole("textbox", { name: "Token 清单" }));
     expect(subject).toContainElement(screen.getByRole("textbox", { name: "目标地址" }));
     expect(config).toContainElement(screen.getByLabelText("网络与 RPC"));
+    expandSettings("执行节奏");
     expect(config).toContainElement(screen.getByRole("spinbutton", { name: "并发钱包数" }));
     expect(config).toContainElement(screen.getByLabelText("Gas 设置"));
   });
@@ -492,6 +496,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(walletList).getByRole("checkbox", { name: new RegExp(secondSignerAccount.address, "i") })).not.toBeChecked();
     expect(within(walletList).getByLabelText(`${secondSignerAccount.address} 原生币余额`)).toBeVisible();
 
+    expandSettings("执行节奏");
     const concurrency = screen.getByRole("spinbutton", { name: "并发钱包数" });
     await user.clear(concurrency);
     await user.type(concurrency, "5");
@@ -644,6 +649,7 @@ describe("EvmCollectionPage workbench", () => {
     const user = await prepareReadyErc20Page();
     await confirmEvmExecution(user);
 
+    expandTaskDetails();
     expect(await screen.findByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("失败")).toBeVisible();
@@ -736,6 +742,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(await within(firstRow).findByText("NFT 1")).toBeVisible();
     expect(within(secondRow).getByText("NFT 2")).toBeVisible();
     expect(screen.getByText(/共有 3 个可归集 ERC721/)).toBeVisible();
+    expandSettings("执行节奏");
     const concurrencyInput = screen.getByRole("spinbutton", { name: "并发钱包数" });
     expect(concurrencyInput).toBeEnabled();
     expect(concurrencyInput).toHaveValue(3);
@@ -1229,6 +1236,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
 
     await waitFor(() => expect(screen.getAllByText("需核对链上状态").length).toBeGreaterThan(0));
+    expandTaskDetails();
     expect(screen.queryByRole("button", { name: /重试失败项/ })).not.toBeInTheDocument();
     const target = screen.getByRole("textbox", { name: "目标地址" });
     expect(target).toBeEnabled();
@@ -1511,6 +1519,7 @@ describe("EvmCollectionPage workbench", () => {
     await waitFor(() => expect(details).not.toBeInTheDocument());
     expect(within(walletList).getByText("失败")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "error");
+    expandTaskDetails();
     expect(screen.getByRole("button", { name: "重试失败项 (1)" })).toBeEnabled();
   });
 
@@ -1684,6 +1693,7 @@ describe("EvmCollectionPage workbench", () => {
     await screen.findByText(/共有 1 个可归集 ERC721/);
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
 
+    expandSettings("修改 RPC");
     const rpc = screen.getByRole("textbox", { name: "RPC" });
     await user.clear(rpc);
     await user.type(rpc, "https://rpc.example.test");

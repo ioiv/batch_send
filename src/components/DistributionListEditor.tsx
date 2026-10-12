@@ -56,6 +56,7 @@ export function DistributionListEditor({
     <section
       aria-disabled={disabled || undefined}
       aria-label="分发清单编辑"
+      id="distribution-input"
       className="distribution-list-editor grid min-w-0 gap-4"
     >
       <Field>
@@ -91,6 +92,7 @@ export function DistributionListEditor({
                 disabled={amountControlsDisabled}
                 id={`${fieldPrefix}-fixed-amount`}
                 min="0"
+                inputMode="decimal"
                 step={fixedAmountStep}
                 type="number"
                 value={fixedAmount}
@@ -107,6 +109,7 @@ export function DistributionListEditor({
                 disabled={amountControlsDisabled}
                 id={`${fieldPrefix}-min-amount`}
                 min="0"
+                inputMode="decimal"
                 step={randomAmountStep}
                 type="number"
                 value={minAmount}
@@ -119,6 +122,7 @@ export function DistributionListEditor({
                 disabled={amountControlsDisabled}
                 id={`${fieldPrefix}-max-amount`}
                 min="0"
+                inputMode="decimal"
                 step={randomAmountStep}
                 type="number"
                 value={maxAmount}

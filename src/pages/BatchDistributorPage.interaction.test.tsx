@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandSettings, expandTaskDetails } from "../test/workbench";
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -119,11 +121,12 @@ async function waitForInitialBalanceLookup() {
 }
 
 describe("BatchDistributorPage network safety", () => {
-  it("shows the network and RPC together without an advanced-settings disclosure", () => {
+  it("shows the current RPC summary and expands its editable field", () => {
     render(<BatchDistributorPage />);
 
     const networkAndRpc = screen.getByLabelText("网络与 RPC");
     expect(within(networkAndRpc).getByRole("combobox")).toBeVisible();
+    expandSettings("修改 RPC");
     expect(within(networkAndRpc).getByRole("textbox", { name: "RPC" }))
       .toHaveValue("https://api.mainnet-beta.solana.com");
     expect(screen.queryByRole("button", { name: "高级设置" })).not.toBeInTheDocument();
@@ -149,13 +152,14 @@ describe("BatchDistributorPage network safety", () => {
       screen.getByRole("textbox", { name: "收款地址" }),
       "11111111111111111111111111111111"
     );
+    expandSettings("修改 RPC");
     const rpcInput = screen.getByRole("textbox", { name: "RPC" });
     const connectionCount = solanaMocks.connectionEndpoints.length;
 
     fireEvent.change(rpcInput, { target: { value: "h" } });
 
     expect(await screen.findByText("RPC 地址无效：请输入完整的 HTTP 或 HTTPS 地址")).toBeVisible();
-    expect(screen.getByRole("alert")).toHaveTextContent("RPC 地址无效");
+    expect(screen.getByText("RPC 地址无效：请输入完整的 HTTP 或 HTTPS 地址").closest('[role="alert"]')).toBeInTheDocument();
     expect(rpcInput).toHaveAttribute("aria-invalid", "true");
     expect(solanaMocks.connectionEndpoints).toHaveLength(connectionCount);
     expect(screen.getByRole("button", { name: "运行预检" })).toBeDisabled();
@@ -166,6 +170,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitForInitialBalanceLookup();
 
     solanaMocks.connectionConstructorErrorEndpoint = "https://throws.example";
+    expandSettings("修改 RPC");
     fireEvent.change(screen.getByRole("textbox", { name: "RPC" }), {
       target: { value: solanaMocks.connectionConstructorErrorEndpoint }
     });
@@ -187,6 +192,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.getBalance.mockClear();
     solanaMocks.getBalance.mockResolvedValue(99_000_000_000n);
 
+    expandSettings("修改 RPC");
     fireEvent.change(screen.getByRole("textbox", { name: "RPC" }), {
       target: { value: "https://api.devnet.solana.com" }
     });
@@ -197,6 +203,7 @@ describe("BatchDistributorPage network safety", () => {
       "mainnet-beta"
     );
     expect(solanaMocks.getBalance).not.toHaveBeenCalled();
+    expandTaskDetails();
     expect(screen.getByRole("region", { name: "清单摘要" })).not.toHaveTextContent("99 SOL");
   });
 
@@ -235,7 +242,8 @@ describe("BatchDistributorPage network safety", () => {
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
     await waitFor(() => expect(solanaMocks.assertNetwork).toHaveBeenCalledTimes(1));
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
 
     const confirmTrigger = await screen.findByRole("button", { name: "确认并签名" });
     await user.click(confirmTrigger);
@@ -263,7 +271,8 @@ describe("BatchDistributorPage network safety", () => {
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
 
     const confirmTrigger = screen.getByRole("button", { name: "确认并签名" });
     await user.click(confirmTrigger);
@@ -287,7 +296,8 @@ describe("BatchDistributorPage network safety", () => {
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     await waitFor(() => expect(preflightButton).toBeEnabled());
     await user.click(preflightButton);
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "确认并签名" })).toBeEnabled();
 
     await user.type(editor, "\nBPFLoader1111111111111111111111111111111111");
@@ -307,14 +317,15 @@ describe("BatchDistributorPage network safety", () => {
     const editor = screen.getByRole("textbox", { name: "收款地址" });
     await user.type(editor, "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "确认并签名" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" }))
       .getByRole("button", { name: "确认并签名" }));
 
     expect(await screen.findByText(/已完成 1 笔交易确认/)).toBeVisible();
-    expect(screen.queryByRole("link", { name: /交易 1:/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "展开预检与结果" }));
+    expect(screen.getByRole("link", { name: /交易 1:/ })).not.toBeVisible();
+    expandTaskDetails();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toHaveAttribute("href", expect.stringContaining("solana-signature-1"));
     expect(screen.queryByRole("button", { name: "清空清单" })).not.toBeInTheDocument();
 
@@ -346,7 +357,8 @@ describe("BatchDistributorPage network safety", () => {
       "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "确认并签名" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" }))
       .getByRole("button", { name: "确认并签名" }));
@@ -375,7 +387,8 @@ describe("BatchDistributorPage network safety", () => {
       "11111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "运行预检" }));
-    await screen.findByText(/预检通过 · \d+ 笔/);
+    await screen.findByRole("button", { name: "确认并签名" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
     solanaMocks.getLatestBlockhash.mockClear();
 
     await user.click(screen.getByRole("button", { name: "确认并签名" }));

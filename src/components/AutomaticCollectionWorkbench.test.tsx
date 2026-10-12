@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandSettings, expandTaskDetails } from "../test/workbench";
+
 import { type ReactNode } from "react";
 import { Keypair } from "@solana/web3.js";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -14,8 +16,8 @@ vi.mock("../lib/automatic-sol-collection", () => ({ prepareAutomaticSolCollectio
 vi.mock("../lib/automatic-evm-collection", () => ({ prepareAutomaticEvmCollection: vi.fn() }));
 vi.mock("../hooks/useEvmGas", () => ({ useEvmGas: () => ({ gasSettings: { gasLimit: "auto", gasPrice: "auto" } }) }));
 vi.mock("./ToolPageLayout", () => ({
-  ToolPageLayout: ({ actionBar, children, title, modeSwitch, status }: { actionBar: ReactNode; children: ReactNode; title: string; modeSwitch: ReactNode; status: string }) => (
-    <main data-status={status}><h1>{title}</h1>{modeSwitch}{children}{actionBar}</main>
+  ToolPageLayout: ({ children, title, modeSwitch, status }: { children: ReactNode; title: string; modeSwitch: ReactNode; status: string }) => (
+    <main data-status={status}><h1>{title}</h1>{modeSwitch}{children}</main>
   )
 }));
 
@@ -83,6 +85,27 @@ async function confirm(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("AutomaticCollectionWorkbench", () => {
+  it("explains invalid destination and RPC fields before scanning", async () => {
+    const user = userEvent.setup();
+    renderWorkbench();
+    const destination = screen.getByRole("textbox", { name: "接收地址" });
+    fireEvent.change(destination, { target: { value: "invalid-address" } });
+    expect(destination).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("请输入可签名的 Solana 钱包地址")).toBeVisible();
+    expect(screen.getByRole("button", { name: "扫描资产" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "前往完善" }));
+    await waitFor(() => expect(destination).toHaveFocus());
+    fireEvent.change(destination, { target: { value: target } });
+    expandSettings("修改 RPC");
+    const rpc = screen.getByRole("textbox", { name: "RPC 节点" });
+    fireEvent.change(rpc, { target: { value: "https://" } });
+    expect(rpc).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("请输入有效的 HTTP(S) RPC 地址")).toBeVisible();
+    expect(prepareAutomaticSolCollection).not.toHaveBeenCalled();
+    fireEvent.change(rpc, { target: { value: "https://api.devnet.solana.com" } });
+    expect(screen.getByRole("button", { name: "扫描资产" })).toBeEnabled();
+  });
+
   it("unlocks configuration after a cancelled adapter eventually resolves without accepting its stale scan", async () => {
     const user = userEvent.setup();
     const { wallet, events } = preparedWallet();
@@ -97,9 +120,10 @@ describe("AutomaticCollectionWorkbench", () => {
     await act(async () => { resolveScan([wallet]); await pendingScan; });
     expect(screen.getByText("扫描已取消")).toBeVisible();
     expect(screen.getByRole("textbox", { name: "接收地址" })).toBeEnabled();
+    expandSettings("修改 RPC");
     expect(screen.getByRole("textbox", { name: "RPC 节点" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "扫描资产" })).toBeEnabled();
-    expect(runButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(screen.queryByText("USDC")).not.toBeInTheDocument();
     expect(events).toEqual([]);
   });
@@ -114,8 +138,8 @@ describe("AutomaticCollectionWorkbench", () => {
     await user.click(screen.getByRole("button", { name: "扫描资产" }));
     await waitFor(() => expect(screen.getByText("扫描完成 · 1 个钱包")).toBeVisible());
     expect(screen.getByRole("checkbox", { name: "最后归集原生币" })).not.toBeChecked();
-    expect(runButton()).toBeDisabled();
-    await user.click(runButton());
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled();
     expect(screen.queryByRole("alertdialog", { name: "确认一键归集？" })).not.toBeInTheDocument();
     expect(events).toEqual([]);
   });
@@ -129,6 +153,7 @@ describe("AutomaticCollectionWorkbench", () => {
     await user.click(screen.getByRole("checkbox", { name: "最后归集原生币" }));
     await confirm(user);
     expect(events).toEqual(["token", "nft", "verify", "native"]);
+    expandTaskDetails();
     await user.click(screen.getByRole("button", { name: "查看日志" }));
     let log = screen.getByRole("dialog", { name: "执行日志" });
     expect(within(log).getByText("SOL")).toBeVisible();
@@ -139,9 +164,9 @@ describe("AutomaticCollectionWorkbench", () => {
     expect(historyRef.current).toHaveLength(1);
     expect(historyRef.current[0].results.map((result) => result.phase)).toEqual(["token", "nft", "native"]);
     expect(historyRef.current[0].results[2]).toMatchObject({ asset: "SOL", hash: "native-signature", status: "success" });
-    expect(runButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "扫描资产" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "查看日志" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "查看日志" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "展开历史归集记录" }));
     const historicalLogButton = screen.getAllByRole("button", { name: "查看日志" }).find((button) => !button.hasAttribute("disabled"))!;
     await user.click(historicalLogButton);
@@ -156,7 +181,7 @@ describe("AutomaticCollectionWorkbench", () => {
     vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
     renderWorkbench();
     expect(screen.getByRole("checkbox", { name: "最后归集原生币" })).not.toBeChecked();
-    expect(runButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(screen.getByText("已选择 1 / 2")).toBeVisible();
     await scan(user);
     expect(prepareAutomaticSolCollection).toHaveBeenCalledWith(expect.objectContaining({ keys: secrets[0], targetAddress: target }));
@@ -174,7 +199,7 @@ describe("AutomaticCollectionWorkbench", () => {
     await confirm(user);
     expect(events).toEqual(["token", "nft"]);
     expect(wallet.verifyEmpty).not.toHaveBeenCalled();
-    expect(runButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(within(row).queryByText("USDC")).not.toBeInTheDocument();
   });
 
@@ -199,10 +224,11 @@ describe("AutomaticCollectionWorkbench", () => {
     vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
     renderWorkbench();
     await scan(user);
+    if (field === "rpc") expandSettings("修改 RPC");
     if (field === "rpc") fireEvent.change(screen.getByRole("textbox", { name: "RPC 节点" }), { target: { value: "https://different-rpc.example.com" } });
     if (field === "target") fireEvent.change(screen.getByRole("textbox", { name: "接收地址" }), { target: { value: alternate } });
     if (field === "selection") await user.click(screen.getByRole("checkbox", { name: new RegExp(address, "u") }));
-    expect(runButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(events).toEqual([]);
     expect(screen.queryByText("USDC")).not.toBeInTheDocument();
   });

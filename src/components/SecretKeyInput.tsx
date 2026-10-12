@@ -40,7 +40,7 @@ import { buildWalletAssetOverview, isWalletOverviewZeroBalance, type WalletAsset
 import { parseEvmPrivateKeyInput } from "../lib/evm-collection";
 import {
   shortenTransactionHash,
-  type CollectionResultStatus
+  type CollectionResultDisplayStatus
 } from "../lib/collection-results";
 import { copyText } from "../lib/clipboard";
 import { readSecretKeyFile, SecretKeyImportError } from "../lib/secret-key-import";
@@ -72,12 +72,13 @@ export type WalletExecutionItem = {
   explorerUrl?: string;
   hash?: string;
   message: string;
-  status: CollectionResultStatus;
+  status: CollectionResultDisplayStatus;
 };
 
-const walletStatusLabels: Record<CollectionResultStatus, string> = {
+const walletStatusLabels: Record<CollectionResultDisplayStatus, string> = {
   confirming: "确认中",
   error: "失败",
+  uncertain: "待核对",
   pending: "待处理",
   scanning: "读取中",
   skipped: "已跳过",
@@ -85,15 +86,16 @@ const walletStatusLabels: Record<CollectionResultStatus, string> = {
   success: "已完成"
 };
 
-const activeWalletStatuses = new Set<CollectionResultStatus>([
+const activeWalletStatuses = new Set<CollectionResultDisplayStatus>([
   "confirming",
   "pending",
   "scanning",
   "submitting"
 ]);
 
-function getWalletSummaryStatus(statuses: readonly WalletExecutionItem[]): CollectionResultStatus {
-  return statuses.find((item) => activeWalletStatuses.has(item.status))?.status
+function getWalletSummaryStatus(statuses: readonly WalletExecutionItem[]): CollectionResultDisplayStatus {
+  return statuses.find((item) => item.status === "uncertain")?.status
+    || statuses.find((item) => activeWalletStatuses.has(item.status))?.status
     || statuses.find((item) => item.status === "error")?.status
     || statuses.find((item) => item.status === "success")?.status
     || "skipped";
@@ -103,10 +105,12 @@ function getWalletStatusBreakdown(statuses: readonly WalletExecutionItem[]) {
   const success = statuses.filter((item) => item.status === "success").length;
   const failed = statuses.filter((item) => item.status === "error").length;
   const skipped = statuses.filter((item) => item.status === "skipped").length;
-  const active = statuses.length - success - failed - skipped;
+  const uncertain = statuses.filter((item) => item.status === "uncertain").length;
+  const active = statuses.length - success - failed - skipped - uncertain;
   return [
     success ? `成功 ${success}` : "",
     failed ? `失败 ${failed}` : "",
+    uncertain ? `待核对 ${uncertain}` : "",
     active ? `处理中 ${active}` : "",
     skipped ? `跳过 ${skipped}` : ""
   ].filter(Boolean).join(" · ");
@@ -712,6 +716,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         <DialogTrigger
           aria-label={wallets.length ? "继续导入钱包" : "导入钱包"}
           className={wallets.length ? "secret-import-summary" : "secret-import-dropzone"}
+          id="source-wallet-import"
           data-drag-active={dragActive || undefined}
           disabled={inputLocked}
           onDragOver={(event) => {

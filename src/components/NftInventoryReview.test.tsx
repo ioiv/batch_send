@@ -147,7 +147,7 @@ describe("NftInventoryReview", () => {
       />
     );
 
-    expect(screen.getByText("需核对")).toBeVisible();
+    expect(screen.getByText("待核对")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /重试 .*Token ID 42/ }));
     await user.click(within(screen.getByRole("alertdialog", { name: "重试该失败项？" }))
       .getByRole("button", { name: "确认重试" }));

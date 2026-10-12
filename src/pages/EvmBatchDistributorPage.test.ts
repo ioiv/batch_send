@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { expandTaskDetails } from "../test/workbench";
+
 import { createElement } from "react";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -141,6 +143,7 @@ describe("EvmBatchDistributorPage safety", () => {
   it("keeps the summary beside the actions and selects problem lines without sending", async () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
+    expandTaskDetails();
     const summary = screen.getByRole("region", { name: "清单摘要" });
     expect(summary.closest(".workbench-action-bar")).not.toBeNull();
     expect(within(summary).queryByText("需修正")).not.toBeInTheDocument();
@@ -177,13 +180,14 @@ describe("EvmBatchDistributorPage safety", () => {
     const gasSettings = screen.getByLabelText("Gas 设置");
     expect(gasSettings).toBeVisible();
     // The compact summary stays beside the operation buttons, after the fee settings.
+    expandTaskDetails();
     const summary = screen.getByRole("region", { name: "清单摘要" });
     const summaryValue = (label: string) => within(summary).getByText(label).nextElementSibling;
     expect(summaryValue("预估网络费")).toHaveTextContent("—");
     expect(gasSettings.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     const preflightButton = screen.getByRole("button", { name: "运行预检" });
     expect(gasSettings.closest(".workbench-panel")).not.toBeNull();
-    expect(preflightButton.closest(".site-action-dock")).not.toBeNull();
+    expect(preflightButton.closest(".workbench-panel")).toBe(gasSettings.closest(".workbench-panel"));
     expect(gasSettings.compareDocumentPosition(preflightButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "3.25");
@@ -191,6 +195,7 @@ describe("EvmBatchDistributorPage safety", () => {
     await user.click(preflightButton);
 
     await screen.findByRole("button", { name: "确认分发" });
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
     expect(pageMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
       gasSettings: {
         fee: { gasPrice: 3_250_000_000n, type: "legacy" },
@@ -393,8 +398,8 @@ describe("EvmBatchDistributorPage safety", () => {
 
     expect(await screen.findByText("分发完成")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "success");
-    expect(screen.queryByRole("table", { name: "EVM 分发交易结果" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "展开分发结果" }));
+    expect(screen.getByRole("table", { name: "EVM 分发交易结果" })).not.toBeVisible();
+    expandTaskDetails();
     expect(screen.getByRole("table", { name: "EVM 分发交易结果" })).toBeInTheDocument();
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(pageMocks.preflight).toHaveBeenCalledTimes(2);

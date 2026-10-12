@@ -1,3 +1,4 @@
+import { WorkflowFeedback } from "../components/WorkflowFeedback";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CompactNotice as Alert, NoticeDetail as AlertDescription, NoticeTitle as AlertTitle } from "@/components/CompactNotice";
 import { HelpTooltip } from "@/components/HelpTooltip";
@@ -251,10 +252,11 @@ export function EvmContractDeployPage() {
   const busy = status === "validating" || status === "awaiting-wallet" || status === "confirming";
   const safetyState = getDeploymentSafetyState(status, hash);
   const submittedButUncertain = safetyState.submittedButUncertain;
+  const rpcEndpointValid = (() => { try { return new URL(effectiveRpcEndpoint).protocol === "https:"; } catch { return false; } })();
   const canValidate = wallet.connected
     && Boolean(wallet.address)
     && Boolean(provider)
-    && Boolean(effectiveRpcEndpoint)
+    && rpcEndpointValid
     && blockExplorerUrlIsValid
     && Boolean(gas.gasSettings)
     && !busy;
@@ -644,17 +646,19 @@ export function EvmContractDeployPage() {
       : { message: "浏览器未能保存链配置，请检查本地存储权限", status: "error" });
   };
 
-  return (
-    <ToolPageLayout
-      actionBar={(
+  const taskActions = (
         <ActionBar
           summary={<WorkbenchSummary items={[
             { label: "目标", value: <span title={disperseContractAddress}>{shortenAddress(disperseContractAddress)}</span> },
             ...(preflight?.status === "ready" ? [{ label: "执行费上限", value: estimatedFee }] : [])
           ]} />}
+          secondaryActions={status === "ready" ? <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button> : null}
           feedback={(
             <>
-              {!wallet.connected || !effectiveRpcEndpoint ? <span className="hint" role="status">{!wallet.connected ? "请连接部署钱包" : "请输入 HTTPS RPC"}</span> : null}
+              <WorkflowFeedback requirement={busy ? null : !wallet.connected || !provider ? { message: "请连接部署钱包", targetId: "wallet-connection" }
+                : !rpcEndpointValid ? { message: "请输入有效的 HTTPS RPC", targetId: networkSource === "known" ? "deployKnownRpcEndpoint" : "deployCustomRpcEndpoint" }
+                : !blockExplorerUrlIsValid ? { message: "请修正区块浏览器地址", targetId: "deployBlockExplorerUrl" }
+                : !gas.gasSettings ? { message: "请修正 Gas 费率", targetId: "deploy-gas" } : null} />
       {message ? (
         <Alert variant={status === "error" ? "destructive" : "default"}>
           <AlertTitle>{status === "ready"
@@ -685,7 +689,7 @@ export function EvmContractDeployPage() {
             </>
           )}
         >
-            {safetyState.canRetryValidation || deploymentComplete || submittedButUncertain ? (
+            {!busy && status !== "ready" && (safetyState.canRetryValidation || deploymentComplete || submittedButUncertain) ? (
               <Button size="lg" disabled={!canValidate} onClick={() => void runValidation()} type="button">
                 {status === "idle" ? "校验部署条件" : "重新校验"}
               </Button>
@@ -713,11 +717,13 @@ export function EvmContractDeployPage() {
                   title="确认 CreateX 部署"
                   triggerLabel="确认部署"
                 />
-                <Button size="lg" disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button>
               </>
             ) : null}
         </ActionBar>
-      )}
+  );
+
+  return (
+    <ToolPageLayout
       actions={(
         <>
           <EvmGasBadge gas={gas} networkLabel={displayNetwork?.label} />
@@ -733,13 +739,13 @@ export function EvmContractDeployPage() {
         </Tabs>
       )}
       walletControl={<EvmWalletConnectionControl disabled={configurationLocked} wallet={wallet} />}
-      stickyActions
       status={workbenchStatus}
       statusLabel={workbenchStatusLabel}
       title="CreateX 合约部署"
     >
       <div className="workbench-grid">
         <WorkbenchPanel
+          footer={taskActions}
           actions={<Badge variant="outline">{displayNetwork ? `${displayNetwork.label} · ${displayNetwork.chainId}` : "网络待校验"}</Badge>}
           className="deploy-panel"
           segmented
@@ -777,6 +783,8 @@ export function EvmContractDeployPage() {
                     autoComplete="off"
                     disabled={configurationLocked}
                     id={networkSource === "known" ? "deployKnownRpcEndpoint" : "deployCustomRpcEndpoint"}
+                    aria-invalid={!rpcEndpointValid || undefined}
+                    aria-describedby={!rpcEndpointValid ? "deploy-rpc-error" : undefined}
                     inputMode="url"
                     onChange={(event) => { setRpcEndpoint(event.target.value); resetDiscoveredNetwork(); }}
                     placeholder="https://your-evm-rpc.example"
@@ -785,18 +793,21 @@ export function EvmContractDeployPage() {
                     type="url"
                     value={rpcEndpoint}
                   />
+                  {!rpcEndpointValid ? <FieldError id="deploy-rpc-error">请输入有效的 HTTPS RPC 地址</FieldError> : null}
                 </Field>
               </div>
             </WorkbenchSection>
-            <WorkbenchSection title="Gas">
+            <WorkbenchSection title="网络费用">
+            <div id="deploy-gas">
             <EvmGasSettings
               disabled={configurationLocked}
               gas={gas}
               onSettingsChange={resetForEdit}
             />
+            </div>
             </WorkbenchSection>
 
-              <AdvancedSettings disabled={configurationLocked} label="浏览器与链元数据">
+              <AdvancedSettings disabled={configurationLocked} label="浏览器与链元数据" invalid={!blockExplorerUrlIsValid}>
             <Field data-invalid={!blockExplorerUrlIsValid || undefined}>
               <FieldLabel htmlFor="deployBlockExplorerUrl">区块浏览器地址</FieldLabel>
               <Input

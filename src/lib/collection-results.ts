@@ -23,6 +23,14 @@ export type CollectionDisplayResult = {
   uncertain?: boolean;
 };
 
+export type CollectionResultDisplayStatus = CollectionResultStatus | "uncertain";
+
+// Keep execution states intact; an uncertain submission is a separate review state.
+export function getCollectionResultDisplayStatus(result: CollectionDisplayResult): CollectionResultDisplayStatus {
+  return result.uncertain || (result.uncertain === undefined && result.status === "error" && result.hash && result.retryable !== true)
+    ? "uncertain" : result.status;
+}
+
 export function shortenTransactionHash(hash: string) {
   return hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : hash;
 }
@@ -37,9 +45,10 @@ export type CollectionResultCounts = {
   skipped: number;
   success: number;
   total: number;
+  uncertain: number;
 };
 
-export type CollectionResultFilter = "all" | "active" | "success" | "skipped" | "error";
+export type CollectionResultFilter = "all" | "active" | "success" | "skipped" | "error" | "uncertain";
 
 export type FilterCollectionResultsOptions = {
   query?: string;
@@ -49,12 +58,14 @@ export type FilterCollectionResultsOptions = {
 export function getCollectionResultCounts(results: CollectionDisplayResult[]): CollectionResultCounts {
   return results.reduce<CollectionResultCounts>((counts, result) => {
     counts.total += 1;
-    if (result.status === "success") counts.success += 1;
-    else if (result.status === "skipped") counts.skipped += 1;
-    else if (result.status === "error") counts.error += 1;
+    const status = getCollectionResultDisplayStatus(result);
+    if (status === "success") counts.success += 1;
+    else if (status === "skipped") counts.skipped += 1;
+    else if (status === "error") counts.error += 1;
+    else if (status === "uncertain") counts.uncertain += 1;
     else counts.active += 1;
     return counts;
-  }, { active: 0, error: 0, skipped: 0, success: 0, total: 0 });
+  }, { active: 0, error: 0, skipped: 0, success: 0, total: 0, uncertain: 0 });
 }
 
 export function filterCollectionResults(
@@ -63,10 +74,11 @@ export function filterCollectionResults(
 ) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return results.filter((result) => {
+    const displayStatus = getCollectionResultDisplayStatus(result);
     const matchesStatus = status === "all"
       || (status === "active"
-        ? !["success", "skipped", "error"].includes(result.status)
-        : result.status === status);
+        ? !["success", "skipped", "error", "uncertain"].includes(displayStatus)
+        : displayStatus === status);
     if (!matchesStatus) return false;
     if (!normalizedQuery) return true;
 
@@ -97,7 +109,7 @@ export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
     result.address,
     result.asset,
     result.amount || "",
-    result.status,
+    getCollectionResultDisplayStatus(result),
     result.message,
     result.hash || "",
     result.explorerUrl || ""

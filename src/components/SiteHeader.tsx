@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { getToolsByCategory, toolCategories, tools, type ToolIcon as ToolIconName } from "@/config/tools";
+import { useState, type ReactNode } from "react";
+import { getToolsByCategory, toolCategories, type ToolIcon as ToolIconName } from "@/config/tools";
 import { Button } from "@/components/ui/button";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { ToolSearch } from "./ToolSearch";
 import {
   Sheet,
   SheetContent,
@@ -67,77 +67,6 @@ function Brand() {
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <circle cx="8.75" cy="8.75" r="4.75" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m12.25 12.25 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ToolSearch() {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState("");
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    const focusSearch = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }
-    };
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, []);
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return;
-
-    const match = tools.find((tool) => (
-      [tool.title, tool.shortTitle, tool.description, ...tool.keywords]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
-    ));
-
-    if (match) {
-      window.location.assign(match.href);
-      return;
-    }
-
-    setMessage("没有匹配的工具");
-  }
-
-  return (
-    <form className="site-tool-search" onSubmit={handleSubmit} role="search">
-      <InputGroup>
-        <InputGroupAddon className="site-tool-search__icon"><SearchIcon /></InputGroupAddon>
-        <InputGroupInput
-          aria-describedby="site-tool-search-message"
-          aria-label="搜索工具"
-          list="site-tool-search-options"
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setMessage("");
-          }}
-          placeholder="搜索工具、链或功能"
-          ref={inputRef}
-          type="search"
-          value={query}
-        />
-        <InputGroupAddon align="inline-end"><kbd aria-hidden="true">⌘K</kbd></InputGroupAddon>
-      </InputGroup>
-      <datalist id="site-tool-search-options">
-        {tools.map((tool) => <option key={tool.id} value={tool.title} />)}
-      </datalist>
-      <span className="sr-only" id="site-tool-search-message" role="status">{message}</span>
-    </form>
-  );
-}
-
 function SidebarNavigation({ currentToolId, mobile = false }: { currentToolId?: string; mobile?: boolean }) {
   return (
     <nav className={`site-sidebar__nav${mobile ? " site-sidebar__nav--mobile" : ""}`} aria-label={mobile ? "移动端工具导航" : "工具导航"}>
@@ -151,6 +80,7 @@ function SidebarNavigation({ currentToolId, mobile = false }: { currentToolId?: 
               {getToolsByCategory(category.id).map((tool) => (
                 <a
                   aria-current={currentToolId === tool.id ? "page" : undefined}
+                  aria-label={`${tool.shortTitle} · ${tool.ecosystems.includes("evm") ? "EVM" : "Solana"}`}
                   className="site-sidebar__link"
                   data-active={currentToolId === tool.id || undefined}
                   href={tool.href}
@@ -179,13 +109,13 @@ export interface SiteHeaderProps {
 
 export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true"
+    () => { try { return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true"; } catch { return false; } }
   );
 
   function toggleSidebar() {
     setSidebarCollapsed((current) => {
       const next = !current;
-      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+      try { window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next)); } catch { /* Navigation works without storage. */ }
       return next;
     });
   }
@@ -213,6 +143,7 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
                   <SheetTitle>ChainKit</SheetTitle>
                   <SheetDescription>选择要使用的链上工具</SheetDescription>
                 </SheetHeader>
+                <ToolSearch mobile />
                 <SidebarNavigation currentToolId={currentToolId} mobile />
               </SheetContent>
             </Sheet>

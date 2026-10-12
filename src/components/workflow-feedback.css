@@ -1,0 +1,3 @@
+.workflow-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 0 var(--space-xs); min-width: 0; font-size: var(--text-label); color: var(--muted-foreground); }
+.workflow-feedback > span { min-width: 0; overflow-wrap: anywhere; }
+.workflow-feedback > button { padding-inline: 0; height: auto; min-height: var(--control-h-sm); }

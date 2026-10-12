@@ -11,11 +11,10 @@ function readRule(selector: string) {
 }
 
 describe("workbench layout CSS contract", () => {
-  it("reserves a separate action row while the form scrolls", () => {
+  it("lets configuration and actions scroll together without a separate dock", () => {
     expect(readRule(".site-tool-scroll")).toContain("flex: 1");
     expect(readRule(".site-tool-scroll")).toContain("overflow-y: auto");
-    expect(readRule(".site-action-dock")).toContain("flex: 0 0 auto");
-    expect(readRule(".site-action-dock")).not.toContain("position: fixed");
+    expect(appCss).not.toContain(".site-action-dock");
     const gridRules = [...appCss.matchAll(/\.config-grid\s*\{([^}]+)\}/g)]
       .map(match => match[1]).filter(rule => rule.includes("grid-template-columns"));
     expect(gridRules).toHaveLength(1);

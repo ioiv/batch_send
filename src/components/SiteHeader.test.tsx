@@ -9,6 +9,31 @@ beforeEach(() => window.localStorage.clear());
 afterEach(cleanup);
 
 describe("SiteHeader sidebar navigation", () => {
+  it("offers all matching tools and a visible empty state instead of choosing the first match", async () => {
+    const user = userEvent.setup();
+    render(<SiteHeader />);
+    const search = screen.getByRole("combobox", { name: "搜索工具" });
+    await user.type(search, "EVM{Enter}");
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(1);
+    expect(search).not.toHaveAttribute("aria-activedescendant");
+    await user.keyboard("{ArrowDown}");
+    expect(search).toHaveAttribute("aria-activedescendant", screen.getAllByRole("option")[0].id);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await user.clear(search);
+    await user.type(search, "not-a-tool");
+    expect(screen.getByText(/没有匹配的工具/)).toBeVisible();
+  });
+
+  it("makes search available inside the mobile menu", async () => {
+    const user = userEvent.setup();
+    render(<SiteHeader />);
+    await user.click(screen.getByRole("button", { name: "打开站点菜单" }));
+    const menu = screen.getByRole("dialog");
+    await user.type(within(menu).getByRole("combobox", { name: "搜索工具" }), "Solana");
+    expect(within(menu).getAllByRole("option")).toHaveLength(2);
+  });
+
   it("focuses and selects the tool search with the keyboard shortcut", async () => {
     const user = userEvent.setup();
     render(<SiteHeader />);

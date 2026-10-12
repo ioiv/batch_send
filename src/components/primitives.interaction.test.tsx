@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  ActionBar,
   CollectionExecutionControls,
   ConfirmActionDialog,
   ReviewPanel,
@@ -59,6 +60,21 @@ describe("shadcn Base UI interactions", () => {
     await user.click(screen.getByRole("button", { name: "暂停归集" }));
     expect(screen.getByRole("button", { name: "继续归集" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("progressbar", { name: "EVM 归集进度（已暂停）" })).toBeVisible();
+  });
+
+  it("shows one primary action and keeps task details and retry optional", async () => {
+    const user = userEvent.setup();
+    const retry = vi.fn();
+    render(<ActionBar summary={<span>12 个地址 · 1 SOL</span>} feedback={<span role="status">请先连接钱包</span>}
+      secondaryActions={<Button onClick={retry}>重试失败项</Button>}><Button>确认执行</Button></ActionBar>);
+    expect(screen.getByRole("status")).toHaveTextContent("请先连接钱包");
+    expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "重试失败项" })).not.toBeVisible();
+    expect(screen.getByText("12 个地址 · 1 SOL")).not.toBeVisible();
+    await user.click(screen.getByText("任务详情", { selector: "summary" }));
+    expect(screen.getByText("12 个地址 · 1 SOL")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "重试失败项" }));
+    expect(retry).toHaveBeenCalledOnce();
   });
 
   it("keeps a panel footer as the final visible card region", () => {

@@ -8,9 +8,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmActionDialog } from "@/components/WorkbenchPrimitives";
 import {
+  getCollectionResultDisplayStatus,
   shortenTransactionHash,
   type CollectionDisplayResult,
-  type CollectionResultStatus
+  type CollectionResultDisplayStatus
 } from "../lib/collection-results";
 import {
   removeValidNftInventoryAssets,
@@ -34,9 +35,10 @@ export type NftInventoryReviewProps = {
   standard: NftInventoryStandard;
 };
 
-const statusLabels: Record<CollectionResultStatus, string> = {
+const statusLabels: Record<CollectionResultDisplayStatus, string> = {
   confirming: "确认中",
   error: "失败",
+  uncertain: "待核对",
   pending: "待处理",
   scanning: "读取中",
   skipped: "已跳过",
@@ -315,13 +317,13 @@ export function NftInventoryReview({
                             {assetResults.map((result, index) => (
                               <div
                                 className="nft-inventory-review__status"
-                                data-status={result.status}
+                                data-status={getCollectionResultDisplayStatus(result)}
                                 key={`${result.address}-${index}`}
                                 title={result.message}
                               >
                                 <span>{result.label || shortAddress(result.address)}</span>
-                                <Badge variant={result.status === "error" ? "destructive" : "outline"}>
-                                  {result.uncertain ? "需核对" : statusLabels[result.status]}
+                                <Badge variant={getCollectionResultDisplayStatus(result) === "error" ? "destructive" : "outline"}>
+                                  {statusLabels[getCollectionResultDisplayStatus(result)]}
                                 </Badge>
                                 {result.hash ? result.explorerUrl ? (
                                   <a

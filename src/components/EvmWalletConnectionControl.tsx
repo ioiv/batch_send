@@ -17,7 +17,7 @@ export function EvmWalletConnectionControl({ disabled = false, wallet }: { disab
   const hasChoices = wallet.wallets.length > 1 && !wallet.connected;
 
   return (
-    <div className="wallet">
+    <div className="wallet" id="wallet-connection" data-connected={wallet.connected}>
       <Badge
         aria-live="polite"
         className="wallet-status"
@@ -26,7 +26,8 @@ export function EvmWalletConnectionControl({ disabled = false, wallet }: { disab
         variant="outline"
       >
         <span aria-hidden="true" className="wallet-status__dot" />
-        {wallet.statusText}
+        <span className="wallet-status__text">{wallet.statusText}</span>
+        {wallet.connected ? <span className="wallet-status__mobile-address">{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</span> : null}
       </Badge>
       {hasChoices ? (
         <WalletChooserDialog

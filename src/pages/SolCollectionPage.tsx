@@ -18,6 +18,8 @@ import {
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import { buildWalletAssetOverview } from "../lib/wallet-asset-overview";
+import { WorkflowFeedback, type WorkflowRequirement } from "../components/WorkflowFeedback";
+import { RpcSettings } from "../components/RpcSettings";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { CollectionResults } from "../components/CollectionResults";
 import {
@@ -34,6 +36,7 @@ import { formatLamports, formatLamportsForDisplay, parseSolToLamports } from "..
 import type { CollectionAmountPolicy } from "../lib/collection-amount";
 import { CollectionPauseController } from "../lib/collection-execution";
 import {
+  getCollectionResultDisplayStatus,
   sanitizeRoundArchiveText,
   type CollectionDisplayResult,
   type CollectionResultStatus
@@ -384,7 +387,7 @@ function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
       explorerUrl: result.explorerUrl,
       hash: result.hash,
       message: result.message,
-      status: result.status
+      status: getCollectionResultDisplayStatus(result)
     });
   });
   return grouped;
@@ -957,9 +960,10 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       retrySourcesRef.current = sources.filter((source) => retryableAddresses.has(source.address));
       const success = collectionResults.filter((item) => item.status === "success").length;
       const skipped = collectionResults.filter((item) => item.status === "skipped").length;
-      const failed = collectionResults.filter((item) => item.status === "error").length;
+      const failed = displayResults.filter((item) => getCollectionResultDisplayStatus(item) === "error").length;
+      const uncertain = displayResults.filter((item) => getCollectionResultDisplayStatus(item) === "uncertain").length;
       setStage("complete");
-      setMessage(`归集完成：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}`
+      setMessage(`归集完成：${success} 笔成功，${skipped} 笔跳过${failed ? `，${failed} 笔失败` : ""}${uncertain ? `，${uncertain} 笔待核对` : ""}`
         + (retrySourcesRef.current.length ? `；${retrySourcesRef.current.length} 笔可直接重试` : ""));
     } catch (error) {
       retrySourcesRef.current = sources.filter((source) => !submittedAddresses.has(source.address));
@@ -1189,6 +1193,8 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   );
 
   const amountPolicyValid = getAmountPolicy() !== null;
+  const reserveValid = assetMode !== "native" || reserveAmount.trim() === "0" || parseSolToLamports(reserveAmount) !== null;
+  const minimumValid = assetMode !== "native" || minimumAmount.trim() === "0" || parseSolToLamports(minimumAmount) !== null;
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(rpcEndpoint);
   const splTargetValid = assetMode !== "spl" || !normalizedTarget
@@ -1198,20 +1204,31 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       || Boolean(holdings?.tokenAccountCount && !holdings.readyTokenAccountCount));
   const canStart = Boolean(normalizedTarget && sourceCount && rpcEndpointValid
     && (assetMode === "native"
-      ? amountPolicyValid
+      ? amountPolicyValid && reserveValid && minimumValid
       : splTargetValid && parsedTokenMints.valid && parsedTokenMints.mintAddresses.length > 0
         && !knownTokenInventoryUnavailable)
     && executionSettingsValid && !running
     && !acknowledgementRequired);
+
+  const requirement: WorkflowRequirement | null = running || (roundIsTerminal && !acknowledgementRequired) ? null
+    : acknowledgementRequired ? { message: "请先在归集记录中核对已提交交易的链上状态" }
+    : !sourceCount ? { message: "请先导入并选择来源钱包", targetId: "source-wallet-import" }
+    : !normalizedTarget || !splTargetValid ? { message: targetAddress.trim() ? "请修正目标钱包地址" : "请填写目标地址", targetId: "sol-collection-target" }
+    : !rpcEndpointValid ? { message: "请填写有效的 RPC 地址", targetId: "sol-collection-rpc" }
+    : assetMode === "spl" && (!parsedTokenMints.valid || !parsedTokenMints.mintAddresses.length) ? { message: "请修正 Token 清单", targetId: "collection-assets" }
+    : knownTokenInventoryUnavailable && assetMode === "spl" ? { message: "资产查询不完整或资产不受支持，请查看钱包资产详情后重新查询", targetId: "source-wallet-import" }
+    : !reserveValid ? { message: "请修正每钱包保留 SOL", targetId: "sol-collection-reserve" }
+    : !minimumValid ? { message: "请修正最小归集金额", targetId: "sol-collection-minimum" }
+    : assetMode === "native" && !amountPolicyValid ? { message: "请修正归集数量", targetId: "collection-amount" }
+    : !executionSettingsValid ? { message: "请修正并发数或随机延迟", targetId: "sol-collection-concurrency" }
+    : !canStart ? { message: "请完成输入检查后再归集" } : { message: "配置已就绪，确认后将按实时余额执行" };
 
   const fixedNativeAmount = assetMode === "native" && amountMode === "fixed" ? parseSolToLamports(fixedAmount) : null;
   const plannedTotal = !sourceCount ? "—" : assetMode === "native" && amountMode === "fixed"
     ? fixedNativeAmount !== null ? `${formatLamports(fixedNativeAmount * BigInt(sourceCount))} SOL` : "—"
     : "按实时余额计算";
 
-  return (
-    <ToolPageLayout
-      actionBar={(
+  const taskActions = (
         <ActionBar
           summary={<WorkbenchSummary items={[
             { label: "已选钱包", value: sourceCount },
@@ -1219,13 +1236,28 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
             { label: "资产项", value: assetMode === "spl" ? parsedTokenMints.mintAddresses.length : 1 },
             { label: "并发", value: concurrency }
           ]} />}
+          secondaryActions={<>
+              {results.length && roundIsTerminal && retryableCount ? (
+                <ConfirmActionDialog
+                  triggerSize="lg"
+                  confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
+                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
+                  disabled={running}
+                  onConfirm={() => executeCollection(true)}
+                  title="确认重试失败项？"
+                  triggerLabel={`重试失败项 (${retryableCount})`}
+                  triggerVariant="outline"
+                />
+              ) : null}
+          </>}
           feedback={(
             <>
+              <WorkflowFeedback requirement={requirement} />
               {issues.length ? (
                 <Alert variant="destructive"><AlertTitle>输入有误</AlertTitle><AlertDescription><ul>{issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul></AlertDescription></Alert>
               ) : null}
               {message ? (
-                <Alert aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"} summary={message} variant={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "destructive" : "default"}>{message}</Alert>
+                <Alert aria-live={workbenchStatus === "error" || workbenchStatus === "uncertain" ? "assertive" : "polite"} summary={message} tone={workbenchStatus === "uncertain" ? "warning" : workbenchStatus === "error" ? "error" : "info"}>{message}</Alert>
               ) : null}
 
             </>
@@ -1241,24 +1273,13 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
             />
           ) : results.length && roundIsTerminal ? (
             <>
-              {retryableCount ? (
-                <ConfirmActionDialog
-                  triggerSize="lg"
-                  confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
-                  description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
-                  onConfirm={() => executeCollection(true)}
-                  title="确认重试失败项？"
-                  triggerLabel={`重试失败项 (${retryableCount})`}
-                  triggerVariant="outline"
-                />
-              ) : null}
+
               <Button
                 size="lg"
                 disabled={running}
                 onClick={startNewRound}
                 type="button"
-                variant={retryableCount ? "outline" : "default"}
+                variant="default"
               >开始新一轮归集</Button>
               {currentRoundRequiresAcknowledgement ? (
                 <Alert summary="需核对交易状态" tone="warning">本轮有状态不确定的交易；移入记录后需先确认已核对链上状态，才能开始新的写入任务。</Alert>
@@ -1290,7 +1311,10 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
             />
           )}
         </ActionBar>
-      )}
+  );
+
+  return (
+    <ToolPageLayout
       actions={<Badge variant="outline">{selectedNetwork.label}</Badge>}
       className="collection-shell collection-page"
       currentToolId="sol-collection"
@@ -1306,13 +1330,13 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
           <TabsList aria-label="归集模式"><TabsTrigger value="manual">手动归集</TabsTrigger><TabsTrigger disabled={controlsLocked || acknowledgementRequired} value="automatic">一键归集</TabsTrigger></TabsList>
         </Tabs>
       ) : undefined}
-      stickyActions
       status={workbenchStatus}
       statusLabel={solStatusLabels[workbenchStatus]}
       title="SOL / SPL Token 归集"
     >
       <div className="workspace collection-workspace">
         <WorkbenchPanel
+          footer={taskActions}
           className="collection-workbench-panel"
           segmented
           title="归集设置"
@@ -1335,7 +1359,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
 
             </WorkbenchSection>
             <WorkbenchSection className="workbench-form__primary" title="资产与目标">
-              <div className="config-grid">
+              <div className="config-grid" id="collection-assets">
               <Field>
                 <FieldLabel htmlFor="sol-collection-token-0">Token 清单</FieldLabel>
                 <div className="erc20-token-editor">
@@ -1521,14 +1545,15 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                   autoComplete="off"
                   disabled={controlsLocked}
                   id="sol-collection-target"
+                      aria-describedby={targetAddress.trim() && (!normalizedTarget || !splTargetValid) ? "sol-target-error" : undefined}
                   onChange={(event) => { setTargetAddress(event.target.value); invalidateTask(); }}
                   placeholder="Solana 地址"
                   spellCheck={false}
                   value={targetAddress}
                 />
-                {targetAddress.trim() && !normalizedTarget ? <FieldError>请输入有效的 Solana 地址</FieldError> : null}
+                {targetAddress.trim() && !normalizedTarget ? <FieldError id="sol-target-error">请输入有效的 Solana 地址</FieldError> : null}
                 {targetAddress.trim() && normalizedTarget && !splTargetValid ? (
-                  <FieldError>SPL Token 归集目标必须是可签名的钱包地址</FieldError>
+                  <FieldError id="sol-target-error">SPL Token 归集目标必须是可签名的钱包地址</FieldError>
                 ) : null}
               </Field>
               </div>
@@ -1557,6 +1582,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                     value={networkId}
                   />
                 </Field>
+                <RpcSettings endpoint={rpcEndpoint} disabled={controlsLocked} invalid={!rpcEndpointValid}>
                 <Field data-invalid={!rpcEndpointValid ? true : undefined}>
                   <FieldLabel htmlFor="sol-collection-rpc">RPC 地址</FieldLabel>
                   <Input
@@ -1575,9 +1601,10 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                   />
                   {!rpcEndpointValid ? <FieldError>请输入以 http:// 或 https:// 开头的有效 RPC 地址</FieldError> : null}
                 </Field>
+                </RpcSettings>
               </div>
 
-              {assetMode === "native" ? <Field data-invalid={!amountPolicyValid ? true : undefined}>
+              {assetMode === "native" ? <Field id="collection-amount" data-invalid={!amountPolicyValid ? true : undefined}>
                 <FieldLabel>归集数量</FieldLabel>
                 <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
                   <TabsList aria-label="SOL 归集数量模式">
@@ -1604,6 +1631,8 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                 </Field>
               )}
 
+              <div className="config-grid__full"><AdvancedSettings label="执行节奏" disabled={controlsLocked}
+                invalid={!executionSettingsValid} summary={`并发 ${concurrency} · 延迟 ${minimumDelay}–${maximumDelay} 秒`}>
               <div className="field-row execution-settings-row">
                 <Field>
                   <FieldLabel htmlFor="sol-collection-concurrency">并发钱包数</FieldLabel>
@@ -1624,17 +1653,20 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                 </Field>
               </div>
               {!executionSettingsValid ? <FieldError>并发为 1–20；延迟为 0–300 秒，且最大值不能小于最小值</FieldError> : null}
+              </AdvancedSettings></div>
 
               {assetMode === "native" ? (
-                <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级：保留金额">
+                <div className="config-grid__full"><AdvancedSettings disabled={controlsLocked} label="高级：保留金额" invalid={!reserveValid || !minimumValid} summary={`保留 ${reserveAmount} SOL · 最小归集 ${minimumAmount} SOL`}>
                   <div className="field-row">
                     <Field>
                       <FieldLabel htmlFor="sol-collection-reserve">每钱包保留 SOL</FieldLabel>
-                      <Input disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                      <Input aria-invalid={!reserveValid || undefined} aria-describedby={!reserveValid ? "sol-reserve-error" : undefined} disabled={controlsLocked} id="sol-collection-reserve" inputMode="decimal" min="0" onChange={(event) => { setReserveAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={reserveAmount} />
+                      {!reserveValid ? <FieldError id="sol-reserve-error">请输入不小于 0 的有效 SOL 金额</FieldError> : null}
                     </Field>
                     <Field>
                       <FieldLabel htmlFor="sol-collection-minimum">最小归集金额</FieldLabel>
-                      <Input disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                      <Input aria-invalid={!minimumValid || undefined} aria-describedby={!minimumValid ? "sol-minimum-error" : undefined} disabled={controlsLocked} id="sol-collection-minimum" inputMode="decimal" min="0" onChange={(event) => { setMinimumAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={minimumAmount} />
+                      {!minimumValid ? <FieldError id="sol-minimum-error">请输入不小于 0 的有效 SOL 金额</FieldError> : null}
                     </Field>
                   </div>
                 </AdvancedSettings></div>

@@ -23,25 +23,21 @@ const STATUS_LABELS: Record<WorkbenchStatus, string> = {
 };
 
 export function ToolPageLayout({
-  actionBar,
   actions,
   children,
   className = "",
   currentToolId,
   modeSwitch,
-  stickyActions = false,
   status = "editing",
   statusLabel,
   title,
   walletControl
 }: {
-  actionBar?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
   currentToolId: string;
   modeSwitch?: ReactNode;
-  stickyActions?: boolean;
   status?: WorkbenchStatus;
   statusLabel?: string;
   title: string;
@@ -52,7 +48,6 @@ export function ToolPageLayout({
   return (
     <div
       className="site-page site-tool-page"
-      data-sticky-actions={stickyActions || undefined}
       data-tool={currentToolId}
     >
       <SiteHeader action={walletControl} currentToolId={currentToolId} />
@@ -61,7 +56,6 @@ export function ToolPageLayout({
           <div className="site-tool-toolbar">
             <div className="site-tool-heading">
               <h1 id={headingId}>{title}</h1>
-              {modeSwitch ? <div className="site-tool-mode-switch">{modeSwitch}</div> : null}
             </div>
             <div aria-label="页面状态与快捷操作" className="site-tool-heading__actions">
               <Badge
@@ -78,15 +72,16 @@ export function ToolPageLayout({
                 <span className="workbench-status__label">{statusLabel || STATUS_LABELS[status]}</span>
               </Badge>
             </div>
-            {actions ? <div className="site-tool-context" aria-label="网络行情">{actions}</div> : null}
+            {modeSwitch || actions ? <div className="site-tool-context" aria-label="工具配置与网络状态">
+              {modeSwitch ? <div className="site-tool-mode-switch">{modeSwitch}</div> : null}
+              {actions}
+            </div> : null}
           </div>
-          <main className={`site-tool-shell ${className}`.trim()} id="main">
+          <main aria-labelledby={headingId} className={`site-tool-shell ${className}`.trim()} id="main" tabIndex={-1}>
             {children}
-            {!stickyActions && actionBar ? <div className="site-action-inline">{actionBar}</div> : null}
           </main>
           <SiteFooter />
         </div>
-        {stickyActions && actionBar ? <div className="site-action-dock" aria-label="任务操作">{actionBar}</div> : null}
       </div>
     </div>
   );

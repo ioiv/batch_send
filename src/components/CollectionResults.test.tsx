@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { copyText } from "../lib/clipboard";
 import type { CollectionDisplayResult } from "../lib/collection-results";
 import {
   CollectionResults,
@@ -11,6 +13,7 @@ import {
 } from "./CollectionResults";
 
 const transactionHash = `0x${"ab".repeat(32)}`;
+vi.mock("../lib/clipboard", () => ({ copyText: vi.fn(async () => true) }));
 
 const results: CollectionDisplayResult[] = [
   {
@@ -39,8 +42,31 @@ const results: CollectionDisplayResult[] = [
 afterEach(cleanup);
 
 describe("CollectionResults", () => {
+  it("opens a full uncertain record, copies its hash and restores focus when closed", async () => {
+    const user = userEvent.setup();
+    const uncertain = { ...results[2], uncertain: true, message: "交易已提交，确认请求超时。请核对链上结果后再继续。" };
+    render(<CollectionResults exportFilename="collection.csv" results={[uncertain]} />);
+    const row = within(screen.getByRole("table", { name: "归集结果" }));
+    expect(row.getByText("待核对")).toBeVisible();
+    const trigger = screen.getByRole("button", { name: "查看来源 1的详情" });
+    await user.click(trigger);
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText(uncertain.message)).toBeVisible();
+    expect(dialog.getByText(uncertain.address)).toBeVisible();
+    expect(dialog.getByText(transactionHash)).toBeVisible();
+    await user.click(dialog.getByRole("button", { name: "复制交易哈希" }));
+    expect(copyText).toHaveBeenCalledWith(transactionHash);
+    expect(dialog.getByRole("button", { name: "复制交易哈希：已复制" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await user.click(screen.getByRole("tab", { name: "失败" }));
+    expect(screen.getByText("无匹配结果")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "待核对" }));
+    expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("待核对");
+  });
+
   it("keeps original result indexes after filtering", () => {
-    expect(getIndexedCollectionResults(results, "error", "")).toEqual([
+    expect(getIndexedCollectionResults(results, "uncertain", "")).toEqual([
       { originalIndex: 2, result: results[2] }
     ]);
     expect(getIndexedCollectionResults(results, "all", "3333")).toEqual([
@@ -78,7 +104,7 @@ describe("CollectionResults", () => {
     render(<CollectionResults exportFilename="collection.csv" results={results} />);
     expect(screen.getByRole("region", { name: "执行结果" })).toHaveAttribute("data-slot", "card");
     expect(screen.getByRole("button", { name: "导出全部 CSV" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "导出失败/跳过项" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "导出待处理项" })).toBeEnabled();
     expect(screen.getByLabelText("归集执行统计")).toHaveTextContent("资产项");
     expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("来源 1");
     expect(screen.getByRole("table", { name: "归集结果" })).toHaveTextContent("运营钱包");

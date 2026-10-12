@@ -89,15 +89,31 @@ export function WorkbenchSection({ title, actions, summary, children, className 
   );
 }
 
-export function ActionBar({ summary, feedback, children, className = "" }: {
+export function ActionBar({ summary, feedback, secondaryActions, details, detailsAutoOpen = false, detailsStateKey, children, className = "" }: {
   summary?: ReactNode;
   feedback?: ReactNode;
+  secondaryActions?: ReactNode;
+  details?: ReactNode;
+  detailsAutoOpen?: boolean;
+  detailsStateKey?: string;
   children?: ReactNode;
   className?: string;
 }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (detailsRef.current) detailsRef.current.open = detailsAutoOpen;
+  }, [detailsAutoOpen, detailsStateKey]);
   return (
     <div className={`workbench-action-bar ${className}`.trim()}>
-      <div className="workbench-action-bar__context">{summary}{feedback}</div>
+      {feedback ? <div className="workbench-action-bar__context">{feedback}</div> : null}
+      {summary || secondaryActions || details ? <details className="workbench-action-details" ref={detailsRef}>
+        <summary>任务详情<HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={14} strokeWidth={1.8} /></summary>
+        <div className="workbench-action-details__body">
+          {summary}
+          {secondaryActions ? <div className="workbench-action-details__secondary">{secondaryActions}</div> : null}
+          {details ? <div className="workbench-action-details__records">{details}</div> : null}
+        </div>
+      </details> : null}
       {children ? <div className="workbench-action-bar__actions">{children}</div> : null}
     </div>
   );
@@ -204,14 +220,29 @@ export function ReviewPanel({
 export function AdvancedSettings({
   children,
   disabled = false,
-  label = "高级设置"
+  label = "高级设置",
+  summary,
+  invalid = false
 }: {
   children: ReactNode;
   disabled?: boolean;
   label?: string;
+  summary?: ReactNode;
+  invalid?: boolean;
 }) {
+  const [open, setOpen] = useState(invalid);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (invalid) setOpen(true); }, [invalid]);
+  useEffect(() => {
+    const element = root.current;
+    const reveal = () => setOpen(true);
+    element?.addEventListener("workbench-reveal", reveal);
+    return () => element?.removeEventListener("workbench-reveal", reveal);
+  }, []);
   return (
-    <Collapsible className="advanced-settings">
+    <Collapsible className="advanced-settings" open={open} onOpenChange={setOpen} ref={root}>
+      <div className="advanced-settings__heading">
+      {summary ? <span className="advanced-settings__summary">{summary}</span> : null}
       <CollapsibleTrigger
         disabled={disabled}
         render={<Button className="advanced-settings__trigger" size="sm" type="button" variant="ghost" />}
@@ -219,7 +250,8 @@ export function AdvancedSettings({
         {label}
         <HugeiconsIcon aria-hidden="true" className="disclosure-arrow" icon={ArrowDown01Icon} size={14} strokeWidth={1.8} />
       </CollapsibleTrigger>
-      <CollapsibleContent className="advanced-settings__content">{children}</CollapsibleContent>
+      </div>
+      <CollapsibleContent keepMounted data-visible={open} className="advanced-settings__content">{children}</CollapsibleContent>
     </Collapsible>
   );
 }
