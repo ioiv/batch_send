@@ -525,22 +525,8 @@
   min-width: 0;
 }
 
-/* The card says what the tool does; the title alone did not separate
-   "代币归集" from "SOL / SPL 归集". */
-.home-tool-summary {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  margin-top: var(--space-2xs);
-  grid-column: 1 / -1;
-  font-size: var(--text-label);
-  line-height: var(--leading-normal);
-  overflow: hidden;
-}
-
 .home-tool-card {
-  min-height: 9rem;
+  min-height: 7rem;
   height: 100%;
   transition: translate 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
 }
@@ -3266,6 +3252,15 @@
 @media (max-width: 26rem) {
   .site-tool-heading { flex-wrap: wrap; }
   .site-tool-shell [data-slot="tabs-trigger"] { padding-inline: var(--space-2xs); }
+}
+
+@media (max-width: 36rem) {
+  .collection-amount-modes[data-slot="tabs-list"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    height: auto;
+  }
 }
 
 @media (max-width: 48rem), (pointer: coarse) {

@@ -236,8 +236,9 @@ export function NftAssetInput({
 
       <Input
         accept=".txt,.csv,text/plain,text/csv"
-        className="sr-only"
+        aria-hidden="true"
         disabled={controlsDisabled}
+        hidden
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";

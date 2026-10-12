@@ -1371,7 +1371,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                       ? holdings?.holdings.filter((holding) => holding.mintAddress === mintAddress) || []
                       : [];
                     const recognitionLabel = !row.trim()
-                      ? "SPL"
+                      ? assetMode === "native" && index === 0 ? "SOL" : "SPL"
                       : parsedRow?.status === "invalid"
                         ? "地址无效"
                         : parsedRow?.status === "duplicate"
@@ -1607,23 +1607,38 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
               {assetMode === "native" ? <Field id="collection-amount" data-invalid={!amountPolicyValid ? true : undefined}>
                 <FieldLabel>归集数量</FieldLabel>
                 <Tabs onValueChange={(value) => { setAmountMode(value as AmountMode); invalidateTask(); }} value={amountMode}>
-                  <TabsList aria-label="SOL 归集数量模式">
+                  <TabsList aria-label="SOL 归集数量模式" className="collection-amount-modes">
                     {Object.entries(amountModeLabels).map(([value, label]) => (
                       <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
                     ))}
                   </TabsList>
                 </Tabs>
                 {amountMode === "percentage" ? (
-                  <Input aria-label="归集百分比" disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
+                  <Field>
+                    <FieldLabel htmlFor="sol-collection-percentage">每钱包的比例</FieldLabel>
+                    <InputGroup data-disabled={controlsLocked || undefined}>
+                      <InputGroupInput id="sol-collection-percentage" aria-label="归集百分比" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "sol-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" max="100" min="0.01" onChange={(event) => { setPercentageAmount(event.target.value); invalidateTask(); }} step="0.01" type="number" value={percentageAmount} />
+                      <InputGroupAddon align="inline-end">%</InputGroupAddon>
+                    </InputGroup>
+                  </Field>
                 ) : amountMode === "fixed" ? (
-                  <Input aria-label="每钱包固定归集数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
+                  <Field>
+                    <FieldLabel htmlFor="sol-collection-fixed-amount">每钱包的数量（SOL）</FieldLabel>
+                    <Input id="sol-collection-fixed-amount" aria-label="每钱包固定归集数量" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "sol-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setFixedAmount(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={fixedAmount} />
+                  </Field>
                 ) : amountMode === "random" ? (
                   <div className="amount-grid">
-                    <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
-                    <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-random-min">最小数量（SOL）</FieldLabel>
+                      <Input id="sol-collection-random-min" aria-label="随机最小数量" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "sol-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMinimum} />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="sol-collection-random-max">最大数量（SOL）</FieldLabel>
+                      <Input id="sol-collection-random-max" aria-label="随机最大数量" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "sol-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidateTask(); }} step="0.000001" type="number" value={randomMaximum} />
+                    </Field>
                   </div>
                 ) : null}
-                {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+                {!amountPolicyValid ? <FieldError id="sol-collection-amount-error">请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
               </Field> : (
                 <Field>
                   <FieldLabel>归集数量</FieldLabel>

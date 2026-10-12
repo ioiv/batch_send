@@ -2227,7 +2227,7 @@ export function EvmCollectionPage({
                           ? recognizedTokenByAddress.get(getAddress(trimmed).toLowerCase())
                           : undefined;
                         const recognitionLabel = !trimmed
-                          ? "ERC20"
+                          ? !assetInput.trim() && index === 0 && nativeCurrencyEnabled ? selectedNetwork.nativeCurrency.symbol : "ERC20"
                           : !validAddress
                             ? "地址无效"
                             : preview?.status === "ready"
@@ -2646,42 +2646,63 @@ export function EvmCollectionPage({
                     }}
                     value={amountMode}
                   >
-                    <TabsList aria-label="EVM 归集数量模式">
+                    <TabsList aria-label="EVM 归集数量模式" className="collection-amount-modes">
                       {Object.entries(amountModeLabels).map(([value, label]) => (
                         <TabsTrigger disabled={controlsLocked} key={value} value={value}>{label}</TabsTrigger>
                       ))}
                     </TabsList>
                   </Tabs>
                   {amountMode === "percentage" ? (
-                    <Input
-                      aria-label="归集百分比"
-                      disabled={controlsLocked}
-                      inputMode="decimal"
-                      max="100"
-                      min="0.01"
-                      onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
-                      step="0.01"
-                      type="number"
-                      value={percentageAmount}
-                    />
+                    <Field>
+                      <FieldLabel htmlFor="evm-collection-percentage">每钱包每资产的比例</FieldLabel>
+                      <InputGroup data-disabled={controlsLocked || undefined}>
+                        <InputGroupInput
+                          id="evm-collection-percentage"
+                          aria-label="归集百分比"
+                          aria-invalid={!amountPolicyValid || undefined}
+                          aria-describedby={!amountPolicyValid ? "evm-collection-amount-error" : undefined}
+                          disabled={controlsLocked}
+                          inputMode="decimal"
+                          max="100"
+                          min="0.01"
+                          onChange={(event) => { setPercentageAmount(event.target.value); invalidatePlan(); }}
+                          step="0.01"
+                          type="number"
+                          value={percentageAmount}
+                        />
+                        <InputGroupAddon align="inline-end">%</InputGroupAddon>
+                      </InputGroup>
+                    </Field>
                   ) : amountMode === "fixed" ? (
-                    <Input
-                      aria-label="每钱包每资产固定归集数量"
-                      disabled={controlsLocked}
-                      inputMode="decimal"
-                      min="0"
-                      onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
-                      step="0.000001"
-                      type="number"
-                      value={fixedAmount}
-                    />
+                    <Field>
+                      <FieldLabel htmlFor="evm-collection-fixed-amount">每钱包每资产的数量</FieldLabel>
+                      <Input
+                        id="evm-collection-fixed-amount"
+                        aria-label="每钱包每资产固定归集数量"
+                        aria-invalid={!amountPolicyValid || undefined}
+                        aria-describedby={!amountPolicyValid ? "evm-collection-amount-error" : undefined}
+                        disabled={controlsLocked}
+                        inputMode="decimal"
+                        min="0"
+                        onChange={(event) => { setFixedAmount(event.target.value); invalidatePlan(); }}
+                        step="0.000001"
+                        type="number"
+                        value={fixedAmount}
+                      />
+                    </Field>
                   ) : amountMode === "random" ? (
                     <div className="amount-grid">
-                      <Input aria-label="随机最小数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
-                      <Input aria-label="随机最大数量" disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
+                      <Field>
+                        <FieldLabel htmlFor="evm-collection-random-min">最小数量</FieldLabel>
+                        <Input id="evm-collection-random-min" aria-label="随机最小数量" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "evm-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMinimum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMinimum} />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="evm-collection-random-max">最大数量</FieldLabel>
+                        <Input id="evm-collection-random-max" aria-label="随机最大数量" aria-invalid={!amountPolicyValid || undefined} aria-describedby={!amountPolicyValid ? "evm-collection-amount-error" : undefined} disabled={controlsLocked} inputMode="decimal" min="0" onChange={(event) => { setRandomMaximum(event.target.value); invalidatePlan(); }} step="0.000001" type="number" value={randomMaximum} />
+                      </Field>
                     </div>
                   ) : null}
-                  {!amountPolicyValid ? <FieldError>请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
+                  {!amountPolicyValid ? <FieldError id="evm-collection-amount-error">请填写有效数量；百分比为 0.01–100，随机最大值不能小于最小值</FieldError> : null}
                 </Field>
               ) : null}
 

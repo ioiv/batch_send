@@ -330,7 +330,7 @@ describe("EvmCollectionPage workbench", () => {
 
     const tokenList = screen.getByRole("textbox", { name: "Token 清单" });
     expect(tokenList).toHaveAttribute("placeholder", "0x…（留空归集 ETH）");
-    expect(screen.getByText("ERC20")).toBeVisible();
+    expect(tokenList).toHaveAccessibleDescription("ETH");
     expect(screen.getByRole("button", { name: "添加 Token" })).toBeVisible();
     expect(screen.queryByText("Token 识别")).not.toBeInTheDocument();
     expect(screen.queryByText(/留空则归集 ETH，填写后归集/)).not.toBeInTheDocument();

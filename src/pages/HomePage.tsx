@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -41,7 +41,7 @@ export function HomePage() {
     <div className="site-page page-home">
       <SiteHeader />
       <div className="site-content" data-region="main">
-        <main className="home-main" id="main">
+        <main className="home-main" id="main" tabIndex={-1}>
           <div className="home-heading"><div><h1>链上工具箱</h1><p>选择网络生态，找到需要的工具。</p></div>
           <Tabs
             className="home-tool-tabs"
@@ -73,7 +73,6 @@ export function HomePage() {
                             <CardAction>
                               <Badge variant="outline">{tool.ecosystems.length === 2 ? "EVM · SOL" : tool.ecosystems[0] === "evm" ? "EVM" : "SOL"}</Badge>
                             </CardAction>
-                            <CardDescription className="home-tool-summary">{tool.description}</CardDescription>
                           </CardHeader>
                           <CardContent>
                             <span className="home-tool-icon"><ToolIcon name={tool.icon} /></span>
