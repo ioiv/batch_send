@@ -60,6 +60,29 @@ describe("automatic collection orchestration", () => {
     expect(source.verifyEmpty).not.toHaveBeenCalled();
   });
 
+  it("executes only selected assets and preserves native even if a fresh check would claim the wallet is empty", async () => {
+    const selected = task("a", "token"); const retained = task("a", "nft"); const native = task("a", "native");
+    const source = wallet("a", [selected, retained, native]);
+    const results = await run([source], { selectedTaskIds: new Set([selected.id]) });
+    expect(selected.execute).toHaveBeenCalledOnce();
+    expect(retained.execute).not.toHaveBeenCalled();
+    expect(native.execute).not.toHaveBeenCalled();
+    expect(source.verifyEmpty).not.toHaveBeenCalled();
+    expect(results[1]).toMatchObject({ status: "skipped", message: "本次未选择，已保留资产" });
+    expect(results[2]).toMatchObject({ status: "skipped", message: "本钱包有未选择的资产，已保留原生币" });
+  });
+
+  it("keeps exclusion local to its wallet while other selected wallets can still sweep native", async () => {
+    const first = wallet("a", [task("a", "token"), task("a", "native")]);
+    const second = wallet("b", [task("b", "token"), task("b", "native")]);
+    await run([first, second], { selectedTaskIds: new Set([second.tasks[0].id]) });
+    expect(first.tasks[0].execute).not.toHaveBeenCalled();
+    expect(first.tasks[1].execute).not.toHaveBeenCalled();
+    expect(second.tasks[0].execute).toHaveBeenCalledOnce();
+    expect(second.tasks[1].execute).toHaveBeenCalledOnce();
+    expect(second.verifyEmpty).toHaveBeenCalledOnce();
+  });
+
   it.each(["error", "skipped"] as const)("preserves gas after a %s asset result while other wallets still complete", async status => {
     const failedToken = task("a", "token", "", async () => ({ address: "a", asset: "token", status, message: "余额不足或资产未完成" }));
     const first = wallet("a", [failedToken, task("a", "nft"), task("a", "native")]);
@@ -116,6 +139,19 @@ describe("automatic collection orchestration", () => {
     const results = await run([source]);
     expect(results[0]).toMatchObject({ status: "error", uncertain: false, retryable: true });
     expect(source.tasks[1].execute).toHaveBeenCalledOnce();
+    expect(source.tasks[2].execute).not.toHaveBeenCalled();
+  });
+
+  it("requires reconciliation when submission throws before returning a hash", async () => {
+    const first = task("a", "token", "first", async progress => {
+      progress({ address: "a", asset: "token", status: "submitting", message: "正在提交" });
+      throw new Error("节点在响应前断开");
+    });
+    const second = task("a", "token", "second");
+    const source = wallet("a", [first, second, task("a", "native")]);
+    const results = await run([source]);
+    expect(results[0]).toMatchObject({ status: "error", uncertain: true, retryable: false });
+    expect(second.execute).not.toHaveBeenCalled();
     expect(source.tasks[2].execute).not.toHaveBeenCalled();
   });
 

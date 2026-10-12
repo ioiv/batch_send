@@ -196,6 +196,7 @@ export type SolTokenCollectionProgressPhase =
   | "error"
   | "preparing"
   | "skipped"
+  | "submitting"
   | "submitted"
   | "success";
 
@@ -1152,6 +1153,15 @@ async function executeSolTokenJob(
     transaction.sign(job.source.keypair);
     if (!transaction.signature) throw new SolTokenCollectionSafeError("交易签名失败");
     submittedSignature = encodeBase58(transaction.signature);
+    // Persist the locally known signature before waiting for RPC broadcast acknowledgement.
+    emitProgress(onProgress, {
+      ...progressBase,
+      amount,
+      completed: state.completed,
+      current: state.index + 1,
+      phase: "submitting",
+      signature: submittedSignature
+    });
     const sendOptions: SendOptions = {
       ...options.sendOptions,
       preflightCommitment: options.sendOptions?.preflightCommitment || commitment,

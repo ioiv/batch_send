@@ -60,12 +60,12 @@ export function DistributionListEditor({
       className="distribution-list-editor grid min-w-0 gap-4"
     >
       <Field>
-        <FieldLabel htmlFor={`${fieldPrefix}-addresses`}>收款地址</FieldLabel>
+        <FieldLabel htmlFor={`${fieldPrefix}-addresses`}>{mode === "per-row" ? "收款地址与金额" : "收款地址"}</FieldLabel>
         <Textarea
           className="address-only-input"
           disabled={disabled}
           id={`${fieldPrefix}-addresses`}
-          placeholder={addressPlaceholder}
+          placeholder={mode === "per-row" ? addressPlaceholder.split("\n").map((address) => `${address},0.1`).join("\n") : addressPlaceholder}
           ref={addressInputRef}
           spellCheck={false}
           value={addresses}
@@ -76,13 +76,14 @@ export function DistributionListEditor({
       <Tabs
         className="generator-mode-row distribution-amount-row"
         onValueChange={(value) => {
-          if (value === "fixed" || value === "random") onModeChange(value);
+          if (value === "fixed" || value === "random" || value === "per-row") onModeChange(value);
         }}
         value={mode}
       >
         <TabsList aria-label="批量金额模式">
           <TabsTrigger disabled={amountControlsDisabled} value="fixed">固定金额</TabsTrigger>
           <TabsTrigger disabled={amountControlsDisabled} value="random">随机区间</TabsTrigger>
+          <TabsTrigger disabled={amountControlsDisabled} value="per-row">逐行金额</TabsTrigger>
         </TabsList>
         <TabsContent value="fixed">
           <div className="amount-grid generator-amount-grid" data-mode="fixed">
@@ -130,6 +131,9 @@ export function DistributionListEditor({
               />
             </Field>
           </div>
+        </TabsContent>
+        <TabsContent value="per-row">
+          <p className="hint">每行填写“地址,金额”，按原金额发送。切换到固定金额或随机区间会重新计算金额。</p>
         </TabsContent>
       </Tabs>
     </section>

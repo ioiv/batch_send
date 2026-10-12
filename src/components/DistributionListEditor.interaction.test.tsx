@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DistributionListEditor } from "./DistributionListEditor";
 import { DistributionListGenerator } from "./DistributionListGenerator";
 import type { DistributionAmountMode } from "../lib/distribution-generator";
@@ -39,6 +39,37 @@ function ControlledEditor() {
 }
 
 describe("DistributionListEditor interactions", () => {
+  it('previews imports, supports cancel/append/replace, and restores the previous amount and list on undo', async () => {
+    const user = userEvent.setup();
+    const one = `0x${'1'.repeat(40)}`;
+    const two = `0x${'2'.repeat(40)}`;
+    render(<DistributionListGenerator addressKind="evm" decimals={18} initialAddresses={one} initialFixedAmount="0.1" onResultChange={() => undefined} symbol="ETH" />);
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const makeFile = (amount = '0.5') => {
+      const file = new File([`${two},${amount}`], 'recipients.csv', { type: 'text/csv' });
+      Object.defineProperty(file, 'text', { value: vi.fn().mockResolvedValue(`${two},${amount}`) }); return file;
+    };
+    await user.upload(fileInput, makeFile());
+    let dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    expect(within(dialog).getByText('每个地址 0.5 ETH')).toBeVisible();
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    await user.upload(fileInput, makeFile('0.1'));
+    dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    await user.click(within(dialog).getByRole('button', { name: '追加到当前清单' }));
+    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(`${one}\n${two}`);
+    expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.1);
+    await user.click(screen.getByRole('button', { name: '撤销导入' }));
+    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    await user.upload(fileInput, makeFile());
+    dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    await user.click(within(dialog).getByRole('button', { name: '替换当前清单' }));
+    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(two);
+    expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.5);
+    await user.click(screen.getByRole('button', { name: '撤销导入' }));
+    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.1);
+  });
   it("keeps list actions in its heading and exposes regeneration only for random amounts", async () => {
     const user = userEvent.setup();
     render(

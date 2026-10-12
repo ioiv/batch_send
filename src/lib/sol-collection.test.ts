@@ -340,7 +340,31 @@ describe("collectSolFromSources", () => {
     const decoded = SystemInstruction.decodeTransfer(submittedTransaction!.instructions[0]);
     expect(decoded.lamports).toBe(85_000n);
     expect(submittedTransaction!.signatures[0].signature).not.toBeNull();
-    expect(progress.map((event) => event.phase)).toEqual(["preparing", "submitted", "success"]);
+    expect(progress.map((event) => event.phase)).toEqual(["preparing", "submitting", "submitted", "success"]);
+  });
+
+  it("exposes the signed transaction before a pending broadcast returns", async () => {
+    const source = makeSource(49);
+    const progress: SolCollectionProgress[] = [];
+    let finishBroadcast!: (signature: string) => void;
+    let announceBroadcast!: () => void;
+    const broadcastStarted = new Promise<void>((resolve) => { announceBroadcast = resolve; });
+    let signature = "";
+    const connection = makeConnection({
+      sendRawTransaction: vi.fn((rawTransaction: Uint8Array) => {
+        signature = encodeBase58(Transaction.from(rawTransaction).signature!);
+        expect(progress.at(-1)).toMatchObject({ phase: "submitting", signature });
+        announceBroadcast();
+        return new Promise<string>((resolve) => { finishBroadcast = resolve; });
+      })
+    });
+    const running = collectSolFromSources({ connection, destination: makeKeypair(50).publicKey,
+      minCollectionLamports: 1n, reserveLamports: 0n, sources: [source], onProgress: (event) => progress.push(event) });
+    await broadcastStarted;
+    expect(progress.map((event) => event.phase)).toEqual(["preparing", "submitting"]);
+    expect(connection.confirmTransaction).not.toHaveBeenCalled();
+    finishBroadcast(signature);
+    expect(await running).toMatchObject([{ signature, status: "success" }]);
   });
 
   it("treats an explicit preflight rejection as unbroadcast and retryable", async () => {

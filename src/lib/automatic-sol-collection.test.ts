@@ -75,6 +75,22 @@ beforeEach(() => {
 });
 
 describe("automatic Solana collection adapter", () => {
+  it("publishes completed wallets during scanning and keeps the scan read-only", async () => {
+    vi.mocked(discoverSolanaHoldings).mockResolvedValue(scan([holding(1)]));
+    const onScanProgress = vi.fn();
+    const wallets = await prepareAutomaticSolCollection({ keys, networkId: "devnet", rpcEndpoint: endpoint, targetAddress: target.publicKey.toBase58(), signal: new AbortController().signal, onScanProgress });
+    expect(onScanProgress).toHaveBeenCalledWith({ completed: 1, total: 1, wallet: wallets[0] });
+    expect(collectSolTokenJobs).not.toHaveBeenCalled();
+  });
+
+  it("still enforces a total Token-account limit across separately scanned wallets", async () => {
+    const second = Keypair.fromSeed(new Uint8Array(32).fill(44));
+    vi.mocked(discoverSolanaHoldings).mockImplementation(async ({ sources }) => ({ ...scan([]), tokenAccountCount: 3_000,
+      wallets: [{ ...scan([]).wallets[0], address: sources[0].address }] }));
+    await expect(prepareAutomaticSolCollection({ keys: `${keys}\n${JSON.stringify([...second.secretKey])}`, networkId: "devnet", rpcEndpoint: endpoint, targetAddress: target.publicKey.toBase58(), signal: new AbortController().signal })).rejects.toThrow("Token 账户超过 5,000");
+    expect(collectSolTokenJobs).not.toHaveBeenCalled();
+  });
+
   it("scans all token programs without a Mint filter or any writes", async () => {
     vi.mocked(discoverSolanaHoldings).mockResolvedValue(scan([holding(1)]));
     const wallets = await prepare();

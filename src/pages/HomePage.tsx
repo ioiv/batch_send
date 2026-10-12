@@ -83,6 +83,7 @@ export function HomePage() {
                           </CardHeader>
                           <CardContent>
                             <span className="home-tool-icon"><ToolIcon name={tool.icon} /></span>
+                            <p className="home-tool-description">{tool.description}</p>
                             <span aria-hidden="true" className="home-tool-arrow">↗</span>
                           </CardContent>
                         </Card>

@@ -34,6 +34,7 @@ import {
   type SolTokenAssetHolding,
   type SolTokenCollectionConnection,
   type SolTokenCollectionJob,
+  type SolTokenCollectionProgress,
   type SolanaHoldingsConnection
 } from "./sol-token-collection";
 
@@ -883,6 +884,32 @@ describe("SPL Token collection", () => {
     expect(connection.sendRawTransaction).toHaveBeenCalledWith(expect.any(Uint8Array), expect.objectContaining({
       skipPreflight: false
     }));
+  });
+
+  it("exposes the signed Token transaction before a pending broadcast returns", async () => {
+    const fixture = makeJobFixture({ sourceIndex: 49, amount: 12_345n, decimals: 3 });
+    const infos = new Map<string, AccountInfo<Buffer> | null>([
+      [fixture.tokenAccount.toBase58(), accountInfo(tokenAccountData({ amount: fixture.job.amount, mint: fixture.mint, owner: fixture.sourceWallet.keypair.publicKey }), fixture.programId)],
+      [fixture.mint.toBase58(), accountInfo(mintData({ decimals: fixture.job.decimals }), fixture.programId)],
+      [fixture.job.destinationTokenAccount, null]
+    ]);
+    const progress: SolTokenCollectionProgress[] = [];
+    let finishBroadcast!: (signature: string) => void;
+    let announceBroadcast!: () => void;
+    const broadcastStarted = new Promise<void>((resolve) => { announceBroadcast = resolve; });
+    let signature = "";
+    const connection = collectionConnection({ accountInfos: infos, send(raw) {
+      signature = encodeBase58(Transaction.from(raw).signature!);
+      expect(progress.at(-1)).toMatchObject({ phase: "submitting", signature });
+      announceBroadcast();
+      return new Promise<string>((resolve) => { finishBroadcast = resolve; });
+    } });
+    const running = collectSolTokenJobs({ connection, jobs: [fixture.job], onProgress: (event) => progress.push(event) });
+    await broadcastStarted;
+    expect(progress.map((event) => event.phase)).toEqual(["preparing", "submitting"]);
+    expect(connection.confirmTransaction).not.toHaveBeenCalled();
+    finishBroadcast(signature);
+    expect(await running).toMatchObject([{ signature, status: "success" }]);
   });
 
   it("does not budget rent or recreate an ATA that existed at read time", async () => {

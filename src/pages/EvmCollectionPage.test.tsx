@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EvmCollectionPlanItem } from "../lib/evm-collection";
+import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
 
 const evmMocks = vi.hoisted(() => ({
   assertNetwork: vi.fn(),
@@ -287,6 +288,30 @@ describe("EVM collection fee protection defaults", () => {
 });
 
 describe("EvmCollectionPage workbench", () => {
+  it("persists submitting before a wallet RPC response and blocks writing after immediate pagehide", async () => {
+    let finish!: (results: []) => void;
+    const pending = new Promise<[]>((resolve) => { finish = resolve; });
+    evmMocks.execute.mockImplementationOnce(({ onProgress }) => {
+      onProgress({ address: planItem.address, asset: planItem.asset, current: 1, id: planItem.id,
+        label: planItem.label, message: "正在提交交易", stage: "submitting", total: 1 });
+      expect(readTaskHistory("evm-token-collection")[0].results[0]).toMatchObject({ status: "submitting" });
+      fireEvent(window, new Event("pagehide"));
+      return pending;
+    });
+    const user = await prepareReadyErc20Page();
+    await confirmEvmExecution(user);
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledOnce());
+    cleanup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await importEvmSecret(user);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已人工核对链上结果" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "删除记录" })).toBeDisabled();
+    await act(async () => { finish([]); });
+  }, 15000);
+
   it("keeps a dropped wallet file open while the page locks other controls for reading", async () => {
     const user = userEvent.setup();
     let finishReading!: (value: string) => void;
@@ -319,8 +344,90 @@ describe("EvmCollectionPage workbench", () => {
     const [snapshot, config, rounds] = automatic.mock.calls[0];
     expect(snapshot.keys).toContain(privateKey);
     expect(snapshot.selectedIds).toContain(signerAccount.address.toLowerCase());
-    expect(config).toEqual({ networkId: "ethereum", rpcEndpoint: "https://ethereum.publicnode.com", targetAddress });
+    expect(config).toEqual(expect.objectContaining({ networkId: "ethereum", rpcEndpoint: "https://ethereum.publicnode.com", targetAddress }));
+    expect(config.manualDraft).toEqual(expect.objectContaining({ kind: "evm", amountMode: "all", erc20AssetInput: "" }));
+    expect(JSON.stringify(config)).not.toContain(privateKey);
     expect(rounds).toEqual([]);
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("restores the manual asset, amount, timing and gas form after a mode handoff", async () => {
+    const automatic = vi.fn();
+    const user = userEvent.setup();
+    const first = render(<EvmCollectionPage fixedStandard="erc20" onAutomatic={automatic} />);
+    await importEvmSecret(user);
+    await fillTokenList(user, tokenAddress);
+    await user.click(screen.getByRole("tab", { name: "固定数量" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包每资产固定归集数量" }), { target: { value: "2.5" } });
+    expandSettings("执行节奏");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "并发钱包数" }), { target: { value: "7" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "随机延迟最小秒数" }), { target: { value: "1" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" }), { target: { value: "4" } });
+    expandSettings("高级网络费保护");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "单笔最高网络费（ETH）" }), { target: { value: "0.02" } });
+    const settings = screen.getByLabelText("Gas 设置");
+    await user.click(within(settings).getByRole("tab", { name: "自定义" }));
+    fireEvent.change(within(settings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), { target: { value: "4.5" } });
+    await user.click(screen.getByRole("tab", { name: "一键归集" }));
+    const [snapshot, config] = automatic.mock.calls[0];
+    expect(config.manualDraft).toEqual(expect.objectContaining({ erc20AssetInput: tokenAddress, fixedAmount: "2.5", concurrency: "7", gasChoice: "custom", customGasPriceGwei: "4.5" }));
+    first.unmount();
+    render(<EvmCollectionPage fixedStandard="erc20" initialConfig={config} readInitialWallets={() => snapshot} />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveValue(tokenAddress));
+    expect(screen.getByRole("spinbutton", { name: "每钱包每资产固定归集数量" })).toHaveValue(2.5);
+    expandSettings("执行节奏");
+    expect(screen.getByRole("spinbutton", { name: "并发钱包数" })).toHaveValue(7);
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toHaveValue(4);
+    expandSettings("高级网络费保护");
+    expect(screen.getByRole("spinbutton", { name: "单笔最高网络费（ETH）" })).toHaveValue(0.02);
+    expect(screen.getByRole("spinbutton", { name: "Gas Price（Gwei）" })).toHaveValue(4.5);
+    expect(evmMocks.plan).not.toHaveBeenCalled();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("shows fixed Token quantities and their configured total before execution", async () => {
+    const user = await prepareReadyErc20Page();
+    await user.click(screen.getByRole("tab", { name: "固定数量" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包每资产固定归集数量" }), { target: { value: "50" } });
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
+    expect(within(dialog).getByText("每钱包每资产 50 枚对应 Token")).toBeVisible();
+    expect(await within(dialog).findByText("50 TOK")).toBeVisible();
+    expect(within(dialog).getByText("单笔最高网络费")).toBeVisible();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("restores public history without restoring wallets or starting a write", async () => {
+    saveTaskRecord({ id: "restored-evm", toolId: "evm-token-collection", label: "手动归集", network: { kind: "evm", id: "ethereum", label: "Ethereum", chainId: 1 }, targetAddress,
+      createdAt: "2026-10-12T01:00:00.000Z", updatedAt: "2026-10-12T01:00:00.000Z",
+      results: [{ address: sourceAddress, asset: "ETH", amount: "0.25", hash: `0x${"ab".repeat(32)}`, status: "success", message: "归集成功" }] });
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+    await user.click(screen.getByRole("button", { name: "展开可恢复任务记录" }));
+    expect(screen.getByRole("button", { name: "继续查询交易状态" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "查看记录" }));
+    const dialog = screen.getByRole("dialog", { name: "手动归集 · Ethereum" });
+    expect(within(dialog).getByText("0.25")).toBeVisible();
+    expect(document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!.value).toBe("");
+    expect(evmMocks.plan).not.toHaveBeenCalled();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("requires review of an unfinished restored transaction before starting another round", async () => {
+    saveTaskRecord({ id: "unfinished-evm", toolId: "evm-token-collection", label: "手动归集", network: { kind: "evm", id: "ethereum", label: "Ethereum", chainId: 1 }, targetAddress,
+      createdAt: "2026-10-12T01:00:00.000Z", updatedAt: "2026-10-12T01:00:00.000Z",
+      results: [{ address: sourceAddress, asset: "ETH", hash: `0x${"ab".repeat(32)}`, status: "confirming", message: "等待确认" }] });
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="erc20" />);
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await importEvmSecret(user);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
+    expect(screen.getByRole("button", { name: "删除记录" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "已人工核对链上结果" }));
+    const dialog = screen.getByRole("alertdialog", { name: "已核对这轮交易的链上结果？" });
+    await user.click(within(dialog).getByRole("button", { name: "确认已核对" }));
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
     expect(evmMocks.execute).not.toHaveBeenCalled();
   });
 
@@ -1550,7 +1657,7 @@ describe("EvmCollectionPage workbench", () => {
     await confirmEvmExecution(user);
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(2));
     await user.click(await screen.findByRole("button", { name: "开始新一轮归集" }));
-    expect(screen.getByText(/2 轮/)).toBeVisible();
+    expect(screen.getByText(/2 轮 · 成功/)).toBeVisible();
   });
 
   it("keeps unsettled Token ID in the inventory after a round is archived", async () => {

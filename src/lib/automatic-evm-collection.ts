@@ -4,12 +4,13 @@ import { parseEvmPrivateKeyInput, planEvmCollection, executeEvmCollectionPlan, e
 import { autoEvmGasSettings, type EvmGasSettings } from './evm-gas';
 import { mapWithCollectionConcurrency } from './collection-execution';
 import { createInventoryBudget, discoverEvmWalletInventory } from './evm-wallet-inventory';
-import { assertAutomaticOperationActive, type AutomaticCollectionTask, type AutomaticCollectionWallet } from './collection-orchestrator';
+import { assertAutomaticOperationActive, type AutomaticCollectionScanProgress, type AutomaticCollectionTask, type AutomaticCollectionWallet } from './collection-orchestrator';
 import type { CollectionDisplayResult } from './collection-results';
 
-export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint, targetAddress, indexer, signal, maxFeePerTransactionWei, gasSettings = autoEvmGasSettings }: {
+export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint, targetAddress, indexer, signal, maxFeePerTransactionWei, gasSettings = autoEvmGasSettings, onScanProgress }: {
   keys: string; network: EvmNetworkConfig; rpcEndpoint: string; targetAddress: string; indexer: string; signal: AbortSignal;
   maxFeePerTransactionWei: bigint; gasSettings?: EvmGasSettings;
+  onScanProgress?: (progress: AutomaticCollectionScanProgress) => void;
 }): Promise<AutomaticCollectionWallet[]> {
   if (!isAddress(targetAddress) || getAddress(targetAddress) === zeroAddress) throw new Error('请输入有效目标地址');
   if (!isEvmNativeCurrencyEnabled(network)) throw new Error('请先确认该网络的原生币信息');
@@ -19,7 +20,7 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
   const accounts = parsed.accounts.filter(source => source.address.toLowerCase() !== targetAddress.toLowerCase());
   if (!accounts.length) throw new Error('没有可归集的来源钱包，目标地址不能作为来源');
   const client = createEvmPublicClient(network, rpcEndpoint); await assertEvmRpcNetwork(client, network);
-  assertAutomaticOperationActive(signal); const budget = createInventoryBudget();
+  assertAutomaticOperationActive(signal); const budget = createInventoryBudget(); let completed = 0;
   return mapWithCollectionConcurrency(accounts, 3, async source => {
     const inventory = await discoverEvmWalletInventory({ address: source.address, chainId: network.chainId, indexer, signal, budget });
     const issues = [...inventory.issues]; let complete = inventory.complete;
@@ -65,7 +66,7 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
           status: result.status === 'failed' ? 'error' : result.status };
       } });
     }
-    return { address: source.address, complete, issues, native, tasks, async verifyEmpty() {
+    const wallet: AutomaticCollectionWallet = { address: source.address, complete, issues, native, tasks, async verifyEmpty() {
       assertAutomaticOperationActive(signal); await assertEvmRpcNetwork(client, network);
       const fresh = await discoverEvmWalletInventory({ address: source.address, chainId: network.chainId, indexer, signal });
       if (!fresh.complete) return false;
@@ -78,5 +79,8 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
       }
       return true;
     } };
+    assertAutomaticOperationActive(signal);
+    onScanProgress?.({ completed: ++completed, total: accounts.length, wallet });
+    return wallet;
   });
 }

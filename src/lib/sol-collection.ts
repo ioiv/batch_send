@@ -107,7 +107,7 @@ export type SolCollectionPreflightResult = {
   totalTransferLamports: bigint;
 };
 
-export type SolCollectionProgressPhase = "error" | "preparing" | "skipped" | "submitted" | "success";
+export type SolCollectionProgressPhase = "error" | "preparing" | "skipped" | "submitting" | "submitted" | "success";
 
 export type SolCollectionProgress = {
   address: string;
@@ -741,6 +741,18 @@ export async function collectSolFromSources(options: CollectSolFromSourcesOption
 
       if (!transaction.signature) throw new SafeSolCollectionError("交易签名失败，已停止处理该项");
       submittedSignature = encodeBase58(transaction.signature);
+      // The signature is already known locally. Expose it before the RPC call
+      // so a page closing while the broadcast response is pending can reconcile it.
+      emitProgress(onProgress, {
+        address,
+        completed,
+        current: index + 1,
+        label: source.label,
+        phase: "submitting",
+        signature: submittedSignature,
+        total: sources.length,
+        transferLamports
+      });
 
       let rpcSignature: TransactionSignature;
       try {

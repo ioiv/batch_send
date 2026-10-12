@@ -109,6 +109,7 @@ export type EvmTokenDistributionStep =
   | { needsApproval: boolean; totalTransactions: number; type: "allowance-checked" }
   | { hash: Hash; totalTransactions: 2; type: "approval-submitted" }
   | { hash: Hash; totalTransactions: 2; type: "approval-confirmed" }
+  | { totalTransactions: number; type: "distribution-signing" }
   | { hash: Hash; hashes: Hash[]; totalTransactions: number; type: "distribution-submitted" }
   | { hash: Hash; hashes: Hash[]; totalTransactions: number; type: "distribution-confirmed" };
 
@@ -1207,6 +1208,7 @@ export async function sendEvmTokenDistribution({
   }
 
   await assertWalletContext({ account, network, provider });
+  onStep?.({ totalTransactions, type: "distribution-signing" });
   const hash = await walletClient.writeContract({
     abi: disperseAbi,
     account,

@@ -106,12 +106,12 @@ export function ActionBar({ summary, feedback, secondaryActions, details, detail
   return (
     <div className={`workbench-action-bar ${className}`.trim()}>
       {feedback ? <div className="workbench-action-bar__context">{feedback}</div> : null}
-      {summary || secondaryActions || details ? <details className="workbench-action-details" ref={detailsRef}>
+      {summary ? <div className="workbench-action-bar__summary">{summary}</div> : null}
+      {secondaryActions ? <div className="workbench-action-bar__secondary">{secondaryActions}</div> : null}
+      {details ? <details className="workbench-action-details" ref={detailsRef}>
         <summary>任务详情<HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={14} strokeWidth={1.8} /></summary>
         <div className="workbench-action-details__body">
-          {summary}
-          {secondaryActions ? <div className="workbench-action-details__secondary">{secondaryActions}</div> : null}
-          {details ? <div className="workbench-action-details__records">{details}</div> : null}
+          <div className="workbench-action-details__records">{details}</div>
         </div>
       </details> : null}
       {children ? <div className="workbench-action-bar__actions">{children}</div> : null}
@@ -261,7 +261,11 @@ export function ConfirmActionDialog({
   confirmLabel,
   description,
   disabled = false,
+  hideTrigger = false,
   onConfirm,
+  open: controlledOpen,
+  onOpenChange,
+  returnFocusId,
   title,
   triggerAriaLabel,
   triggerClassName,
@@ -273,6 +277,10 @@ export function ConfirmActionDialog({
   confirmLabel: string;
   description: ReactNode;
   disabled?: boolean;
+  hideTrigger?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  returnFocusId?: string;
   onConfirm: () => void | Promise<void>;
   title: string;
   triggerAriaLabel?: string;
@@ -281,11 +289,16 @@ export function ConfirmActionDialog({
   triggerSize?: "default" | "sm" | "lg" | "icon" | "icon-sm" | "icon-lg";
   triggerVariant?: "default" | "outline" | "secondary" | "ghost" | "destructive";
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (value: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(value);
+    onOpenChange?.(value);
+  };
 
   return (
     <AlertDialog onOpenChange={setOpen} open={open}>
-      <AlertDialogTrigger
+      {!hideTrigger ? <AlertDialogTrigger
         disabled={disabled}
         render={(
           <Button
@@ -299,15 +312,16 @@ export function ConfirmActionDialog({
         )}
       >
         {triggerLabel}
-      </AlertDialogTrigger>
-      <AlertDialogContent>
+      </AlertDialogTrigger> : null}
+      <AlertDialogContent finalFocus={returnFocusId ? () => document.getElementById(returnFocusId) : undefined}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription render={<div />}>{description}</AlertDialogDescription>
+          <AlertDialogDescription className="confirm-action-description" render={<div />}>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
+            disabled={disabled}
             onClick={() => {
               setOpen(false);
               void onConfirm();

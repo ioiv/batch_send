@@ -43,6 +43,10 @@ import {
   WorkbenchSummary
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
+import { useTaskHistory } from "../hooks/useTaskHistory";
+import { TaskHistoryPanel } from "../components/TaskHistoryPanel";
+import type { CollectionModeConfig } from "../components/AutomaticCollectionWorkbench";
+import { describeCollectionAmount, type EvmManualCollectionDraft } from "../lib/collection-mode-draft";
 import {
   executeEvmCollectionPlan,
   erc20CollectionAbi,
@@ -138,6 +142,7 @@ type PendingNftTokenScan = {
 };
 
 type ArchivedCollectionRound = {
+  historyRecordId?: string;
   message: string;
   requiresAcknowledgement: boolean;
   results: CollectionDisplayResult[];
@@ -582,10 +587,11 @@ export function EvmCollectionPage({
   initialConfig
 }: {
   fixedStandard: "erc20" | "nft";
-  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: { networkId: string; rpcEndpoint: string; targetAddress: string }, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
+  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: CollectionModeConfig, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
   readInitialWallets?: () => SecretKeyInputSnapshot | null;
-  initialConfig?: { networkId: string; rpcEndpoint: string; targetAddress: string };
+  initialConfig?: CollectionModeConfig;
 }) {
+  const initialDraft = initialConfig?.manualDraft?.kind === "evm" ? initialConfig.manualDraft : undefined;
   const networks = useMemo(() => getEvmDistributionNetworks(), []);
   const initialNetwork = useMemo(() => initialConfig?.networkId ? getEvmNetworkConfig(initialConfig.networkId as EvmDistributionNetworkId, networks) : getPreferredEvmDistributionNetwork(networks), [initialConfig?.networkId, networks]);
   const [networkId, setNetworkId] = useState<EvmDistributionNetworkId>(initialNetwork.id);
@@ -595,9 +601,9 @@ export function EvmCollectionPage({
     initialNetwork.rpcEndpoint
   ));
   const [targetAddress, setTargetAddress] = useState(initialConfig?.targetAddress || "");
-  const [erc20AssetInput, setErc20AssetInput] = useState("");
-  const [nftAssetInputs, setNftAssetInputs] = useState({ erc721: "", erc1155: "" });
-  const [discoveryContract, setDiscoveryContract] = useState("");
+  const [erc20AssetInput, setErc20AssetInput] = useState(initialDraft?.erc20AssetInput ?? "");
+  const [nftAssetInputs, setNftAssetInputs] = useState(initialDraft?.nftAssetInputs ?? { erc721: "", erc1155: "" });
+  const [discoveryContract, setDiscoveryContract] = useState(initialDraft?.discoveryContract ?? "");
   const [openSeaApiKey, setOpenSeaApiKey] = useState(getStoredOpenSeaApiKey);
   const [openSeaKeyVisible, setOpenSeaKeyVisible] = useState(false);
   const [sourceKeyLineCount, setSourceKeyLineCount] = useState(0);
@@ -606,24 +612,24 @@ export function EvmCollectionPage({
   const [contractInspection, setContractInspection] = useState<NftContractInspection | null>(null);
   const [pendingDiscovery, setPendingDiscovery] = useState<PendingNftDiscovery | null>(null);
   const [pendingTokenScan, setPendingTokenScan] = useState<PendingNftTokenScan | null>(null);
-  const [tokenRangeStart, setTokenRangeStart] = useState("");
-  const [tokenRangeEnd, setTokenRangeEnd] = useState("");
+  const [tokenRangeStart, setTokenRangeStart] = useState(initialDraft?.tokenRangeStart ?? "");
+  const [tokenRangeEnd, setTokenRangeEnd] = useState(initialDraft?.tokenRangeEnd ?? "");
   const [discoveryComplete, setDiscoveryComplete] = useState(false);
   const [discoveryRunning, setDiscoveryRunning] = useState(false);
   const [assetImporting, setAssetImporting] = useState(false);
   const [keyImporting, setKeyImporting] = useState(false);
-  const [amountMode, setAmountMode] = useState<AmountMode>("all");
-  const [percentageAmount, setPercentageAmount] = useState("100");
-  const [fixedAmount, setFixedAmount] = useState("0.1");
-  const [randomMinimum, setRandomMinimum] = useState("0.01");
-  const [randomMaximum, setRandomMaximum] = useState("0.1");
-  const [nftAmountMode, setNftAmountMode] = useState<"all" | "fixed">("all");
-  const [nftFixedAmount, setNftFixedAmount] = useState("1");
-  const [concurrency, setConcurrency] = useState("3");
-  const [minimumDelay, setMinimumDelay] = useState("0");
-  const [maximumDelay, setMaximumDelay] = useState("0");
-  const [maxFeeAmount, setMaxFeeAmount] = useState(() => getDefaultEvmCollectionFeeCap(initialNetwork));
-  const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">("erc721");
+  const [amountMode, setAmountMode] = useState<AmountMode>(initialDraft?.amountMode ?? "all");
+  const [percentageAmount, setPercentageAmount] = useState(initialDraft?.percentageAmount ?? "100");
+  const [fixedAmount, setFixedAmount] = useState(initialDraft?.fixedAmount ?? "0.1");
+  const [randomMinimum, setRandomMinimum] = useState(initialDraft?.randomMinimum ?? "0.01");
+  const [randomMaximum, setRandomMaximum] = useState(initialDraft?.randomMaximum ?? "0.1");
+  const [nftAmountMode, setNftAmountMode] = useState<"all" | "fixed">(initialDraft?.nftAmountMode ?? "all");
+  const [nftFixedAmount, setNftFixedAmount] = useState(initialDraft?.nftFixedAmount ?? "1");
+  const [concurrency, setConcurrency] = useState(initialDraft?.concurrency ?? "3");
+  const [minimumDelay, setMinimumDelay] = useState(initialDraft?.minimumDelay ?? "0");
+  const [maximumDelay, setMaximumDelay] = useState(initialDraft?.maximumDelay ?? "0");
+  const [maxFeeAmount, setMaxFeeAmount] = useState(() => initialDraft?.maxFeeAmount ?? getDefaultEvmCollectionFeeCap(initialNetwork));
+  const [nftStandard, setNftStandard] = useState<"erc721" | "erc1155">(initialDraft?.nftStandard ?? "erc721");
   const [stage, setStage] = useState<CollectionStage>("editing");
   const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState("");
@@ -642,6 +648,7 @@ export function EvmCollectionPage({
   const pauseControllerRef = useRef(new CollectionPauseController());
   const planRef = useRef<EvmCollectionPlanItem[]>([]);
   const retryPlanRef = useRef<EvmCollectionPlanItem[]>([]);
+  const executionResultsRef = useRef<CollectionDisplayResult[]>([]);
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const openSeaApiKeyRef = useRef(openSeaApiKey);
   const tokenMetadataCacheRef = useRef(new Map<string, Erc20TokenPreview>());
@@ -653,10 +660,36 @@ export function EvmCollectionPage({
     network: selectedNetwork,
     rpcEndpoint: effectiveRpcEndpoint
   });
+  const initialGasDraftRef = useRef(initialDraft);
+  useEffect(() => {
+    const draft = initialGasDraftRef.current;
+    if (!draft) return;
+    gas.setChoice(draft.gasChoice);
+    gas.setCustomGasPriceGwei(draft.customGasPriceGwei);
+  }, [gas.setChoice, gas.setCustomGasPriceGwei]);
   const standard: EvmCollectionStandard = fixedStandard === "erc20"
     ? (erc20AssetInput.trim() ? "erc20" : "native")
     : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
+  const taskNetwork = { kind: "evm" as const, id: selectedNetwork.id, label: selectedNetwork.label, chainId: selectedNetwork.chainId };
+  const taskHistory = useTaskHistory({ toolId: currentToolId, label: "手动归集", network: taskNetwork,
+    targetAddress, results, busy: stage === "running" || discoveryRunning, roundKey: roundSequence });
+  const commitExecutionResults = (nextResults: CollectionDisplayResult[]) => {
+    executionResultsRef.current = nextResults;
+    taskHistory.captureResults(nextResults);
+    setResults(nextResults);
+  };
+  useEffect(() => {
+    setArchivedRounds((current) => {
+      const next = current.map((round) => {
+        const record = taskHistory.records.find((item) => item.id === round.historyRecordId);
+        return round.requiresAcknowledgement && record
+          && (record.acknowledgedAt || !record.results.some((result) => result.uncertain || ["submitting", "confirming"].includes(result.status)))
+          ? { ...round, requiresAcknowledgement: false } : round;
+      });
+      return next.some((round, index) => round !== current[index]) ? next : current;
+    });
+  }, [archivedRounds, taskHistory.records]);
   const assetInput = fixedStandard === "erc20" ? erc20AssetInput : nftAssetInputs[nftStandard];
   // Mirrored eagerly so asynchronous discovery reads the inventory that is
   // already committed instead of the value captured by its own render.
@@ -720,7 +753,8 @@ export function EvmCollectionPage({
   const currentRoundRequiresAcknowledgement = roundIsTerminal
     && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
   const acknowledgementRequired = currentRoundRequiresAcknowledgement
-    || archivedRounds.some((round) => round.requiresAcknowledgement);
+    || archivedRounds.some((round) => round.requiresAcknowledgement)
+    || taskHistory.needsRecoveryReview;
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
@@ -907,6 +941,7 @@ export function EvmCollectionPage({
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
     const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
     setArchivedRounds((current) => [{
+      historyRecordId: taskHistory.currentRecordId,
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -1731,7 +1766,7 @@ export function EvmCollectionPage({
   };
 
   const executeCollection = async (retryIds?: readonly string[]) => {
-    if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running) return;
+    if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running || taskHistory.checkRecoveryReview()) return;
     const retryOnly = retryIds !== undefined;
     const requestedRetryIds = new Set(retryIds || []);
     const allRetryablePlan = retryPlanRef.current;
@@ -1765,7 +1800,7 @@ export function EvmCollectionPage({
     const submittedIds = new Set<string>();
     if (retryOnly) {
       const retryIds = new Set(retryPlan.map((item) => item.id));
-      setResults((current) => current.map((result, index) => retryIds.has(planRef.current[index]?.id)
+      commitExecutionResults(results.map((result, index) => retryIds.has(planRef.current[index]?.id)
         ? {
             ...result,
             hash: undefined,
@@ -1777,7 +1812,7 @@ export function EvmCollectionPage({
           }
         : result));
     } else {
-      setResults(prepared.parsedAccounts.accounts.map((account) => ({
+      commitExecutionResults(prepared.parsedAccounts.accounts.map((account) => ({
         address: account.address,
         amount: "—",
         asset: fixedStandard === "nft" ? nftStandard.toUpperCase() : standard === "native"
@@ -1793,7 +1828,7 @@ export function EvmCollectionPage({
       if (progress.hash) submittedIds.add(progress.id);
       const resultIndex = planRef.current.findIndex((item) => item.id === progress.id);
       if (resultIndex < 0) return;
-      setResults((current) => current.map((result, index) => {
+      commitExecutionResults(executionResultsRef.current.map((result, index) => {
         if (index !== resultIndex) return result;
         return {
           ...result,
@@ -1832,7 +1867,7 @@ export function EvmCollectionPage({
                 nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null
               );
         planRef.current = executionPlan;
-        setResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
+        commitExecutionResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
       }
       const chain = toEvmChain(selectedNetwork, effectiveRpcEndpoint);
       const groups = Array.from(executionPlan.reduce((grouped, item) => {
@@ -1945,6 +1980,7 @@ export function EvmCollectionPage({
     && executionSettingsValid && rpcEndpointValid && !running
     && !acknowledgementRequired;
   const requirement: WorkflowRequirement | null = running || (roundIsTerminal && !acknowledgementRequired) ? null
+    : taskHistory.needsRecoveryReview ? { message: "请先在可恢复任务记录中核对上次交易的链上状态" }
     : acknowledgementRequired ? { message: "请先在归集记录中核对已提交交易的链上状态" }
     : !sourceKeyLineCount ? { message: "请先导入并选择来源钱包", targetId: "source-wallet-import" }
     : !targetIsValid ? { message: targetAddress.trim() ? "请修正目标地址" : "请填写目标地址", targetId: "evm-collection-target" }
@@ -1974,18 +2010,44 @@ export function EvmCollectionPage({
     && tokenRangeSize !== null
     && tokenRangeSize <= tokenRangeRpcLimit
   );
-  const fixedNativeAmount = fixedStandard === "erc20" && !assetInput.trim() && amountMode === "fixed"
+  const configuredFixedAmount = fixedStandard === "erc20" && amountMode === "fixed"
     ? parsePositiveFeeAmount(fixedAmount, selectedNetwork.nativeCurrency.decimals)
     : null;
+  const configuredTokenTotals = fixedStandard === "erc20" && standard === "erc20" && amountMode === "fixed"
+    ? parseEvmCollectionAssets(assetInput, "erc20").validAssets
+      .filter((asset): asset is Extract<EvmCollectionAsset, { standard: "erc20" }> => asset.standard === "erc20")
+      .map((asset) => {
+        const metadata = recognizedTokenByAddress.get(asset.contractAddress.toLowerCase());
+        const tokenAmount = metadata?.decimals === undefined ? null : parsePositiveFeeAmount(fixedAmount, metadata.decimals);
+        return {
+          key: asset.contractAddress,
+          symbol: metadata?.symbol || "Token",
+          label: `${metadata?.symbol || "Token"} · ${shorten(asset.contractAddress)}`,
+          amount: metadata?.decimals === undefined ? "待识别代币精度后计算"
+            : tokenAmount === null ? "配置数量小于代币最小单位或无效" : formatUnits(tokenAmount * BigInt(sourceKeyLineCount), metadata.decimals)
+        };
+      })
+    : [];
   const plannedTotal = !sourceKeyLineCount ? "—" : fixedStandard === "nft"
     ? nftStandard === "erc721" && nftAmountMode === "fixed"
       ? parsedNftFixedAmount !== null ? `${parsedNftFixedAmount} 个 NFT` : "—"
       : "全部已识别持仓"
-    : !assetInput.trim() && amountMode === "fixed"
-      ? fixedNativeAmount !== null
-        ? `${formatUnits(fixedNativeAmount * BigInt(sourceKeyLineCount), selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
+    : standard === "erc20" && amountMode === "fixed"
+      ? configuredTokenTotals.length === 1 ? `${configuredTokenTotals[0].amount} ${configuredTokenTotals[0].symbol}` : `${configuredTokenTotals.length} 种 Token，分别合计`
+    : amountMode === "fixed"
+      ? configuredFixedAmount !== null
+        ? `${formatUnits(configuredFixedAmount * BigInt(sourceKeyLineCount), selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
         : "—"
       : "按实时余额计算";
+  const manualDraft: EvmManualCollectionDraft = {
+    kind: "evm", erc20AssetInput, nftAssetInputs: { ...nftAssetInputs }, discoveryContract,
+    tokenRangeStart, tokenRangeEnd, amountMode, percentageAmount, fixedAmount, randomMinimum,
+    randomMaximum, nftAmountMode, nftFixedAmount, concurrency, minimumDelay, maximumDelay,
+    maxFeeAmount, nftStandard, gasChoice: gas.choice, customGasPriceGwei: gas.customGasPriceGwei
+  };
+  const amountSummary = fixedStandard === "nft"
+    ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
+    : describeCollectionAmount(manualDraft, standard === "native" ? selectedNetwork.nativeCurrency.symbol : "枚对应 Token");
 
   const taskActions = (
         <ActionBar
@@ -2001,7 +2063,7 @@ export function EvmCollectionPage({
                   triggerSize="lg"
                   confirmLabel={`重试 ${retryableCount} 个失败项`}
                   description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
+                  disabled={running || taskHistory.needsRecoveryReview}
                   onConfirm={() => executeCollection(retryPlanRef.current.map((item) => item.id))}
                   title="确认重试失败项？"
                   triggerLabel={`重试失败项 (${retryableCount})`}
@@ -2070,12 +2132,15 @@ export function EvmCollectionPage({
                     <span>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</span>
                     <strong>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</strong>
                   </div>
-                  <div><span>归集数量</span><strong>{fixedStandard === "nft"
-                    ? nftStandard === "erc1155" || nftAmountMode === "all" ? "全部余额" : `${nftFixedAmount} 个（所有钱包合计）`
-                    : amountModeLabels[amountMode]}</strong></div>
+                  <div><span>归集数量</span><strong>{amountSummary}</strong></div>
+                  <div><span>配置总量</span><strong>{plannedTotal}</strong></div>
+                  {configuredTokenTotals.length ? <section aria-label="各 Token 配置合计" className="summary-list max-h-40 overflow-y-auto">
+                    {configuredTokenTotals.map((total) => <div key={total.key}><span>{total.label}</span><strong>{total.amount}</strong></div>)}
+                  </section> : null}
                   <div><span>并发</span><strong>{concurrency}</strong></div>
                   <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
                   <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                  <p className="text-muted-foreground">实际发送数量以提交前的余额和费用检查为准。</p>
                 </div>
               )}
               disabled={!canStart}
@@ -2100,7 +2165,7 @@ export function EvmCollectionPage({
         <Tabs value="manual" onValueChange={(value) => {
           if (value !== "automatic" || controlsLocked || acknowledgementRequired) return;
           const snapshot = keyInputRef.current?.handoff();
-          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress }, [
+          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress, manualDraft }, [
             ...archivedRounds.map((round) => ({ label: `归集记录 #${round.sequence}`, results: round.results })),
             ...(roundIsTerminal && results.length ? [{ label: `归集记录 #${roundSequence}`, results }] : [])
           ]);
@@ -2824,16 +2889,20 @@ export function EvmCollectionPage({
 
           </div>
         </WorkbenchPanel>
+        <TaskHistoryPanel history={taskHistory} network={taskNetwork} rpcEndpoint={effectiveRpcEndpoint} busy={running} />
         {archivedRounds.length ? (
           <ReviewPanel
             actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已通过交易哈希核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
-                  ...round,
-                  requiresAcknowledgement: false
-                })))}
+                onConfirm={() => {
+                  for (const round of archivedRounds.filter((item) => item.requiresAcknowledgement)) {
+                    const record = taskHistory.records.find((item) => item.id === round.historyRecordId);
+                    if (record) taskHistory.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() });
+                  }
+                  setArchivedRounds((current) => current.map((round) => ({ ...round, requiresAcknowledgement: false })));
+                }}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"

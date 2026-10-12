@@ -401,6 +401,9 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleWalletCount, setVisibleWalletCount] = useState(importedWalletBatchSize);
   const [wallets, setWallets] = useState<ImportedWallet[]>([]);
+  const [walletQuery, setWalletQuery] = useState('');
+  const [walletFilter, setWalletFilter] = useState('all');
+  useEffect(() => { setVisibleWalletCount(importedWalletBatchSize); }, [walletQuery, walletFilter]);
   const inputLocked = disabled || fileStatus.kind === "loading";
   disabledRef.current = disabled;
   selectedIdsRef.current = selectedIds;
@@ -663,20 +666,31 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   };
 
   const loadMoreWallets = () => {
-    setVisibleWalletCount((current) => Math.min(wallets.length, current + importedWalletBatchSize));
+    setVisibleWalletCount((current) => Math.min(filteredWallets.length, current + importedWalletBatchSize));
   };
 
   const handleWalletListScroll = () => {
     const list = walletListRef.current;
-    if (!list || visibleWalletCount >= wallets.length) return;
+    if (!list || visibleWalletCount >= filteredWallets.length) return;
     if (list.scrollHeight - list.scrollTop - list.clientHeight <= 48) loadMoreWallets();
   };
 
   const placeholder = mode === "evm"
     ? "每行一个私钥，或：备注,0x私钥\n示例：运营钱包 01,0x…"
     : "每行一个 Base58 / JSON 数组私钥，或：备注,私钥\n示例：运营钱包 01,[12,34,…]";
-  const visibleWallets = wallets.slice(0, visibleWalletCount);
-  const hasMoreWallets = visibleWalletCount < wallets.length;
+  const filteredWallets = wallets.filter(wallet => {
+    const query = walletQuery.trim().toLowerCase();
+    if (query && !`${wallet.address} ${wallet.label || ''}`.toLowerCase().includes(query)) return false;
+    if (walletFilter === 'selected') return selectedIds.has(wallet.id);
+    if (walletFilter === 'zero') return zeroBalanceWalletIds.includes(wallet.id);
+    const overview = getWalletOverview(wallet);
+    if (walletFilter === 'unread') return !overview?.scanned && !getWalletBalances(wallet).length;
+    const statuses = walletStatuses[wallet.id] || walletStatuses[wallet.address] || walletStatuses[wallet.address.toLowerCase()] || [];
+    if (walletFilter === 'error') return statuses.some(status => status.status === 'error' || status.status === 'uncertain') || Boolean(overview?.scanned && !overview.complete);
+    return true;
+  });
+  const visibleWallets = filteredWallets.slice(0, visibleWalletCount);
+  const hasMoreWallets = visibleWalletCount < filteredWallets.length;
   const allWalletsSelected = wallets.length > 0 && selectedIds.size === wallets.length;
 
   return (
@@ -820,6 +834,16 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
 
       {wallets.length ? (
         <div aria-label="已导入来源钱包" className="imported-wallet-browser">
+          <div className="imported-wallet-search">
+            <Input aria-label="搜索来源钱包" type="search" placeholder="搜索钱包地址或备注" value={walletQuery} onChange={event => setWalletQuery(event.target.value)} />
+            <select aria-label="筛选来源钱包" value={walletFilter} onChange={event => setWalletFilter(event.target.value)}>
+              <option value="all">全部钱包</option><option value="selected">已选择</option><option value="zero">余额为零</option><option value="unread">尚未读取</option><option value="error">失败或待核对</option>
+            </select>
+            {walletQuery || walletFilter !== 'all' ? <><span className="hint">匹配 {filteredWallets.length} / {wallets.length}</span>
+              <Button disabled={inputLocked || !filteredWallets.length} type="button" size="sm" variant="outline" onClick={() => {
+                updateSelectedIds(new Set([...selectedIdsRef.current, ...filteredWallets.map(wallet => wallet.id)])); onDirty?.('selection');
+              }}>选择筛选结果</Button></> : null}
+          </div>
           <div aria-label="钱包列表控制" className="imported-wallet-toolbar">
             <div className="imported-wallet-toolbar__actions">
               <Button disabled={inputLocked} onClick={toggleAllWallets} size="sm" type="button" variant="ghost">
@@ -848,7 +872,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             </div>
             {hasMoreWallets ? (
               <div className="imported-wallet-toolbar__more">
-                <span aria-live="polite">已显示 {visibleWallets.length} / {wallets.length}</span>
+                <span aria-live="polite">已显示 {visibleWallets.length} / {filteredWallets.length}</span>
                 <Button disabled={inputLocked} onClick={loadMoreWallets} size="sm" type="button" variant="ghost">
                   加载更多钱包
                 </Button>
@@ -869,6 +893,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             ref={walletListRef}
             role="list"
           >
+            {!visibleWallets.length ? <p className="hint">没有匹配的钱包，请调整搜索或筛选条件。</p> : null}
             {visibleWallets.map((wallet) => {
               const balances = getWalletBalances(wallet);
               const overview = getWalletOverview(wallet) || legacyBalanceOverview(balances);
@@ -937,7 +962,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       ) : null}
 
       <FieldDescription className="sr-only">
-        私钥只保留在当前 DOM 中；主页面仅展示派生的钱包地址。
+        私钥仅在当前页面临时使用，关闭或刷新后清除；主页面只展示钱包地址。
       </FieldDescription>
     </Field>
   );

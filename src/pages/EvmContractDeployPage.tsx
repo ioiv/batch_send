@@ -24,6 +24,9 @@ import {
 } from "../components/WorkbenchPrimitives";
 import { useEvmGas } from "../hooks/useEvmGas";
 import { useEvmWallet } from "../hooks/useEvmWallet";
+import { useTaskHistory } from '../hooks/useTaskHistory';
+import { TaskHistoryPanel } from '../components/TaskHistoryPanel';
+import type { CollectionDisplayResult } from '../lib/collection-results';
 import { shortenAddress } from "../lib/address";
 import { sanitizeRoundArchiveText } from "../lib/collection-results";
 import {
@@ -63,9 +66,9 @@ type DeploymentPageStatus =
   | "already-deployed"
   | "error";
 
-export function getDeploymentSafetyState(status: DeploymentPageStatus, hash: string) {
+export function getDeploymentSafetyState(status: DeploymentPageStatus, hash: string, uncertain = false) {
   const deploymentComplete = status === "success" || status === "already-deployed";
-  const submittedButUncertain = status === "error" && Boolean(hash);
+  const submittedButUncertain = status === "error" && (Boolean(hash) || uncertain);
   const workbenchStatus: WorkbenchStatus = submittedButUncertain
     ? "uncertain"
     : deploymentComplete
@@ -89,6 +92,7 @@ export function getDeploymentSafetyState(status: DeploymentPageStatus, hash: str
 }
 
 type DeploymentPageState = {
+  uncertain?: boolean;
   checks: DisperseDeploymentCheck[];
   contextKey: string;
   hash: string;
@@ -99,6 +103,7 @@ type DeploymentPageState = {
 };
 
 type ArchivedDeploymentRound = {
+  historyRecordId?: string;
   checks: DisperseDeploymentCheck[];
   explorerUrl: string;
   hash: string;
@@ -180,6 +185,7 @@ export function EvmContractDeployPage() {
   const [selectedMetadataCandidateKey, setSelectedMetadataCandidateKey] = useState("");
   const [customNetworkMetadata, setCustomNetworkMetadata] = useState<CustomNetworkMetadataState>(initialCustomNetworkMetadataState);
   const [deploymentState, setDeploymentState] = useState<DeploymentPageState>(initialDeploymentState);
+  const [deploymentConfirmationOpen, setDeploymentConfirmationOpen] = useState(false);
   const [archivedRound, setArchivedRound] = useState<ArchivedDeploymentRound | null>(null);
   const [roundSequence, setRoundSequence] = useState(1);
   const [distributionChainName, setDistributionChainName] = useState("");
@@ -250,7 +256,22 @@ export function EvmContractDeployPage() {
   const customMetadataReady = customNetworkMetadataIsComplete(customNetworkMetadata);
   const provider = wallet.getProvider();
   const busy = status === "validating" || status === "awaiting-wallet" || status === "confirming";
-  const safetyState = getDeploymentSafetyState(status, hash);
+  const taskNetwork = { kind: 'evm' as const, id: networkSource === 'known' ? selectedKnownNetwork.id : `custom-${displayNetwork?.chainId || 0}`,
+    label: displayNetwork?.label || '自定义网络', chainId: displayNetwork?.chainId };
+  const publicDeploymentResults = useMemo<CollectionDisplayResult[]>(() => network && (hash || status === 'awaiting-wallet' || status === 'success' || status === 'already-deployed' || status === 'error') ? [{
+    address: disperseContractAddress, asset: 'Disperse 合约部署', hash: hash || undefined, message,
+    status: status === 'success' || status === 'already-deployed' ? 'success' : status === 'error' ? 'error' : hash ? 'confirming' : 'submitting',
+    uncertain: status === 'error' ? Boolean(hash) || deploymentState.uncertain : status === 'awaiting-wallet', retryable: false
+  }] : [], [network, hash, status, message, deploymentState.uncertain]);
+  const taskHistory = useTaskHistory({ toolId: 'evm-contract-deploy', label: '合约部署', network: taskNetwork, targetAddress: disperseContractAddress, results: publicDeploymentResults, busy, roundKey: roundSequence });
+  const safetyState = getDeploymentSafetyState(status, hash, deploymentState.uncertain);
+  useEffect(() => {
+    if (!archivedRound?.requiresAcknowledgement || !archivedRound.historyRecordId) return;
+    const record = taskHistory.records.find(item => item.id === archivedRound.historyRecordId);
+    if (record && (record.acknowledgedAt || !record.results.some(result => result.uncertain || ['submitting', 'confirming'].includes(result.status)))) {
+      setArchivedRound(current => current ? { ...current, requiresAcknowledgement: false } : current);
+    }
+  }, [taskHistory.records, archivedRound]);
   const submittedButUncertain = safetyState.submittedButUncertain;
   const rpcEndpointValid = (() => { try { return new URL(effectiveRpcEndpoint).protocol === "https:"; } catch { return false; } })();
   const canValidate = wallet.connected
@@ -260,7 +281,7 @@ export function EvmContractDeployPage() {
     && blockExplorerUrlIsValid
     && Boolean(gas.gasSettings)
     && !busy;
-  const canDeploy = canValidate && status === "ready" && !archivedRound?.requiresAcknowledgement;
+  const canDeploy = canValidate && status === "ready" && !archivedRound?.requiresAcknowledgement && !taskHistory.needsRecoveryReview;
   const deploymentComplete = safetyState.deploymentComplete;
   const configurationLocked = busy;
   const explorerUrl = hash && network ? getDisperseDeploymentExplorerUrl(hash, network) : "";
@@ -306,6 +327,7 @@ export function EvmContractDeployPage() {
   );
 
   const clearDeploymentState = () => {
+    setDeploymentConfirmationOpen(false);
     operationIdRef.current += 1;
     setDeploymentState(initialDeploymentState);
     setDistributionChainName("");
@@ -320,6 +342,7 @@ export function EvmContractDeployPage() {
     terminalArchivedRef.current = true;
     const archivedNetwork = deploymentState.network;
     setArchivedRound({
+      historyRecordId: taskHistory.currentRecordId,
       checks: deploymentState.checks.map((check) => ({
         ...check,
         detail: sanitizeRoundArchiveText(check.detail)
@@ -330,7 +353,7 @@ export function EvmContractDeployPage() {
       hash: deploymentState.hash,
       message: sanitizeRoundArchiveText(deploymentState.message),
       networkLabel: archivedNetwork ? `${archivedNetwork.label} · ${archivedNetwork.chainId}` : "网络未确认",
-      requiresAcknowledgement: terminalStatus === "error" && Boolean(deploymentState.hash),
+      requiresAcknowledgement: terminalStatus === "error" && (Boolean(deploymentState.hash) || Boolean(deploymentState.uncertain)),
       sequence: roundSequence,
       status: terminalStatus
     });
@@ -453,7 +476,8 @@ export function EvmContractDeployPage() {
   const runValidation = async () => {
     const walletProvider = wallet.getProvider();
     const gasSettings = gas.gasSettings;
-    if (!wallet.connected || !wallet.address || !walletProvider || !gasSettings) return;
+    if (!canValidate || !wallet.connected || !wallet.address || !walletProvider || !gasSettings) return;
+    setDeploymentConfirmationOpen(false);
 
     archiveTerminalRound();
     terminalArchivedRef.current = false;
@@ -519,6 +543,9 @@ export function EvmContractDeployPage() {
         preflight: nextPreflight,
         status: nextPreflight.status === "already-deployed" ? "already-deployed" : "ready"
       });
+      if (nextPreflight.status === 'ready' && !submittedButUncertain && !archivedRound?.requiresAcknowledgement && !taskHistory.checkRecoveryReview()) {
+        setDeploymentConfirmationOpen(true);
+      }
     } catch (error) {
       updateCurrentOperation(operationId, expectedContextKey, (current) => ({
         ...current,
@@ -533,7 +560,9 @@ export function EvmContractDeployPage() {
   const deployContract = async () => {
     const walletProvider = wallet.getProvider();
     const gasSettings = gas.gasSettings;
-    if (!canDeploy || !wallet.address || !walletProvider || !network || !gasSettings) return;
+    if (!canDeploy || taskHistory.checkRecoveryReview() || !wallet.address || !walletProvider || !network || !gasSettings) return;
+    let submitting = false;
+    let submittedHash = '';
 
     const expectedContextKey = contextKey;
     const operationId = operationIdRef.current + 1;
@@ -554,12 +583,18 @@ export function EvmContractDeployPage() {
         onChecks: (nextChecks) => updateChecks(nextChecks, expectedContextKey, operationId),
         shouldContinue: () => isOperationCurrent(operationId, expectedContextKey),
         onStage: (stage) => {
+          submitting = true;
+          if ('hash' in stage) submittedHash = stage.hash;
+          taskHistory.captureResults([{ address: disperseContractAddress, asset: 'Disperse 合约部署', hash: submittedHash || undefined,
+            message: stage.type === 'awaiting-wallet' ? '正在等待钱包签名或提交结果' : '部署交易已提交，正在验证',
+            status: stage.type === 'awaiting-wallet' ? 'submitting' : stage.type === 'verified' ? 'success' : 'confirming', uncertain: !submittedHash, retryable: false }]);
           if (stage.type === "awaiting-wallet") {
             updateCurrentOperation(operationId, expectedContextKey, (current) => ({
               ...current,
               message: "校验通过，请在钱包中确认零转账金额的 CreateX 部署调用",
               preflight: stage.preflight,
-              status: "awaiting-wallet"
+              status: "awaiting-wallet",
+              uncertain: true
             }));
             return;
           }
@@ -618,8 +653,14 @@ export function EvmContractDeployPage() {
         status: "success"
       }));
     } catch (error) {
+      const explicitlyCancelled = error && typeof error === 'object' && 'code' in error && Number(error.code) === 4001
+        || /user rejected|user denied|用户取消|用户拒绝/i.test(error instanceof Error ? error.message : String(error));
+      const uncertain = Boolean(submittedHash) || submitting && !explicitlyCancelled;
+      if (submitting) taskHistory.captureResults([{ address: disperseContractAddress, asset: 'Disperse 合约部署', hash: submittedHash || undefined,
+        message: getDisperseDeploymentErrorMessage(error), status: 'error', uncertain, retryable: false }]);
       updateCurrentOperation(operationId, expectedContextKey, (current) => ({
         ...current,
+        uncertain,
         checks: error instanceof DisperseDeploymentValidationError ? error.checks : current.checks,
         message: getDisperseDeploymentErrorMessage(error),
         status: "error"
@@ -652,10 +693,9 @@ export function EvmContractDeployPage() {
             { label: "目标", value: <span title={disperseContractAddress}>{shortenAddress(disperseContractAddress)}</span> },
             ...(preflight?.status === "ready" ? [{ label: "执行费上限", value: estimatedFee }] : [])
           ]} />}
-          secondaryActions={status === "ready" ? <Button disabled={busy} onClick={() => void runValidation()} type="button" variant="outline">重新校验</Button> : null}
           feedback={(
             <>
-              <WorkflowFeedback requirement={busy ? null : !wallet.connected || !provider ? { message: "请连接部署钱包", targetId: "wallet-connection" }
+              <WorkflowFeedback requirement={busy ? null : taskHistory.needsRecoveryReview ? { message: '请先在可恢复任务记录中核对上一轮交易' } : !wallet.connected || !provider ? { message: "请连接部署钱包", targetId: "wallet-connection" }
                 : !rpcEndpointValid ? { message: "请输入有效的 HTTPS RPC", targetId: networkSource === "known" ? "deployKnownRpcEndpoint" : "deployCustomRpcEndpoint" }
                 : !blockExplorerUrlIsValid ? { message: "请修正区块浏览器地址", targetId: "deployBlockExplorerUrl" }
                 : !gas.gasSettings ? { message: "请修正 Gas 费率", targetId: "deploy-gas" } : null} />
@@ -689,15 +729,17 @@ export function EvmContractDeployPage() {
             </>
           )}
         >
-            {!busy && status !== "ready" && (safetyState.canRetryValidation || deploymentComplete || submittedButUncertain) ? (
-              <Button size="lg" disabled={!canValidate} onClick={() => void runValidation()} type="button">
-                {status === "idle" ? "校验部署条件" : "重新校验"}
-              </Button>
+            {!busy ? (
+              <Button id="deploy-primary-action" size="lg" disabled={!canValidate || Boolean(archivedRound?.requiresAcknowledgement) || taskHistory.needsRecoveryReview} onClick={() => void runValidation()} type="button">开始部署</Button>
             ) : null}
             {busy ? <Button size="lg" disabled type="button">{status === "validating" ? "校验中" : status === "awaiting-wallet" ? "等待钱包签名" : "链上验证中"}</Button> : null}
             {status === "ready" && network && preflight ? (
               <>
                 <ConfirmActionDialog
+                  hideTrigger
+                  returnFocusId="deploy-primary-action"
+                  open={deploymentConfirmationOpen && canDeploy}
+                  onOpenChange={setDeploymentConfirmationOpen}
                   triggerSize="lg"
                   confirmLabel="签名并部署"
                   description={(
@@ -1011,6 +1053,7 @@ export function EvmContractDeployPage() {
           </div>
         </WorkbenchPanel>
 
+        <TaskHistoryPanel history={taskHistory} network={taskNetwork} rpcEndpoint={effectiveRpcEndpoint} busy={busy} />
         <ReviewPanel
           autoOpen={reviewShouldOpen}
           className="deployment-review"
@@ -1055,10 +1098,11 @@ export function EvmContractDeployPage() {
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已根据交易哈希和目标地址核对记录中的链上状态；这不会重试或撤销原部署。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
-                  requiresAcknowledgement: false
-                } : current)}
+                onConfirm={() => {
+                  setArchivedRound((current) => current ? { ...current, requiresAcknowledgement: false } : current);
+                  const record = taskHistory.records.find(item => item.id === archivedRound.historyRecordId);
+                  if (record) taskHistory.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() });
+                }}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"

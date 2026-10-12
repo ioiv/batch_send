@@ -1,12 +1,13 @@
 import { Connection, PublicKey, type SendOptions } from "@solana/web3.js";
-import { assertAutomaticOperationActive, type AutomaticCollectionTask, type AutomaticCollectionWallet } from "./collection-orchestrator";
-import { type CollectionPauseControl } from "./collection-execution";
+import { assertAutomaticOperationActive, type AutomaticCollectionScanProgress, type AutomaticCollectionTask, type AutomaticCollectionWallet } from "./collection-orchestrator";
+import { mapWithCollectionConcurrency, type CollectionPauseControl } from "./collection-execution";
 import { type CollectionDisplayResult } from "./collection-results";
 import { collectSolFromSources, parseSolanaSourceKeys } from "./sol-collection";
 import {
   collectSolTokenJobs,
   createSolTokenCollectionJobs,
   discoverSolanaHoldings,
+  maximumDiscoveredSolTokenAccounts,
   type SolTokenAssetHolding,
   type SolTokenCollectionProgress
 } from "./sol-token-collection";
@@ -47,13 +48,14 @@ function guardedConnection(connection: Connection, networkId: SolanaNetworkId, s
 }
 
 export async function prepareAutomaticSolCollection({
-  keys, networkId, rpcEndpoint, targetAddress, signal
+  keys, networkId, rpcEndpoint, targetAddress, signal, onScanProgress
 }: {
   keys: string;
   networkId: SolanaNetworkId;
   rpcEndpoint: string;
   targetAddress: string;
   signal: AbortSignal;
+  onScanProgress?: (progress: AutomaticCollectionScanProgress) => void;
 }): Promise<AutomaticCollectionWallet[]> {
   assertAutomaticOperationActive(signal);
   const parsed = parseSolanaSourceKeys(keys);
@@ -67,16 +69,6 @@ export async function prepareAutomaticSolCollection({
   const connection = new Connection(rpcEndpoint.trim(), "confirmed");
   await assertSolanaRpcNetwork(connection, networkId);
   assertAutomaticOperationActive(signal);
-  // No Mint filter: read every SPL and Token-2022 token account.
-  const scan = await discoverSolanaHoldings({ connection, sources });
-  assertAutomaticOperationActive(signal);
-  const jobs = createSolTokenCollectionJobs({
-    destination, holdings: scan.holdings,
-    selectedHoldingIds: new Set(scan.holdings.filter((holding) => holding.amount > 0n).map((holding) => holding.id)),
-    sources
-  });
-  const jobsById = new Map(jobs.map((job) => [job.id, job]));
-  const scanByAddress = new Map(scan.wallets.map((wallet) => [wallet.address, wallet]));
   const prepareWrite = async (control: CollectionPauseControl) => {
     assertAutomaticOperationActive(signal);
     await control.waitUntilResumed();
@@ -84,8 +76,22 @@ export async function prepareAutomaticSolCollection({
     await assertSolanaRpcNetwork(connection, networkId);
     assertAutomaticOperationActive(signal);
   };
-  return sources.map((source): AutomaticCollectionWallet => {
-    const scanned = scanByAddress.get(source.address);
+  let completed = 0;
+  let scannedAccountCount = 0;
+  return mapWithCollectionConcurrency(sources, 3, async (source): Promise<AutomaticCollectionWallet> => {
+    assertAutomaticOperationActive(signal);
+    // Finish each wallet independently so users can inspect read-only results during a long scan.
+    const scan = await discoverSolanaHoldings({ connection, sources: [source] });
+    assertAutomaticOperationActive(signal);
+    scannedAccountCount += scan.tokenAccountCount;
+    if (scannedAccountCount > maximumDiscoveredSolTokenAccounts) throw new Error(`识别到的 Token 账户超过 ${maximumDiscoveredSolTokenAccounts.toLocaleString("en-US")} 个，请拆分来源钱包`);
+    const jobs = createSolTokenCollectionJobs({
+      destination, holdings: scan.holdings,
+      selectedHoldingIds: new Set(scan.holdings.filter((holding) => holding.amount > 0n).map((holding) => holding.id)),
+      sources: [source]
+    });
+    const jobsById = new Map(jobs.map((job) => [job.id, job]));
+    const scanned = scan.wallets.find((wallet) => wallet.address === source.address);
     const holdings = scanned?.tokenAccounts || scan.holdings.filter((holding) => holding.sourceAddress === source.address);
     const tasks: AutomaticCollectionTask[] = holdings.filter((holding) => holding.amount > 0n).map((holding) => {
       const assetHolding = describeHolding(holding);
@@ -117,7 +123,7 @@ export async function prepareAutomaticSolCollection({
               progress({
                 ...preview, amount: formatWalletAssetAmount(value.amount, value.decimals),
                 status: progressStatus(value.phase),
-                message: value.phase === "submitted" ? "交易已提交，等待确认" : value.phase === "preparing" ? "正在校验并转移资产" : preview.message,
+                message: value.phase === "submitted" ? "交易已提交，等待确认" : value.phase === "submitting" ? "正在提交资产交易，等待节点响应" : value.phase === "preparing" ? "正在校验并转移资产" : preview.message,
                 ...(value.signature ? { hash: value.signature, explorerUrl: getExplorerUrl(value.signature, networkId) } : {})
               });
             }
@@ -149,7 +155,7 @@ export async function prepareAutomaticSolCollection({
           fallbackFeeLamports: null, pauseControl: control,
           onProgress(value) {
             progress({ ...nativePreview, amount: formatWalletAssetAmount(value.transferLamports, 9),
-              status: progressStatus(value.phase), message: value.phase === "submitted" ? "SOL 已提交，等待确认" : "读取最新 SOL 余额并扣除手续费",
+              status: progressStatus(value.phase), message: value.phase === "submitted" ? "SOL 已提交，等待确认" : value.phase === "submitting" ? "SOL 正在提交，等待节点响应" : "读取最新 SOL 余额并扣除手续费",
               ...(value.signature ? { hash: value.signature, explorerUrl: getExplorerUrl(value.signature, networkId) } : {}) });
           }
         });
@@ -160,7 +166,7 @@ export async function prepareAutomaticSolCollection({
           ...(result.signature ? { hash: result.signature, explorerUrl: getExplorerUrl(result.signature, networkId) } : {}) };
       }
     });
-    return {
+    const wallet: AutomaticCollectionWallet = {
       address: source.address,
       complete: Boolean(scanned && scanned.status === "ok" && scanned.tokenInventoryStatus === "complete" && scanned.nativeBalanceStatus === "ok"),
       issues: scanned?.issues || ["钱包扫描结果缺失"],
@@ -177,5 +183,8 @@ export async function prepareAutomaticSolCollection({
           && fresh.holdings.every((holding) => holding.amount === 0n);
       }
     };
+    assertAutomaticOperationActive(signal);
+    onScanProgress?.({ completed: ++completed, total: sources.length, wallet });
+    return wallet;
   });
 }

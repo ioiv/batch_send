@@ -14,7 +14,7 @@ export type WorkbenchStatus =
 
 const STATUS_LABELS: Record<WorkbenchStatus, string> = {
   editing: "编辑中",
-  preflight: "预检中",
+  preflight: "检查中",
   ready: "可执行",
   running: "执行中",
   success: "已完成",

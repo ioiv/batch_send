@@ -351,6 +351,7 @@ describe("sendEvmTokenDistribution post-approval preflight", () => {
       "allowance-checked",
       "approval-submitted",
       "approval-confirmed",
+      "distribution-signing",
       "distribution-submitted",
       "distribution-confirmed"
     ]);

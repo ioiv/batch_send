@@ -28,6 +28,12 @@ describe('automatic EVM collection adapter', () => {
     expect(wallet.tasks[0].holding?.raw).toBe(123456789012345678901n); expect(wallet.tasks[0].preview.amount).toBe('123.456789012345678901');
     expect(wallet.tasks[1].preview.asset).toContain(nft.tokenId.toString()); expect(mocks.send).not.toHaveBeenCalled(); expect(mocks.execute).not.toHaveBeenCalled();
   });
+  it('publishes a completed wallet preview without starting any writes', async () => {
+    const onScanProgress = vi.fn();
+    const wallets = await prepareAutomaticEvmCollection({ keys: 'test-only-placeholder', network, rpcEndpoint: network.rpcEndpoint, targetAddress: target, indexer: 'https://eth.blockscout.com', signal: new AbortController().signal, maxFeePerTransactionWei: 1n, onScanProgress });
+    expect(onScanProgress).toHaveBeenCalledWith({ completed: 1, total: 1, wallet: wallets[0] });
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
   it('failed ownership reads retain their source and unknown quantity rather than claiming no assets', async () => {
     mocks.plan.mockImplementation(async ({ assets }) => [{ ...item(assets[0]), account: null, address: null, amount: 0n, status: 'failed', message: '读取失败' }]);
     const [wallet] = await prepare(new AbortController().signal);

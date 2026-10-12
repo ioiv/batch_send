@@ -18,6 +18,7 @@ export type AutomaticCollectionWallet = {
   tasks: AutomaticCollectionTask[];
   verifyEmpty: () => Promise<boolean>;
 };
+export type AutomaticCollectionScanProgress = { completed: number; total: number; wallet: AutomaticCollectionWallet };
 export const automaticPhaseLabels = { token: 'Token', nft: 'NFT', native: '原生币' } as const;
 
 export function assertAutomaticOperationActive(signal: AbortSignal) {
@@ -25,16 +26,19 @@ export function assertAutomaticOperationActive(signal: AbortSignal) {
 }
 
 /** All wallets finish a phase before the next phase starts. Signers live only in task closures. */
-export async function executeAutomaticCollection({ wallets, includeNative, pauseControl, signal, onResult, onPhase }: {
+export async function executeAutomaticCollection({ wallets, includeNative, selectedTaskIds, pauseControl, signal, onResult, onPhase }: {
   wallets: readonly AutomaticCollectionWallet[];
   includeNative: boolean;
+  /** Keep omitted assets in the original inventory so native protection cannot overlook them. */
+  selectedTaskIds?: ReadonlySet<string>;
   pauseControl: CollectionPauseControl;
   signal: AbortSignal;
   onResult?: (id: string, result: CollectionDisplayResult) => void;
   onPhase?: (phase: AutomaticCollectionPhase) => void;
 }) {
   const results = new Map<string, CollectionDisplayResult>();
-  const blockedNative = new Set(wallets.filter(w => !w.complete).map(w => w.address));
+  const excludedAssets = new Set(wallets.filter(w => selectedTaskIds && w.tasks.some(task => task.phase !== 'native' && !selectedTaskIds.has(task.id))).map(w => w.address));
+  const blockedNative = new Set(wallets.filter(w => !w.complete || excludedAssets.has(w.address)).map(w => w.address));
   const uncertain = new Set<string>();
   const control: CollectionPauseControl = {
     get paused() { return pauseControl.paused; },
@@ -51,9 +55,11 @@ export async function executeAutomaticCollection({ wallets, includeNative, pause
       const tasks = wallet.tasks.filter(task => task.phase === phase);
       for (const task of tasks) {
         const skip = (message: string) => publish(task, { ...task.preview, status: 'skipped', message, retryable: false });
+        if (phase !== 'native' && selectedTaskIds && !selectedTaskIds.has(task.id)) { skip('本次未选择，已保留资产'); continue; }
         if (signal.aborted) { skip('任务已停止，未提交'); continue; }
         if (uncertain.has(wallet.address)) { skip('本钱包存在状态不确定的交易，已停止后续操作'); continue; }
         if (phase === 'native') {
+          if (excludedAssets.has(wallet.address)) { skip('本钱包有未选择的资产，已保留原生币'); continue; }
           if (blockedNative.has(wallet.address)) { skip('扫描不完整或资产归集未完成，已保留原生币'); continue; }
           try {
             await control.waitUntilResumed();
@@ -66,7 +72,8 @@ export async function executeAutomaticCollection({ wallets, includeNative, pause
           const result = await task.execute(value => { latest = publish(task, value); }, control);
           latest = publish(task, result);
         } catch (error) {
-          latest = publish(task, { ...latest, status: 'error', message: error instanceof Error ? error.message : '执行失败', uncertain: Boolean(latest.hash), retryable: !latest.hash });
+          const submissionUncertain = Boolean(latest.hash) || latest.status === 'submitting' || latest.status === 'confirming';
+          latest = publish(task, { ...latest, status: 'error', message: error instanceof Error ? error.message : '执行失败', uncertain: submissionUncertain, retryable: !submissionUncertain });
         }
         if (latest.status !== 'success' && phase !== 'native') blockedNative.add(wallet.address);
         if (latest.uncertain) uncertain.add(wallet.address);

@@ -3,6 +3,7 @@
 import { createElement } from "react";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readTaskHistory } from '../lib/task-history';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const deployMocks = vi.hoisted(() => ({
@@ -90,10 +91,10 @@ beforeEach(() => {
 async function prepareReadyDeploymentPage() {
   const user = userEvent.setup();
   render(createElement(EvmContractDeployPage));
-  const validateButton = screen.getByRole("button", { name: "校验部署条件" });
+  const validateButton = screen.getByRole("button", { name: "开始部署" });
   expect(validateButton).toBeEnabled();
   await user.click(validateButton);
-  await screen.findByRole("button", { name: "确认部署" });
+  await screen.findByRole("alertdialog", { name: "确认 CreateX 部署" });
   return user;
 }
 
@@ -116,9 +117,9 @@ describe("EvmContractDeployPage safety", () => {
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "6");
-    await user.click(screen.getByRole("button", { name: "校验部署条件" }));
+    await user.click(screen.getByRole("button", { name: "开始部署" }));
 
-    await screen.findByRole("button", { name: "确认部署" });
+    await screen.findByRole("alertdialog", { name: "确认 CreateX 部署" });
     expect(deployMocks.validate).toHaveBeenCalledWith(expect.objectContaining({
       gasSettings: {
         fee: { gasPrice: 6_000_000_000n, type: "legacy" },
@@ -134,7 +135,7 @@ describe("EvmContractDeployPage safety", () => {
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
 
     expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "开始部署" })).toBeDisabled();
     expect(deployMocks.validate).not.toHaveBeenCalled();
   });
 
@@ -159,7 +160,7 @@ describe("EvmContractDeployPage safety", () => {
     deployMocks.validate.mockRejectedValueOnce(new Error("Gas 余额不足"));
     const user = userEvent.setup();
     render(createElement(EvmContractDeployPage));
-    await user.click(screen.getByRole("button", { name: "校验部署条件" }));
+    await user.click(screen.getByRole("button", { name: "开始部署" }));
 
     expect(await screen.findByText("部署已阻断")).toBeVisible();
     expect(screen.queryByText("Gas 余额不足")).not.toBeInTheDocument();
@@ -170,27 +171,25 @@ describe("EvmContractDeployPage safety", () => {
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
     expect(deployMocks.deploy).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "重新校验" }));
-    expect(await screen.findByRole("button", { name: "确认部署" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "开始部署" }));
+    expect(await screen.findByRole("alertdialog", { name: "确认 CreateX 部署" })).toBeVisible();
     expect(deployMocks.resolveNetwork).toHaveBeenCalledTimes(2);
     expect(deployMocks.validate).toHaveBeenCalledTimes(2);
   });
 
   it("closes the CreateX confirmation without deploying when the user cancels", async () => {
     const user = await prepareReadyDeploymentPage();
-    const trigger = screen.getByRole("button", { name: "确认部署" });
-    await user.click(trigger);
     const dialog = screen.getByRole("alertdialog", { name: "确认 CreateX 部署" });
     await user.click(within(dialog).getByRole("button", { name: "取消" }));
 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     expect(deployMocks.deploy).not.toHaveBeenCalled();
-    expect(trigger).toHaveFocus();
+    expect(screen.getByRole("button", { name: "开始部署" })).toHaveFocus();
   });
 
   it("invalidates deployment confirmation when its validated context changes", async () => {
     const user = await prepareReadyDeploymentPage();
-    expect(screen.getByRole("button", { name: "确认部署" })).toBeEnabled();
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 CreateX 部署" })).getByRole("button", { name: "取消" }));
 
     await user.click(screen.getByRole("button", { name: "浏览器与链元数据" }));
     const explorerInput = screen.getByRole("textbox", { name: "区块浏览器地址" });
@@ -199,7 +198,7 @@ describe("EvmContractDeployPage safety", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "校验部署条件" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "开始部署" })).toBeEnabled();
     });
     expect(deployMocks.validate).toHaveBeenCalledTimes(1);
     expect(deployMocks.deploy).not.toHaveBeenCalled();
@@ -207,10 +206,11 @@ describe("EvmContractDeployPage safety", () => {
 
   it("invalidates deployment confirmation when the Gas setting changes", async () => {
     const user = await prepareReadyDeploymentPage();
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 CreateX 部署" })).getByRole("button", { name: "取消" }));
     await user.click(within(screen.getByLabelText("Gas 设置")).getByRole("tab", { name: "自定义" }));
 
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "校验部署条件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "开始部署" })).toBeDisabled();
   });
 
   it("completes deployment, keeps registration explicit, and auto-archives on the first edit", async () => {
@@ -228,7 +228,6 @@ describe("EvmContractDeployPage safety", () => {
       };
     });
     const user = await prepareReadyDeploymentPage();
-    await user.click(screen.getByRole("button", { name: "确认部署" }));
     const deployDialog = screen.getByRole("alertdialog", { name: "确认 CreateX 部署" });
     await user.click(within(deployDialog).getByRole("button", { name: "签名并部署" }));
 
@@ -252,10 +251,10 @@ describe("EvmContractDeployPage safety", () => {
     await user.click(screen.getByRole("button", { name: "展开部署记录" }));
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "EVM 分发链名称" })).not.toBeInTheDocument();
-    const validateButton = screen.getByRole("button", { name: "校验部署条件" });
+    const validateButton = screen.getByRole("button", { name: "开始部署" });
     expect(validateButton).toBeEnabled();
     await user.click(validateButton);
-    expect(await screen.findByRole("button", { name: "确认部署" })).toBeEnabled();
+    expect(await screen.findByRole("alertdialog", { name: "确认 CreateX 部署" })).toBeVisible();
   });
 
   it("allows read-only revalidation after an uncertain hash but gates a new deployment", async () => {
@@ -265,22 +264,21 @@ describe("EvmContractDeployPage safety", () => {
       throw new Error("回执超时");
     });
     const user = await prepareReadyDeploymentPage();
-    await user.click(screen.getByRole("button", { name: "确认部署" }));
     const dialog = screen.getByRole("alertdialog", { name: "确认 CreateX 部署" });
     await user.click(within(dialog).getByRole("button", { name: "签名并部署" }));
 
     expect(await screen.findByText("禁止直接重试部署")).toBeVisible();
     expect(document.querySelector(".workbench-status")).toHaveAttribute("data-state", "uncertain");
     expect(screen.getByTitle(transactionHash)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重新校验" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "校验部署条件" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始部署" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "运行预检" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认部署" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "浏览器与链元数据" })).toHaveAttribute("aria-disabled", "false");
 
-    await user.click(screen.getByRole("button", { name: "重新校验" }));
+    await user.click(screen.getByRole("button", { name: "开始部署" }));
     expect(await screen.findByText("部署记录")).toBeVisible();
-    const deployButton = await screen.findByRole("button", { name: "确认部署" });
-    expect(deployButton).toBeDisabled();
+    expect(screen.queryByRole("alertdialog", { name: "确认 CreateX 部署" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始部署" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
 
     // Acknowledging is the only way on: nothing wipes the unverified record.
@@ -288,7 +286,27 @@ describe("EvmContractDeployPage safety", () => {
     await user.click(screen.getByRole("button", { name: "已核对，开始新任务" }));
     const acknowledgement = screen.getByRole("alertdialog", { name: "已核对记录中的链上状态？" });
     await user.click(within(acknowledgement).getByRole("button", { name: "确认已核对" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "确认部署" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "开始部署" })).toBeEnabled());
     expect(screen.getByText("部署记录")).toBeVisible();
+  });
+  it('records a wallet submission before pagehide and shares one acknowledgement between restored and archived records', async () => {
+    deployMocks.deploy.mockImplementationOnce(async ({ onStage }) => {
+      onStage?.({ preflight: deploymentPreflight, type: 'awaiting-wallet' });
+      expect(readTaskHistory('evm-contract-deploy')[0].results[0]).toMatchObject({ status: 'submitting', uncertain: true });
+      window.dispatchEvent(new Event('pagehide'));
+      throw new Error('RPC response lost');
+    });
+    const user = await prepareReadyDeploymentPage();
+    const dialog = screen.getByRole('alertdialog', { name: '确认 CreateX 部署' });
+    await user.click(within(dialog).getByRole('button', { name: '签名并部署' }));
+    expect(await screen.findByText('禁止直接重试部署')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '开始部署' }));
+    expect(screen.queryByRole('alertdialog', { name: '确认 CreateX 部署' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '开始部署' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '已人工核对链上结果' }));
+    const acknowledgement = screen.getByRole('alertdialog', { name: '已核对这轮交易的链上结果？' });
+    await user.click(within(acknowledgement).getByRole('button', { name: '确认已核对' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始部署' })).toBeEnabled());
+    expect(screen.queryByRole('button', { name: '已核对，开始新任务' })).not.toBeInTheDocument();
   });
 });

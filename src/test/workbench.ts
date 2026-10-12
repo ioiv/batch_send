@@ -6,6 +6,7 @@ export function expandSettings(name: string) {
 }
 
 export function expandTaskDetails() {
-  const trigger = screen.getByText("任务详情", { selector: "summary" });
+  const trigger = screen.queryByText("任务详情", { selector: "summary" });
+  if (!trigger) return;
   if (!trigger.closest("details")?.open) fireEvent.click(trigger);
 }

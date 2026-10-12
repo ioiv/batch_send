@@ -249,6 +249,55 @@ describe("generateDistributionList random amounts", () => {
   });
 });
 
+describe("generateDistributionList per-row amounts", () => {
+  it("keeps an exported Solana remainder list's original amounts and totals exact units", () => {
+    const input = `${solanaAddressOne},0.123456789\n${solanaAddressTwo},0.987654321`;
+    const result = generateDistributionList({ addresses: input, addressKind: "solana", decimals: 9, mode: "per-row" });
+    expect(result.output).toBe(input);
+    expect(result.totalUnits).toBe(1_111_111_110n);
+    expect(result.total).toBe("1.11111111");
+    expect(result.invalid).toBe(0);
+  });
+
+  it("preserves trailing zeros and supports amounts down to one wei", () => {
+    const input = `${evmAddressOne},0.000000000000000001\n${evmAddressTwo},0.100000000000000000`;
+    const randomBigInt = vi.fn();
+    const result = generateDistributionList({ addresses: input, addressKind: "evm", decimals: 18, mode: "per-row", randomBigInt });
+    expect(result.output).toBe(input);
+    expect(result.totalUnits).toBe(100_000_000_000_000_001n);
+    expect(randomBigInt).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "0", "-1", "1e-9", "0.0000000001", "2,3", "9".repeat(79)])("blocks a missing or invalid row amount %j", (amount) => {
+    const result = generateDistributionList({ addresses: `${solanaAddressOne},${amount}`, addressKind: "solana", decimals: 9, mode: "per-row" });
+    expect(result.invalid).toBe(1);
+    expect(result.output).toBe("");
+    expect(result.issues[0]).toMatch(/第 1 行需要/);
+  });
+
+  it("keeps the first amount when a duplicate address supplies a different amount", () => {
+    const input = `${evmAddressOne},0.125\n${evmAddressOneMixedCase},8\n${evmAddressTwo},0.875`;
+    const result = generateDistributionList({ addresses: input, addressKind: "evm", decimals: 18, mode: "per-row" });
+    expect(result.duplicates).toBe(1);
+    expect(result.totalUnits).toBe(1_000_000_000_000_000_000n);
+    expect(dedupeDistributionAddresses(input, "evm", "per-row")).toBe(`${evmAddressOne},0.125\n${evmAddressTwo},0.875`);
+  });
+
+  it("validates amounts on duplicate rows and rejects amounts above Solana's transfer limit", () => {
+    const duplicateInvalid = generateDistributionList({ addresses: `${solanaAddressOne},1\n${solanaAddressOne},0`, addressKind: "solana", decimals: 9, mode: "per-row" });
+    expect(duplicateInvalid.invalid).toBe(1);
+    const oversized = generateDistributionList({ addresses: `${solanaAddressOne},18446744073.709551616`, addressKind: "solana", decimals: 9, mode: "per-row" });
+    expect(oversized.invalid).toBe(1);
+    expect(oversized.output).toBe("");
+  });
+
+  it("retains normalized file rows when quoted amounts differ", () => {
+    const imported = importDistributionFileText(`address,amount\n"${evmAddressOne}","0.000001"\n"${evmAddressTwo}","2.000000"`);
+    expect(imported.rows).toBe(`${evmAddressOne},0.000001\n${evmAddressTwo},2.000000`);
+    expect(imported.hasMixedAmounts).toBe(true);
+  });
+});
+
 describe("dedupeDistributionAddresses", () => {
   it("removes EVM duplicates case-insensitively and preserves the first row", () => {
     expect(dedupeDistributionAddresses(
@@ -310,6 +359,7 @@ describe("importDistributionFileText", () => {
       fixedAmount: "0.5",
       hadAmounts: true,
       hasMixedAmounts: false,
+      rows: `${evmAddressOne},0.5\n${evmAddressTwo},0.5`,
       invalidRows: 0,
       sourceRows: 2,
       truncated: false
@@ -327,6 +377,7 @@ describe("importDistributionFileText", () => {
       fixedAmount: "1",
       hadAmounts: true,
       hasMixedAmounts: false,
+      rows: `${evmAddressOne},1`,
       invalidRows: 0,
       sourceRows: 2,
       truncated: true

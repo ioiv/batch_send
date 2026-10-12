@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareAutomaticSolCollection } from "../lib/automatic-sol-collection";
 import { type AutomaticCollectionTask, type AutomaticCollectionWallet } from "../lib/collection-orchestrator";
 import { type CollectionDisplayResult } from "../lib/collection-results";
+import { readTaskHistory, saveTaskRecord, type TaskRecord } from "../lib/task-history";
 import { AutomaticCollectionWorkbench, type AutomaticCollectionRound } from "./AutomaticCollectionWorkbench";
 
 vi.mock("../lib/automatic-sol-collection", () => ({ prepareAutomaticSolCollection: vi.fn() }));
@@ -30,7 +31,7 @@ const address = first.publicKey.toBase58();
 const snapshot = { keys: secrets.join("\n"), selectedIds: [address] };
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-beforeEach(() => { vi.mocked(prepareAutomaticSolCollection).mockReset(); });
+beforeEach(() => { vi.mocked(prepareAutomaticSolCollection).mockReset(); localStorage.clear(); });
 
 function preparedWallet({ complete = true, uncertain = false } = {}) {
   const events: string[] = [];
@@ -85,6 +86,123 @@ async function confirm(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("AutomaticCollectionWorkbench", () => {
+  it("persists a submitted hash before a pagehide in the progress callback and keeps a later receipt after unmount", async () => {
+    const user = userEvent.setup();
+    const { wallet } = preparedWallet();
+    const hash = '3'.repeat(88);
+    let afterPagehide: TaskRecord[] = [];
+    let finish!: () => void;
+    wallet.tasks[0].execute = vi.fn<AutomaticCollectionTask['execute']>(async progress => {
+      progress({ ...wallet.tasks[0].preview, status: 'submitting', hash, message: '正在提交' });
+      fireEvent(window, new Event('pagehide'));
+      afterPagehide = readTaskHistory('sol-collection');
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { ...wallet.tasks[0].preview, status: 'success', hash, message: '归集完成', uncertain: false };
+    });
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await user.click(runButton());
+    const dialog = screen.getByRole('alertdialog', { name: '确认一键归集？' });
+    await user.click(within(dialog).getByRole('button', { name: '确认并开始归集' }));
+    await waitFor(() => expect(afterPagehide[0]?.results[0]).toMatchObject({ hash, status: 'submitting' }));
+    cleanup();
+    await act(async () => { finish(); });
+    await waitFor(() => expect(readTaskHistory('sol-collection')[0].results[0]).toMatchObject({ hash, status: 'success', uncertain: false }));
+    expect(wallet.tasks[1].execute).not.toHaveBeenCalled();
+  });
+
+  it("checks newly persisted uncertain transactions from another tab when confirmation is clicked", async () => {
+    const user = userEvent.setup();
+    const { wallet, events } = preparedWallet();
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await user.click(runButton());
+    const now = new Date().toISOString();
+    saveTaskRecord({ id: 'another-tab-round', toolId: 'sol-collection', label: '一键归集', network: { kind: 'solana', id: 'devnet', label: 'Devnet' }, createdAt: now, updatedAt: now,
+      results: [{ address, asset: 'SOL', status: 'confirming', hash: '4'.repeat(88), message: '另一个页面已提交' }] });
+    const dialog = screen.getByRole('alertdialog', { name: '确认一键归集？' });
+    await user.click(within(dialog).getByRole('button', { name: '确认并开始归集' }));
+    await waitFor(() => expect(runButton()).toBeDisabled());
+    expect(events).toEqual([]);
+    expect(wallet.tasks[0].execute).not.toHaveBeenCalled();
+    expect(screen.getByText('请先查询或核对可恢复任务记录中的待确认交易')).toBeVisible();
+  });
+
+  it("requires review of a restored submitted transaction before any new scan", async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    saveTaskRecord({ id: "interrupted-round", toolId: "sol-collection", label: "一键归集", network: { kind: "solana", id: "devnet", label: "Devnet" }, targetAddress: target,
+      createdAt: now, updatedAt: now, results: [{ address, asset: "SOL", amount: "0.5", message: "已提交", status: "confirming", hash: "3".repeat(88) }] });
+    renderWorkbench();
+    expect(screen.getByRole("button", { name: "扫描资产" })).toBeDisabled();
+    expect(screen.getByText("请先查询或核对可恢复任务记录中的待确认交易")).toBeVisible();
+    const expand = screen.queryByRole("button", { name: "展开可恢复任务记录" });
+    if (expand) await user.click(expand);
+    expect(screen.getByRole("button", { name: "继续查询交易状态" })).toBeEnabled();
+    expect(prepareAutomaticSolCollection).not.toHaveBeenCalled();
+  });
+  it("shows read-only progress as each wallet completes, and cancellation cannot enable a partial plan", async () => {
+    const user = userEvent.setup();
+    const { wallet, events } = preparedWallet();
+    let finish!: () => void;
+    vi.mocked(prepareAutomaticSolCollection).mockImplementation(async ({ onScanProgress }) => {
+      onScanProgress?.({ completed: 1, total: 2, wallet });
+      await new Promise<void>(resolve => { finish = resolve; });
+      return [wallet];
+    });
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    renderWorkbench();
+    await user.click(screen.getByRole("button", { name: "扫描资产" }));
+    expect(screen.getByText("已扫描 1 / 2 个钱包")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /^归集 USDC/u })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "取消扫描" }));
+    await act(async () => { finish(); });
+    expect(screen.getByText("扫描已取消")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it("excludes a selected NFT from execution and preserves the wallet's native balance", async () => {
+    const user = userEvent.setup();
+    const { wallet, events } = preparedWallet();
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await user.click(screen.getByRole("checkbox", { name: /^归集 NFT ART/u }));
+    await user.click(screen.getByRole("checkbox", { name: "最后归集原生币" }));
+    await user.click(runButton());
+    const dialog = screen.getByRole("alertdialog", { name: "确认一键归集？" });
+    expect(within(dialog).getByText("Devnet")).toBeVisible();
+    expect(within(dialog).getByText("1 个钱包有未选择资产，同时保留原生币")).toBeVisible();
+    expect(within(dialog).getByText("转出所选资产的全部可转余额；执行前重新读取")).toBeVisible();
+    expect(within(dialog).getByText("最多 1 笔；零余额或保护拦截时减少")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
+    await waitFor(() => expect(screen.getByText(/本轮结束 · 成功/u)).toBeVisible());
+    expect(events).toEqual(["token"]);
+    expect(wallet.tasks[1].execute).not.toHaveBeenCalled();
+    expect(wallet.tasks[2].execute).not.toHaveBeenCalled();
+    expect(wallet.verifyEmpty).not.toHaveBeenCalled();
+  });
+
+  it("excludes a contract across wallets rather than just hiding its display", async () => {
+    const user = userEvent.setup();
+    const { wallet, events } = preparedWallet();
+    const extra = { ...wallet.tasks[0], id: `${address}:token-extra`, preview: { ...wallet.tasks[0].preview, executionId: `${address}:token-extra` } };
+    wallet.tasks.push(extra);
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await user.click(screen.getAllByRole("button", { name: "排除合约 tokenMint123456789012345" })[0]);
+    for (const checkbox of screen.getAllByRole("checkbox", { name: /^归集 USDC/u })) expect(checkbox).not.toBeChecked();
+    await confirm(user);
+    expect(events).toEqual(["nft"]);
+    expect(wallet.tasks[0].execute).not.toHaveBeenCalled();
+    expect(extra.execute).not.toHaveBeenCalled();
+  });
   it("explains invalid destination and RPC fields before scanning", async () => {
     const user = userEvent.setup();
     renderWorkbench();
@@ -227,7 +345,7 @@ describe("AutomaticCollectionWorkbench", () => {
     if (field === "rpc") expandSettings("修改 RPC");
     if (field === "rpc") fireEvent.change(screen.getByRole("textbox", { name: "RPC 节点" }), { target: { value: "https://different-rpc.example.com" } });
     if (field === "target") fireEvent.change(screen.getByRole("textbox", { name: "接收地址" }), { target: { value: alternate } });
-    if (field === "selection") await user.click(screen.getByRole("checkbox", { name: new RegExp(address, "u") }));
+    if (field === "selection") await user.click(screen.getByRole("checkbox", { name: `选择 ${address}` }));
     expect(screen.queryByRole("button", { name: "一键归集" })).not.toBeInTheDocument();
     expect(events).toEqual([]);
     expect(screen.queryByText("USDC")).not.toBeInTheDocument();
@@ -253,7 +371,8 @@ describe("AutomaticCollectionWorkbench", () => {
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     const { onManual, readInitialWallets } = renderWorkbench();
     await user.click(screen.getByRole("tab", { name: "手动归集" }));
-    expect(onManual).toHaveBeenCalledWith(snapshot, { networkId: "devnet", rpcEndpoint: "https://api.devnet.solana.com", targetAddress: target });
+    expect(onManual).toHaveBeenCalledWith(snapshot, expect.objectContaining({ networkId: "devnet", rpcEndpoint: "https://api.devnet.solana.com", targetAddress: target,
+      automaticDraft: expect.objectContaining({ kind: "solana", includeNative: false, maxFee: "0.01" }) }));
     expect(readInitialWallets).toHaveBeenCalledTimes(1);
     expect(storageWrite).not.toHaveBeenCalled();
   });
@@ -276,5 +395,20 @@ describe("AutomaticCollectionWorkbench", () => {
     expect(screen.getByRole("tab", { name: "手动归集" })).not.toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("tab", { name: "手动归集" }));
     expect(onManual).toHaveBeenCalledWith(snapshot, expect.any(Object));
+  });
+
+  it("clears the live guard when the current round is reviewed in recovered task records", async () => {
+    const user = userEvent.setup();
+    const { wallet } = preparedWallet({ uncertain: true });
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await confirm(user);
+    expect(screen.getByRole('button', { name: '重新扫描' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '已人工核对链上结果' }));
+    const dialog = screen.getByRole('alertdialog', { name: '已核对这轮交易的链上结果？' });
+    await user.click(within(dialog).getByRole('button', { name: '确认已核对' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '重新扫描' })).toBeEnabled());
+    expect(screen.queryByRole('checkbox', { name: '我已核对状态不确定交易的链上结果，可以重新扫描' })).not.toBeInTheDocument();
   });
 });

@@ -2,9 +2,10 @@
 
 import { expandSettings, expandTaskDetails } from "../test/workbench";
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
 import type {
   SolanaHoldingsResult,
   SolTokenAssetHolding
@@ -208,6 +209,53 @@ async function confirmExecution(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("SolCollectionPage workbench", () => {
+  it.each(["native", "spl"] as const)("persists a %s signature before broadcast acknowledgement and requires review after immediate pagehide", async (mode) => {
+    const signature = "1".repeat(88);
+    const holding = tokenHolding();
+    const job = tokenJob(holding, "pending-job");
+    let finish!: (results: []) => void;
+    const pending = new Promise<[]>((resolve) => { finish = resolve; });
+    const broadcast = ({ onProgress }: { onProgress: (progress: unknown) => void }) => {
+      onProgress(mode === "native" ? {
+        address: firstSourceAddress, completed: 0, current: 1, phase: "submitting", signature,
+        total: 1, transferLamports: 500_000_000n
+      } : {
+        amount: 1_000_000n, completed: 0, current: 1, decimals: 6, id: job.id,
+        mintAddress: classicMint, phase: "submitting", signature, sourceAddress: firstSourceAddress,
+        sourceTokenAccount: firstTokenAccount, total: 1
+      });
+      expect(readTaskHistory("sol-collection")[0].results[0]).toMatchObject({ hash: signature, status: "submitting" });
+      // Close within the progress callback, before React has committed its state update.
+      fireEvent(window, new Event("pagehide"));
+      return pending;
+    };
+    if (mode === "native") solMocks.collect.mockImplementationOnce(broadcast);
+    else {
+      solMocks.discoverHoldings.mockResolvedValue(holdingsResult([holding], 50_000_000n));
+      solMocks.createTokenJobs.mockReturnValueOnce([job]);
+      solMocks.collectTokenJobs.mockImplementationOnce(broadcast);
+    }
+    const user = userEvent.setup();
+    const first = render(<SolCollectionPage />);
+    await importSolSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    if (mode === "spl") await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: mode === "native" ? "确认 SOL 归集？" : "确认 SPL Token 归集？" });
+    await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
+    await waitFor(() => expect(mode === "native" ? solMocks.collect : solMocks.collectTokenJobs).toHaveBeenCalledOnce());
+    expect(readTaskHistory("sol-collection")[0].results[0]).toMatchObject({ hash: signature, status: "submitting" });
+    first.unmount();
+    render(<SolCollectionPage />);
+    await importSolSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
+    expect(screen.getByRole("button", { name: "继续查询交易状态" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "删除记录" })).toBeDisabled();
+    await act(async () => { finish([]); });
+  }, 15000);
+
   it("hands selected source wallets and configuration to automatic mode", async () => {
     const automatic = vi.fn();
     const user = userEvent.setup();
@@ -218,9 +266,69 @@ describe("SolCollectionPage workbench", () => {
     const [snapshot, config, rounds] = automatic.mock.calls[0];
     expect(snapshot.keys).not.toBe("");
     expect(snapshot.selectedIds).toContain(firstSourceAddress);
-    expect(config).toEqual({ networkId: "mainnet-beta", rpcEndpoint: "https://rpc.example.com", targetAddress });
+    expect(config).toEqual(expect.objectContaining({ networkId: "mainnet-beta", rpcEndpoint: "https://rpc.example.com", targetAddress }));
+    expect(config.manualDraft).toEqual(expect.objectContaining({ kind: "solana", amountMode: "all", tokenMintInput: "" }));
+    expect(JSON.stringify(config)).not.toContain("local-secret");
     expect(rounds).toEqual([]);
     expect(solMocks.collect).not.toHaveBeenCalled();
+  });
+
+  it("restores manual quantity, retained SOL and execution timing after a mode handoff", async () => {
+    const automatic = vi.fn();
+    const user = userEvent.setup();
+    const first = render(<SolCollectionPage onAutomatic={automatic} />);
+    await importSolSecret(user);
+    await user.click(screen.getByRole("tab", { name: "固定数量" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包固定归集数量" }), { target: { value: "0.25" } });
+    expandSettings("执行节奏");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "并发钱包数" }), { target: { value: "7" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" }), { target: { value: "2" } });
+    expandSettings("高级：保留金额");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包保留 SOL" }), { target: { value: "0.05" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "最小归集金额" }), { target: { value: "0.01" } });
+    await user.click(screen.getByRole("tab", { name: "一键归集" }));
+    const [snapshot, config] = automatic.mock.calls[0];
+    first.unmount();
+    render(<SolCollectionPage initialConfig={config} readInitialWallets={() => snapshot} />);
+    expect(screen.getByRole("spinbutton", { name: "每钱包固定归集数量" })).toHaveValue(0.25);
+    expandSettings("执行节奏");
+    expect(screen.getByRole("spinbutton", { name: "并发钱包数" })).toHaveValue(7);
+    expect(screen.getByRole("spinbutton", { name: "随机延迟最大秒数" })).toHaveValue(2);
+    expandSettings("高级：保留金额");
+    expect(screen.getByRole("spinbutton", { name: "每钱包保留 SOL" })).toHaveValue(0.05);
+    expect(screen.getByRole("spinbutton", { name: "最小归集金额" })).toHaveValue(0.01);
+    expect(solMocks.collect).not.toHaveBeenCalled();
+  });
+
+  it("shows concrete SOL quantities, configured total and retained balance before execution", async () => {
+    const user = await prepareSolPage();
+    await user.click(screen.getByRole("tab", { name: "固定数量" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包固定归集数量" }), { target: { value: "0.25" } });
+    expandSettings("高级：保留金额");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包保留 SOL" }), { target: { value: "0.05" } });
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = screen.getByRole("alertdialog", { name: "确认 SOL 归集？" });
+    expect(within(dialog).getByText("每钱包每资产 0.25 SOL")).toBeVisible();
+    expect(within(dialog).getByText("0.25 SOL")).toBeVisible();
+    expect(within(dialog).getByText("0.05 SOL")).toBeVisible();
+    expect(within(dialog).getByText("发送前估算，由来源钱包支付")).toBeVisible();
+    expect(solMocks.collect).not.toHaveBeenCalled();
+  });
+
+  it("restores public SOL records without restoring private input or restarting collection", async () => {
+    saveTaskRecord({ id: "restored-sol", toolId: "sol-collection", label: "手动归集", network: { kind: "solana", id: "mainnet-beta", label: "Solana Mainnet" }, targetAddress,
+      createdAt: "2026-10-12T01:00:00.000Z", updatedAt: "2026-10-12T01:00:00.000Z",
+      results: [{ address: firstSourceAddress, asset: "SOL", amount: "0.25", hash: "1".repeat(88), status: "success", message: "归集成功" }] });
+    const user = userEvent.setup();
+    render(<SolCollectionPage />);
+    await user.click(screen.getByRole("button", { name: "展开可恢复任务记录" }));
+    expect(screen.getByRole("button", { name: "继续查询交易状态" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "查看记录" }));
+    const dialog = screen.getByRole("dialog", { name: "手动归集 · Solana Mainnet" });
+    expect(within(dialog).getByText("0.25")).toBeVisible();
+    expect(document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!.value).toBe("");
+    expect(solMocks.collect).not.toHaveBeenCalled();
+    expect(solMocks.collectTokenJobs).not.toHaveBeenCalled();
   });
 
   it("uses an optional Token list like EVM collection and defaults a blank list to SOL", async () => {

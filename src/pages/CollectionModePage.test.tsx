@@ -75,6 +75,13 @@ describe("CollectionModePage DOM handoff", () => {
     expect(screen.getByRole("textbox", { name: "接收地址" })).toHaveValue(target);
     expect(document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!.value).toBe(keys.join("\n"));
     const changedRpc = "https://changed-rpc.example.com";
+    await user.click(screen.getByRole("checkbox", { name: "最后归集原生币" }));
+    if (kind === 'evm') {
+      expandSettings("费用保护设置");
+      fireEvent.change(screen.getByRole("textbox", { name: /单笔最高网络费/u }), { target: { value: "0.003" } });
+      expandSettings("资产索引设置");
+      fireEvent.change(screen.getByRole("textbox", { name: "资产索引节点" }), { target: { value: "https://custom.blockscout.example" } });
+    }
     expandSettings("修改 RPC");
     fireEvent.change(screen.getByRole("textbox", { name: "RPC 节点" }), { target: { value: changedRpc } });
     const automaticStore = document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!;
@@ -90,7 +97,17 @@ describe("CollectionModePage DOM handoff", () => {
     expect(lastStore.value).toBe(keys.join("\n"));
     expect(document.body.textContent).not.toContain(keys[0]);
     expect(storageWrite).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "进入一键归集" }));
+    expect(screen.getByRole("checkbox", { name: "最后归集原生币" })).toBeChecked();
+    if (kind === 'evm') {
+      expandSettings("费用保护设置");
+      expect(screen.getByRole("textbox", { name: /单笔最高网络费/u })).toHaveValue("0.003");
+      expandSettings("资产索引设置");
+      expect(screen.getByRole("textbox", { name: "资产索引节点" })).toHaveValue("https://custom.blockscout.example");
+    }
+    await user.click(screen.getByRole("tab", { name: "手动归集" }));
+    const restoredStore = document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!;
     fireEvent(window, new Event("pagehide"));
-    expect(lastStore.value).toBe("");
+    expect(restoredStore.value).toBe("");
   });
 });

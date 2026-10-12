@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { DistributionListEditor } from "./DistributionListEditor";
 import { HelpTooltip } from "./HelpTooltip";
 import { ConfirmActionDialog } from "./WorkbenchPrimitives";
@@ -11,7 +12,8 @@ import {
   getDistributionAmountStep,
   importDistributionFileText,
   type DistributionAmountMode,
-  type GeneratedDistributionList
+  type GeneratedDistributionList,
+  type ImportedDistributionFile
 } from "../lib/distribution-generator";
 import {
   beginLocalFileImport,
@@ -75,6 +77,15 @@ function formatStepUnits(units: bigint, decimals: number) {
   return fraction ? `${integer}.${fraction}` : integer;
 }
 
+function comparableAmount(value: string) {
+  const [whole, fraction = ""] = value.trim().split(".");
+  return `${whole.replace(/^0+(?=\d)/, "")}.${fraction.replace(/0+$/, "")}`;
+}
+
+function sourceAddress(row: string, mode: DistributionAmountMode) {
+  return (mode === "per-row" ? row.split(",")[0] : row).trim();
+}
+
 export function DistributionListGenerator({
   addressKind,
   decimals,
@@ -104,6 +115,8 @@ export function DistributionListGenerator({
   const [randomEntropies, setRandomEntropies] = useState<Map<string, bigint>>(() => new Map());
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState("");
+  const [pendingImport, setPendingImport] = useState<ImportedDistributionFile | null>(null);
+  const [importUndo, setImportUndo] = useState<{ addresses: string; mode: DistributionAmountMode; fixedAmount: string; minAmount: string; maxAmount: string; randomEntropies: Map<string, bigint> } | null>(null);
   disabledRef.current = disabled;
 
   const setImportActive = useCallback((active: boolean) => {
@@ -148,27 +161,30 @@ export function DistributionListGenerator({
   }, [onResultChange, result]);
 
   useEffect(() => {
-    if (disabled) cancelPendingImport();
+    if (disabled) { cancelPendingImport(); setPendingImport(null); }
   }, [cancelPendingImport, disabled]);
 
   useEffect(() => () => {
     cancelLocalFileImport(importEpochRef.current);
   }, []);
 
-  const regenerateRandomAmounts = () => {
+  const regenerateRandomAmounts = (sourceAddresses = addresses) => {
     cancelPendingImport();
+    setImportUndo(null);
     onDirty?.();
-    setRandomEntropies(extendRandomEntropies(addresses, addressKind, new Map()));
+    setRandomEntropies(extendRandomEntropies(sourceAddresses, addressKind, new Map()));
   };
 
   const updateValue = (setter: (value: string) => void, value: string) => {
     cancelPendingImport();
+    setImportUndo(null);
     onDirty?.();
     setter(value);
   };
 
   const updateAddresses = (value: string, cancelImport = true) => {
     if (cancelImport) cancelPendingImport();
+    setImportUndo(null);
     onDirty?.();
     setImportMessage("");
     setAddresses(value);
@@ -194,10 +210,6 @@ export function DistributionListGenerator({
       const fileText = await file.text();
       if (!isCurrentLocalFileImport(importEpochRef.current, requestId) || disabledRef.current) return;
       const imported = importDistributionFileText(fileText);
-      if (!imported.addresses) {
-        setImportMessage("文件中没有可导入的地址");
-        return;
-      }
       if (imported.truncated) {
         setImportMessage("文件超过 5000 行，为避免金额或收款人被静默丢弃，请拆分后重新导入");
         return;
@@ -206,20 +218,23 @@ export function DistributionListGenerator({
         setImportMessage(`文件有 ${imported.invalidRows} 行列数或引号不正确，未修改当前清单`);
         return;
       }
-      if (imported.hasMixedAmounts) {
-        setImportMessage("检测到金额列不完整或逐行金额不同；当前工具只支持统一金额或随机区间，未修改当前清单");
+      if (!imported.addresses) {
+        setImportMessage("文件中没有可导入的地址");
+        return;
+      }
+      if (imported.hadAmounts) {
+        const checked = generateDistributionList({ addresses: imported.rows, addressKind, decimals, mode: "per-row", validateAddress });
+        if (checked.invalid > 0) {
+          setImportMessage(`文件有 ${checked.invalid} 行地址或金额缺失、无效：${checked.issues[0] || "请检查清单"}。未修改当前清单`);
+          return;
+        }
+      } else if (mode === "per-row") {
+        setImportMessage("逐行金额模式需要每行提供“地址,金额”；文件未提供金额，未修改当前清单");
         return;
       }
 
-      updateAddresses(imported.addresses, false);
-      if (imported.hadAmounts && imported.fixedAmount) {
-        setMode("fixed");
-        setFixedAmount(imported.fixedAmount);
-      }
-      const importedCount = imported.addresses.split("\n").length;
-      setImportMessage(imported.hadAmounts
-        ? `已导入 ${importedCount} 个地址及统一金额 ${imported.fixedAmount}`
-        : `已导入 ${importedCount} 个地址`);
+      setPendingImport(imported);
+      setImportMessage('文件已读取，请确认导入方式');
     } catch {
       if (isCurrentLocalFileImport(importEpochRef.current, requestId)) {
         setImportMessage("文件读取失败，请使用 UTF-8 编码的 TXT 或 CSV");
@@ -231,6 +246,33 @@ export function DistributionListGenerator({
   };
 
   const controlsDisabled = disabled || importing;
+  const appendBlockedReason = pendingImport?.hadAmounts && mode !== "per-row" && (
+    mode === "random" || pendingImport.hasMixedAmounts || comparableAmount(pendingImport.fixedAmount) !== comparableAmount(fixedAmount)
+  ) ? "文件金额与当前金额规则不同，只能替换清单；这样可以保留文件原金额，也不会重算当前清单。" : "";
+
+  const applyImport = (append: boolean) => {
+    if (!pendingImport || controlsDisabled || append && appendBlockedReason) return;
+    const preserveRowAmounts = pendingImport.hadAmounts && (pendingImport.hasMixedAmounts || mode === "per-row");
+    const importedRows = preserveRowAmounts ? pendingImport.rows : pendingImport.addresses;
+    const next = append && addresses.trim() ? `${addresses.trim()}\n${importedRows}` : importedRows;
+    if (next.split(/\n/).filter(line => line.trim()).length > 5000) {
+      setImportMessage('追加后超过 5000 行，请减少清单或选择替换'); return;
+    }
+    setImportUndo({ addresses, mode, fixedAmount, minAmount, maxAmount, randomEntropies: new Map(randomEntropies) });
+    onDirty?.(); setAddresses(next);
+    if (preserveRowAmounts) {
+      setMode("per-row");
+    } else if (!append && pendingImport.hadAmounts && pendingImport.fixedAmount) {
+      setMode('fixed'); setFixedAmount(pendingImport.fixedAmount);
+    } else if (mode === 'random') setRandomEntropies(extendRandomEntropies(next, addressKind, randomEntropies));
+    setImportMessage(`${append ? '已追加' : '已导入'} ${pendingImport.addresses.split('\n').length} 个地址${preserveRowAmounts ? '，按逐行原金额发送' : append ? '，沿用当前金额规则' : pendingImport.hadAmounts ? `，统一金额 ${pendingImport.fixedAmount}` : ''}`);
+    setPendingImport(null);
+  };
+  const incomingLines = pendingImport?.addresses.split('\n').filter(Boolean) || [];
+  const existingKeys = new Set(addresses.split('\n').map(address => getDuplicateAddressKey(sourceAddress(address, mode), addressKind)));
+  const duplicateImportCount = incomingLines.length - new Set(incomingLines.map(address => getDuplicateAddressKey(address, addressKind))).size;
+  const overlappingImportCount = incomingLines.filter(address => existingKeys.has(getDuplicateAddressKey(address, addressKind))).length;
+  const newImportCount = new Set(incomingLines.map(address => getDuplicateAddressKey(address, addressKind)).filter(key => !existingKeys.has(key))).size;
 
   useImperativeHandle(controlRef, () => ({
     focusProblem(kind) {
@@ -242,14 +284,14 @@ export function DistributionListGenerator({
       if (kind === "duplicate") {
         const seen = new Set<string>();
         const duplicate = nonemptyLines.find((line) => {
-          const key = getDuplicateAddressKey(line.text, addressKind);
+          const key = getDuplicateAddressKey(sourceAddress(line.text, mode), addressKind);
           if (seen.has(key)) return true;
           seen.add(key);
           return false;
         });
         lineIndex = duplicate?.index ?? 0;
       } else {
-        const firstInvalid = result.issues.find((issue) => /^第 \d+ 行地址/.test(issue));
+        const firstInvalid = result.issues.find((issue) => /^第 \d+ 行/.test(issue));
         const generatedLine = firstInvalid?.match(/^第 (\d+) 行/)?.[1];
         lineIndex = nonemptyLines[Math.max(0, Number(generatedLine || 1) - 1)]?.index ?? 0;
       }
@@ -258,7 +300,7 @@ export function DistributionListGenerator({
       input.focus({ preventScroll: true });
       input.setSelectionRange(start, start + (sourceLines[lineIndex]?.length || 0));
     }
-  }), [addressKind, addresses, result.issues]);
+  }), [addressKind, addresses, mode, result.issues]);
 
   return (
     <section
@@ -290,10 +332,15 @@ export function DistributionListGenerator({
           type="button"
           variant="outline"
         >导入 TXT/CSV</Button>
+        {importUndo ? <Button disabled={controlsDisabled} variant="outline" type="button" onClick={() => {
+          onDirty?.(); setAddresses(importUndo.addresses); setMode(importUndo.mode); setFixedAmount(importUndo.fixedAmount);
+          setMinAmount(importUndo.minAmount); setMaxAmount(importUndo.maxAmount); setRandomEntropies(importUndo.randomEntropies);
+          setImportUndo(null); setImportMessage('已撤销导入，恢复之前的清单和金额设置');
+        }}>撤销导入</Button> : null}
         {mode === "random" ? (
-          <Button disabled={controlsDisabled || generationDisabled || !result.output} onClick={regenerateRandomAmounts} type="button" variant="outline">重新随机</Button>
+          <Button disabled={controlsDisabled || generationDisabled || !result.output} onClick={() => regenerateRandomAmounts()} type="button" variant="outline">重新随机</Button>
         ) : null}
-        <Button disabled={controlsDisabled || result.duplicates === 0} onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind))} type="button" variant="outline">去重</Button>
+        <Button disabled={controlsDisabled || result.duplicates === 0} onClick={() => updateAddresses(dedupeDistributionAddresses(addresses, addressKind, mode))} type="button" variant="outline">去重</Button>
         <ConfirmActionDialog
           confirmLabel="确认清空"
           description={`将删除当前 ${result.validCount} 个有效地址及全部已填写内容，无法撤销。`}
@@ -308,6 +355,25 @@ export function DistributionListGenerator({
       </div>
 
       {importMessage ? <p className="hint generator-import-message" role="status">{importMessage}</p> : null}
+      <Dialog open={Boolean(pendingImport)} onOpenChange={open => { if (!open) { setPendingImport(null); setImportMessage('已取消导入，当前清单保持原样'); } }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>确认导入收款清单</DialogTitle><DialogDescription>先核对清单和金额，再选择追加或替换。导入完成后可以撤销一次。</DialogDescription></DialogHeader>
+          <div className="summary-list">
+            <div><span>文件地址</span><strong>{incomingLines.length} 个 · 文件内重复 {duplicateImportCount} 条</strong></div>
+            <div><span>与当前清单重复</span><strong>{overlappingImportCount} 条（导入后可去重）</strong></div>
+            <div><span>可新增地址</span><strong>{newImportCount} 个</strong></div>
+            <div><span>当前金额规则</span><strong>{mode === 'per-row' ? '逐行原金额' : mode === 'fixed' ? `每个地址 ${fixedAmount} ${symbol}` : `${minAmount}–${maxAmount} ${symbol}`}</strong></div>
+            <div><span>替换后金额</span><strong>{pendingImport?.hadAmounts ? pendingImport.hasMixedAmounts || mode === 'per-row' ? '逐行原金额（不重新计算）' : `每个地址 ${pendingImport.fixedAmount} ${symbol}` : '沿用当前金额规则'}</strong></div>
+          </div>
+          <div className="import-preview-addresses">{(pendingImport?.hadAmounts ? pendingImport.rows.split('\n') : incomingLines).slice(0, 3).map((row, index) => <code key={`${index}-${row}`}>{row}</code>)}</div>
+          <p className="hint">{appendBlockedReason || (mode === 'per-row' ? '追加会保留当前清单和文件中的逐行金额。' : '追加保留当前金额规则；替换会应用文件中的金额。')}重复地址不会自动删除。</p>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={() => { setPendingImport(null); setImportMessage('已取消导入，当前清单保持原样'); }}>取消</Button>
+            {addresses.trim() ? <Button variant="outline" type="button" disabled={controlsDisabled || Boolean(appendBlockedReason) || addresses.split('\n').filter(line => line.trim()).length + incomingLines.length > 5000} onClick={() => applyImport(true)}>追加到当前清单</Button> : null}
+            <Button type="button" disabled={controlsDisabled} onClick={() => applyImport(false)}>{addresses.trim() ? '替换当前清单' : '确认导入清单'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {unavailableMessage ? (
         <div className="distribution-generator__notice"><span>金额生成暂不可用</span><HelpTooltip label="金额生成说明">{unavailableMessage}</HelpTooltip></div>
@@ -332,12 +398,21 @@ export function DistributionListGenerator({
         onMaxAmountChange={(value) => updateValue(setMaxAmount, value)}
         onMinAmountChange={(value) => updateValue(setMinAmount, value)}
         onModeChange={(nextMode) => {
-          if (nextMode === "fixed") {
+          if (nextMode === mode) return;
+          cancelPendingImport();
+          setImportUndo(null);
+          setImportMessage("");
+          if (nextMode === "per-row") {
+            const generatedAmounts = new Map(result.output.split('\n').map(row => [getDuplicateAddressKey(row.split(',')[0], addressKind), row]));
             onDirty?.();
-            setMode("fixed");
+            setAddresses(addresses.split('\n').map(row => row.trim() ? generatedAmounts.get(getDuplicateAddressKey(row.trim(), addressKind)) || `${row.trim()},` : '').join('\n'));
+            setMode("per-row");
           } else {
-            setMode("random");
-            regenerateRandomAmounts();
+            const nextAddresses = mode === "per-row" ? addresses.split('\n').map(row => sourceAddress(row, mode)).join('\n') : addresses;
+            setAddresses(nextAddresses);
+            setMode(nextMode);
+            if (nextMode === "random") regenerateRandomAmounts(nextAddresses);
+            else onDirty?.();
           }
         }}
         randomAmountStep={randomStep}

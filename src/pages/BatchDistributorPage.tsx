@@ -12,6 +12,8 @@ import { DistributionSummary } from "../components/DistributionSummary";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import { WalletConnectionControl } from "../components/WalletConnectionControl";
+import { TaskHistoryPanel } from "../components/TaskHistoryPanel";
+import { useTaskHistory } from "../hooks/useTaskHistory";
 import {
   ActionBar,
   WorkbenchSection,
@@ -24,9 +26,9 @@ import {
 import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { shortenAddress } from "../lib/address";
 import { formatLamports, formatLamportsForDisplay } from "../lib/amount";
-import { getInitialDistributionInput, parseDistribution } from "../lib/distribution";
+import { getInitialDistributionInput, parseDistribution, type DistributionRow } from "../lib/distribution";
 import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
-import { sanitizeRoundArchiveText } from "../lib/collection-results";
+import { sanitizeRoundArchiveText, type CollectionDisplayResult } from "../lib/collection-results";
 import {
   Connection,
   assertSolanaRpcNetwork,
@@ -63,6 +65,7 @@ type DistributionPreflightState = {
 };
 
 type ArchivedDistributionRound = {
+  historyRecordId?: string;
   message: string;
   networkId: SolanaNetworkId;
   networkLabel: string;
@@ -70,7 +73,57 @@ type ArchivedDistributionRound = {
   sequence: number;
   signatures: TransactionSignature[];
   status: "error" | "success";
+  transactions: SolanaDistributionTransaction[];
 };
+
+export type SolanaDistributionTransaction = {
+  rows: DistributionRow[];
+  signature?: string;
+  status: "not-submitted" | "pending" | "confirmed" | "failed";
+};
+
+export function getUnsentSolanaDistribution(transactions: SolanaDistributionTransaction[]) {
+  return transactions
+    .filter((transaction) => transaction.status === "not-submitted" || transaction.status === "failed")
+    .flatMap((transaction) => transaction.rows)
+    .map((row) => `${row.address},${row.amountRaw}`)
+    .join("\n");
+}
+
+function downloadUnsentDistribution(transactions: SolanaDistributionTransaction[]) {
+  const content = getUnsentSolanaDistribution(transactions);
+  if (!content) return;
+  const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "sol-unsent-distribution.csv";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function transactionStatusLabel(status: SolanaDistributionTransaction["status"]) {
+  return status === "confirmed" ? "已确认" : status === "failed" ? "失败（未转出）" : status === "pending" ? "待核对" : "未提交";
+}
+
+function solanaHistoryResults(transactions: SolanaDistributionTransaction[], networkId: SolanaNetworkId): CollectionDisplayResult[] {
+  return transactions.flatMap((transaction) => transaction.rows.map((row) => ({
+    address: row.address,
+    amount: row.amountRaw,
+    asset: "SOL",
+    explorerUrl: transaction.signature ? getExplorerUrl(transaction.signature, networkId) : undefined,
+    hash: transaction.signature,
+    message: transactionStatusLabel(transaction.status),
+    retryable: transaction.status === "failed" || transaction.status === "not-submitted",
+    status: transaction.status === "confirmed" ? "success" : transaction.status === "failed" ? "error" : transaction.status === "not-submitted" ? "skipped" : "confirming",
+    uncertain: transaction.status === "pending"
+  })));
+}
+
+function isWalletCancellation(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? Number(error.code) : 0;
+  const detail = error instanceof Error ? error.message : String(error || "");
+  return code === 4001 || /reject|declin|cancel|用户取消/i.test(detail);
+}
 
 const initialBalanceLookupState: BalanceLookupState = {
   message: "",
@@ -132,6 +185,7 @@ export function BatchDistributorPage() {
   const [networkId, setNetworkId] = useState<SolanaNetworkId>("mainnet-beta");
   const [rpcEndpoint, setRpcEndpoint] = useState(getNetworkConfig("mainnet-beta").endpoint);
   const [sendState, setSendState] = useState(initialSendState);
+  const [transactionResults, setTransactionResults] = useState<SolanaDistributionTransaction[]>([]);
   const [archivedRound, setArchivedRound] = useState<ArchivedDistributionRound | null>(null);
   const [roundSequence, setRoundSequence] = useState(1);
   const [preflightState, setPreflightState] = useState<DistributionPreflightState>(initialDistributionPreflightState);
@@ -157,6 +211,7 @@ export function BatchDistributorPage() {
     setConfirmVisible(false);
     setPreflightState(initialDistributionPreflightState);
     setSendState(initialSendState);
+    setTransactionResults([]);
   }, []);
 
   const parsed = useMemo(() => parseDistribution(generatedInput), [generatedInput]);
@@ -170,11 +225,11 @@ export function BatchDistributorPage() {
   const preflightFailed = preflightState.status === "error";
   const sendComplete = sendState.status === "success";
   const sendFailed = sendState.status === "error";
-  const unresolvedSubmission = sendFailed && sendState.signatures.length > 0;
+  const unresolvedSubmission = sendFailed && transactionResults.some((transaction) => transaction.status === "pending");
+  const unsentDistribution = getUnsentSolanaDistribution(transactionResults);
   const controlsLocked = preflighting || sending;
   const pageControlsLocked = controlsLocked || listImporting;
   const generatedListReady = generatedList.invalid === 0 && generatedList.duplicates === 0;
-  const readyToSend = wallet.connected && Boolean(wallet.provider) && rpcEndpointValid && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !preflighting && !sending && !sendComplete && !sendFailed && !listImporting && !archivedRound?.requiresAcknowledgement;
   const invalidCount = parsed.invalid + generatedList.invalid;
   const duplicateCount = Math.max(parsed.duplicates, generatedList.duplicates);
   const walletBalance = balanceLookup.status === "success" && balanceLookup.valueLamports !== null
@@ -185,7 +240,20 @@ export function BatchDistributorPage() {
         ? "--"
         : "未连接";
   const showFinalSummary = confirmVisible && sendState.status === "idle" && preflightState.status === "success";
-  const readinessMessage = archivedRound?.requiresAcknowledgement
+  const taskNetwork = useMemo(() => ({ kind: "solana" as const, id: networkId, label: selectedNetwork.label }), [networkId, selectedNetwork.label]);
+  const historyResults = useMemo(() => sendState.status === "idle" ? [] : solanaHistoryResults(transactionResults, networkId), [networkId, sendState.status, transactionResults]);
+  const taskHistory = useTaskHistory({ toolId: "sol-distribution", label: "SOL 批量分发", network: taskNetwork, results: historyResults, busy: sending || preflighting, roundKey: roundSequence });
+  const readyToSend = wallet.connected && Boolean(wallet.provider) && rpcEndpointValid && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !preflighting && !sending && !sendComplete && !sendFailed && !listImporting && !taskHistory.needsRecoveryReview && !archivedRound?.requiresAcknowledgement;
+  useEffect(() => {
+    if (!archivedRound?.requiresAcknowledgement || !archivedRound.historyRecordId) return;
+    const record = taskHistory.records.find((item) => item.id === archivedRound.historyRecordId);
+    if (record && (record.acknowledgedAt || !record.results.some((result) => result.uncertain || ["submitting", "confirming"].includes(result.status)))) {
+      setArchivedRound((current) => current ? { ...current, requiresAcknowledgement: false } : current);
+    }
+  }, [archivedRound, taskHistory.records]);
+  const readinessMessage = taskHistory.needsRecoveryReview
+    ? "请先在可恢复任务记录中核对之前提交的交易"
+    : archivedRound?.requiresAcknowledgement
     ? "请先核对分发记录中的链上状态"
     : !wallet.connected || !wallet.provider
     ? "请先连接发送钱包"
@@ -199,23 +267,25 @@ export function BatchDistributorPage() {
             ? `请先处理 ${duplicateCount} 个重复地址`
             : parsed.validRows.length === 0
               ? "请先添加至少 1 个有效收款地址"
-              : "清单可预检";
+              : "清单已就绪";
 
   const archiveTerminalRound = useCallback(() => {
     if (terminalArchivedRef.current || (!sendComplete && !sendFailed)) return false;
     terminalArchivedRef.current = true;
     setArchivedRound({
+      historyRecordId: taskHistory.currentRecordId,
       message: sanitizeRoundArchiveText(sendState.message),
       networkId,
       networkLabel: selectedNetwork.label,
       requiresAcknowledgement: unresolvedSubmission,
       sequence: roundSequence,
       signatures: [...sendState.signatures],
-      status: sendComplete ? "success" : "error"
+      status: sendComplete ? "success" : "error",
+      transactions: transactionResults.map((transaction) => ({ ...transaction, rows: [...transaction.rows] }))
     });
     setRoundSequence((current) => current + 1);
     return true;
-  }, [networkId, roundSequence, selectedNetwork.label, sendComplete, sendFailed, sendState.message, sendState.signatures, unresolvedSubmission]);
+  }, [networkId, roundSequence, selectedNetwork.label, sendComplete, sendFailed, sendState.message, sendState.signatures, taskHistory.currentRecordId, transactionResults, unresolvedSubmission]);
 
   const resetForEdit = useCallback(() => {
     if (sending || preflighting) return;
@@ -302,10 +372,11 @@ export function BatchDistributorPage() {
 
   const prepareDistribution = async () => {
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.address) return;
+    if (taskHistory.checkRecoveryReview()) return;
     terminalArchivedRef.current = false;
     sendOperationRef.current = true;
     const preflightEpoch = ++preflightEpochRef.current;
-    setConfirmVisible(true);
+    setConfirmVisible(false);
     setPreflightState({
       ...initialDistributionPreflightState,
       message: "正在读取余额并估算全部交易手续费",
@@ -323,6 +394,7 @@ export function BatchDistributorPage() {
         getBalanceLamports(connection, wallet.address)
       ]);
       if (preflightEpochRef.current !== preflightEpoch) return;
+      if (taskHistory.checkRecoveryReview()) throw new Error("请先在可恢复任务记录中核对之前提交的交易");
 
       const requiredLamports = parsed.totalLamports + estimatedFeeLamports;
       if (balanceLamports < requiredLamports) {
@@ -341,11 +413,12 @@ export function BatchDistributorPage() {
       setPreflightState({
         balanceLamports,
         estimatedFeeLamports,
-        message: "只读预检已通过；下方按钮才会发起钱包签名",
+        message: "检查通过，请核对本次分发后确认签名",
         requiredLamports,
         status: "success",
         transactionCount: transactions.length
       });
+      setConfirmVisible(true);
     } catch (error) {
       if (preflightEpochRef.current !== preflightEpoch) return;
       setPreflightState({
@@ -362,6 +435,7 @@ export function BatchDistributorPage() {
 
   const sendDistribution = async () => {
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.provider || !wallet.address || !showFinalSummary || sendState.status !== "idle") return;
+    if (taskHistory.checkRecoveryReview()) return;
     sendOperationRef.current = true;
 
     const sendOptions: SendOptions = {
@@ -372,6 +446,18 @@ export function BatchDistributorPage() {
     let signedCount = 0;
     let confirmedCount = 0;
     let plannedTransactionCount = transactionCount;
+    let transactionResultsSnapshot: SolanaDistributionTransaction[] = parsed.validRows.length
+      ? [{ rows: [...parsed.validRows], status: "not-submitted" }]
+      : [];
+    const updateTransaction = (index: number, update: Partial<SolanaDistributionTransaction>) => {
+      transactionResultsSnapshot = transactionResultsSnapshot.map((transaction, transactionIndex) => (
+        transactionIndex === index ? { ...transaction, ...update } : transaction
+      ));
+      setTransactionResults(transactionResultsSnapshot);
+      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
+    };
+    setTransactionResults(transactionResultsSnapshot);
+    taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
 
     setSendState({
       message: "正在计算最少交易数量",
@@ -385,6 +471,9 @@ export function BatchDistributorPage() {
       await assertSolanaRpcNetwork(connection, networkId);
       const planningBlockhash = await connection.getLatestBlockhash("confirmed");
       const chunks = planTransferChunks(parsed.validRows, wallet.address, planningBlockhash.blockhash);
+      transactionResultsSnapshot = chunks.map((rows) => ({ rows: [...rows], status: "not-submitted" }));
+      setTransactionResults(transactionResultsSnapshot);
+      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
       const transactions = chunks.map((chunk) => createTransferTransaction(wallet.address, chunk, planningBlockhash.blockhash));
       plannedTransactionCount = transactions.length;
       const progress = () => createSendProgress(plannedTransactionCount, signedCount, signatures.length, confirmedCount);
@@ -409,7 +498,7 @@ export function BatchDistributorPage() {
       const canBatchSign = transactions.length > 1 && typeof wallet.provider.signAllTransactions === "function";
 
       setSendState({
-        message: `余额预检查通过：分发 ${parsed.total} SOL，预估手续费 ${formatLamports(estimatedFeeLamports)} SOL`,
+        message: `余额与费用检查通过：分发 ${parsed.total} SOL，预估手续费 ${formatLamports(estimatedFeeLamports)} SOL`,
         progress: progress(),
         signatures: [],
         status: "preparing"
@@ -431,6 +520,7 @@ export function BatchDistributorPage() {
             status: "awaiting-wallet"
           });
 
+          if (taskHistory.checkRecoveryReview()) throw new Error("请先在可恢复任务记录中核对之前提交的交易");
           const signedTransactions = await wallet.provider.signAllTransactions(batchTransactions);
           if (signedTransactions.length !== batchTransactions.length) throw new Error("钱包返回的签名交易数量不一致");
           signedCount += signedTransactions.length;
@@ -452,7 +542,11 @@ export function BatchDistributorPage() {
               status: "confirming"
             });
 
+            // A transport failure can happen after broadcast, before a signature is returned.
+            if (taskHistory.checkRecoveryReview()) throw new Error("请先在可恢复任务记录中核对之前提交的交易");
+            updateTransaction(transactionNumber - 1, { status: "pending" });
             const signature = await connection.sendRawTransaction(signedTransactions[index].serialize(), sendOptions);
+            updateTransaction(transactionNumber - 1, { signature });
             batchSignatures.push(signature);
             signatures.push(signature);
 
@@ -479,8 +573,10 @@ export function BatchDistributorPage() {
               signature: batchSignatures[index]
             }, "confirmed");
             if (confirmation.value.err) {
+              updateTransaction(transactionNumber - 1, { status: "failed" });
               throw new Error(`第 ${transactionNumber} 笔交易链上执行失败：${JSON.stringify(confirmation.value.err)}`);
             }
+            updateTransaction(transactionNumber - 1, { status: "confirmed" });
             confirmedCount += 1;
 
             setSendState({
@@ -504,7 +600,16 @@ export function BatchDistributorPage() {
             status: "awaiting-wallet"
           });
 
-          const signature = await sendWalletTransaction(wallet.provider, transaction, connection);
+          if (taskHistory.checkRecoveryReview()) throw new Error("请先在可恢复任务记录中核对之前提交的交易");
+          updateTransaction(index, { status: "pending" });
+          let signature: TransactionSignature;
+          try {
+            signature = await sendWalletTransaction(wallet.provider, transaction, connection);
+          } catch (error) {
+            if (isWalletCancellation(error)) updateTransaction(index, { status: "not-submitted" });
+            throw error;
+          }
+          updateTransaction(index, { signature });
           signedCount = Math.max(signedCount, index + 1);
           signatures.push(signature);
 
@@ -521,8 +626,10 @@ export function BatchDistributorPage() {
             signature
           }, "confirmed");
           if (confirmation.value.err) {
+            updateTransaction(index, { status: "failed" });
             throw new Error(`第 ${index + 1} 笔交易链上执行失败：${JSON.stringify(confirmation.value.err)}`);
           }
+          updateTransaction(index, { status: "confirmed" });
           confirmedCount += 1;
 
           setSendState({
@@ -543,9 +650,11 @@ export function BatchDistributorPage() {
       setBalanceRefreshNonce((value) => value + 1);
     } catch (error) {
       const baseMessage = getTransactionErrorMessage(error);
-      const partialMessage = signatures.length > 0
-        ? `${baseMessage}。已提交 ${signatures.length}/${plannedTransactionCount || signatures.length} 笔交易，其中 ${confirmedCount} 笔已确认；请先检查链上记录，避免重复发送。`
-        : baseMessage;
+      const pendingCount = transactionResultsSnapshot.filter((transaction) => transaction.status === "pending").length;
+      const unsentCount = transactionResultsSnapshot
+        .filter((transaction) => transaction.status === "not-submitted" || transaction.status === "failed")
+        .reduce((total, transaction) => total + transaction.rows.length, 0);
+      const partialMessage = `${baseMessage}。${confirmedCount} 笔已确认${pendingCount ? `，${pendingCount} 笔待核对，请先检查链上记录` : ""}${unsentCount ? `；${unsentCount} 个地址确定未转出，可导出原金额清单` : ""}。`;
 
       setSendState({
         message: partialMessage,
@@ -558,7 +667,7 @@ export function BatchDistributorPage() {
     }
   };
 
-  const pageStatus: WorkbenchStatus = unresolvedSubmission
+  const pageStatus: WorkbenchStatus = taskHistory.needsRecoveryReview || unresolvedSubmission
     ? "uncertain"
     : sendComplete
       ? "success"
@@ -571,32 +680,35 @@ export function BatchDistributorPage() {
             : showFinalSummary || readyToSend
               ? "ready"
               : "editing";
-  const pageStatusLabel = unresolvedSubmission
+  const pageStatusLabel = taskHistory.needsRecoveryReview
+    ? "历史交易待核对"
+    : unresolvedSubmission
     ? "链上待核对"
     : sendComplete
       ? "已完成"
       : sendFailed
         ? "执行失败"
         : preflightFailed
-          ? "预检未通过"
+          ? "检查未通过"
           : sending
             ? sendState.status === "awaiting-wallet" ? "等待签名" : "执行中"
             : preflighting
-              ? "预检中"
+              ? "检查中"
               : showFinalSummary
                 ? "待确认"
                 : readyToSend
-                  ? "可预检"
+                  ? "可分发"
                   : "编辑中";
-  const resultStateLabel = (rowStatus: "valid" | "warn" | "invalid", problems: string[]) => {
-    if (rowStatus !== "valid") return problems.join(" / ") || "需修正";
-    if (unresolvedSubmission) return "链上状态待确认";
+  const resultStateLabel = (row: DistributionRow) => {
+    if (row.status !== "valid") return row.problems.join(" / ") || "需修正";
+    const transaction = transactionResults.find((entry) => entry.rows.some((recipient) => recipient.line === row.line && recipient.address === row.address));
+    if (transaction) return transaction.status === "pending" && sending ? "签名／确认中" : transactionStatusLabel(transaction.status);
     if (sendComplete) return "已确认";
     if (sendFailed) return "未完成";
     if (sending) return "处理中";
-    if (showFinalSummary) return "预检通过";
+    if (showFinalSummary) return "待确认";
     if (preflighting) return "检查中";
-    return "待预检";
+    return "待分发";
   };
   const statusTitle = unresolvedSubmission
     ? "链上状态待确认"
@@ -605,17 +717,19 @@ export function BatchDistributorPage() {
       : sendFailed
         ? "分发未完成"
         : preflightFailed
-          ? "预检未通过"
+          ? "检查未通过"
           : sending
             ? "正在执行"
             : preflighting
-              ? "正在预检"
+              ? "检查中"
               : showFinalSummary
-                ? "预检通过"
+                ? "待确认"
                 : "清单状态";
-  const statusMessage = sendState.status !== "idle"
+  const statusMessage = taskHistory.needsRecoveryReview
+    ? readinessMessage
+    : sendState.status !== "idle"
     ? sendState.message
-    : confirmVisible
+    : preflighting || preflightFailed || showFinalSummary
       ? preflightState.message
       : balanceLookup.status === "error" ? balanceLookup.message : readinessMessage;
   const reviewHasRisk = unresolvedSubmission || sendFailed || preflightFailed;
@@ -651,7 +765,17 @@ export function BatchDistributorPage() {
                 {
                   header: "状态",
                   key: "status",
-                  render: (row) => <Badge variant="outline">{resultStateLabel(row.status, row.problems)}</Badge>
+                  render: (row) => <Badge variant="outline">{resultStateLabel(row)}</Badge>
+                },
+                {
+                  header: "交易",
+                  key: "transaction",
+                  render: (row) => {
+                    const transaction = transactionResults.find((entry) => entry.rows.some((recipient) => recipient.line === row.line && recipient.address === row.address));
+                    return transaction?.signature
+                      ? <a className="hash" href={getExplorerUrl(transaction.signature, networkId)} rel="noreferrer" target="_blank" title={transaction.signature}>{shortenAddress(transaction.signature)}</a>
+                      : "—";
+                  }
                 }
               ]}
               emptyLabel="暂无清单"
@@ -664,8 +788,8 @@ export function BatchDistributorPage() {
             {sendState.progress.total > 0 ? (
               <div className="flex flex-col gap-2">
                 <ExecutionProgress
-                  current={Math.max(sendState.progress.signed, sendState.progress.submitted, sendState.progress.confirmed)}
-                  label="执行进度"
+                  current={sendState.progress.confirmed}
+                  label="链上确认进度"
                   total={sendState.progress.total}
                 />
                 <div className="flex flex-wrap gap-2" aria-label="交易进度详情">
@@ -721,27 +845,31 @@ export function BatchDistributorPage() {
           )}
           secondaryActions={<>
             {balanceLookup.status === "error" ? <Button disabled={pageControlsLocked} onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button> : null}
-            {showFinalSummary || preflightFailed && sendState.status === "idle" ? <Button onClick={resetConfirmation} type="button" variant="outline">返回修改</Button> : null}
+            {preflightFailed && sendState.status === "idle" ? <Button onClick={resetConfirmation} type="button" variant="outline">返回修改</Button> : null}
           </>}
           feedback={(
             <div className="distribution-status" role={sendFailed || preflightFailed || balanceLookup.status === "error" ? "alert" : "status"} aria-live={sendFailed || preflightFailed || balanceLookup.status === "error" ? "assertive" : "polite"}>
               <Badge variant={sendFailed || preflightFailed ? "destructive" : "outline"}>{statusTitle}</Badge>
-              <WorkflowFeedback requirement={{ message: statusMessage, targetId: !sending && !preflighting && !sendComplete && !sendFailed && !showFinalSummary && !archivedRound?.requiresAcknowledgement && !listImporting && !readyToSend ? (!wallet.connected ? "wallet-connection" : !rpcEndpointValid ? "rpcEndpoint" : "distribution-input") : undefined }} />
+              <WorkflowFeedback requirement={{ message: statusMessage, targetId: !sending && !preflighting && !sendComplete && !sendFailed && !showFinalSummary && !archivedRound?.requiresAcknowledgement && !listImporting && !readyToSend ? (taskHistory.needsRecoveryReview ? "task-history-review" : !wallet.connected ? "wallet-connection" : !rpcEndpointValid ? "rpcEndpoint" : "distribution-input") : undefined }} />
               {statusMessage.length > 56 ? <HelpTooltip label="执行状态详情">{statusMessage}</HelpTooltip> : null}
               {unresolvedSubmission ? <HelpTooltip label="禁止直接重试">已有交易提交到链上，请核对交易哈希后再开始新任务。</HelpTooltip> : null}
             </div>
           )}
         >
           <div className="action-group">
-            {!showFinalSummary && !sendComplete && !sendFailed && !sending ? (
-              <Button size="lg" disabled={!readyToSend} onClick={() => void prepareDistribution()} type="button">
-                {preflighting ? "预检中" : preflightFailed ? "重新预检" : listImporting ? "正在导入清单" : "运行预检"}
+            {!sendComplete && !sendFailed && !sending ? (
+              <Button id="sol-distribution-start" size="lg" disabled={!readyToSend || confirmVisible} onClick={() => void prepareDistribution()} type="button">
+                {preflighting ? "检查中" : listImporting ? "正在导入清单" : "开始分发"}
               </Button>
             ) : null}
-            {sending ? <Button size="lg" disabled type="button">{sendState.status === "preparing" ? "签名前复检" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
+            {sending ? <Button size="lg" disabled type="button">{sendState.status === "preparing" ? "检查中" : sendState.status === "awaiting-wallet" ? "等待钱包签名" : "链上确认中"}</Button> : null}
             {showFinalSummary ? (
               <>
                 <ConfirmActionDialog
+                  open={showFinalSummary}
+                  onOpenChange={setConfirmVisible}
+                  returnFocusId="sol-distribution-start"
+                  hideTrigger
                   triggerSize="lg"
                   confirmLabel="确认并签名"
                   description={(
@@ -764,6 +892,7 @@ export function BatchDistributorPage() {
             ) : null}
             {sendComplete || sendFailed ? (
               <>
+                {sendFailed && unsentDistribution ? <Button onClick={() => downloadUnsentDistribution(transactionResults)} size="lg" type="button" variant="outline">导出未发送清单（原金额）</Button> : null}
                 {/* Ending a round must not depend on finding a setting to edit;
                     the list stays for the next round. */}
                 <Button size="lg" onClick={resetForEdit} type="button">开始新一轮分发</Button>
@@ -865,10 +994,11 @@ export function BatchDistributorPage() {
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。"
-                onConfirm={() => setArchivedRound((current) => current ? {
-                  ...current,
-                  requiresAcknowledgement: false
-                } : current)}
+                onConfirm={() => {
+                  setArchivedRound((current) => current ? { ...current, requiresAcknowledgement: false } : current);
+                  const record = taskHistory.records.find((item) => item.id === archivedRound.historyRecordId);
+                  if (record) taskHistory.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() });
+                }}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"
@@ -882,6 +1012,17 @@ export function BatchDistributorPage() {
             <div className="flex min-w-0 flex-col gap-3">
               <p>{archivedRound.message}</p>
               <Badge className="w-fit" variant="outline">{archivedRound.networkLabel}</Badge>
+              {getUnsentSolanaDistribution(archivedRound.transactions) ? <Button className="w-fit" onClick={() => downloadUnsentDistribution(archivedRound.transactions)} type="button" variant="outline">导出未发送清单（原金额）</Button> : null}
+              <ResultTable
+                caption="本轮收款地址结果"
+                columns={[
+                  { header: "地址", key: "address", render: (row) => <span className="address">{row.address}</span> },
+                  { header: "金额", key: "amount", render: (row) => `${row.amountRaw} SOL` },
+                  { header: "状态", key: "status", render: (row) => <Badge variant="outline">{transactionStatusLabel(row.transactionStatus)}</Badge> }
+                ]}
+                getRowKey={(row) => `${row.line}-${row.address}`}
+                rows={archivedRound.transactions.flatMap((transaction) => transaction.rows.map((row) => ({ ...row, transactionStatus: transaction.status })))}
+              />
               {archivedRound.signatures.length ? (
                 <div className="flex flex-wrap gap-2" aria-label="分发交易哈希">
                   {archivedRound.signatures.map((signature, index) => (
@@ -899,6 +1040,7 @@ export function BatchDistributorPage() {
           </ReviewPanel>
         ) : null}
       </div>
+      <TaskHistoryPanel history={taskHistory} network={taskNetwork} rpcEndpoint={effectiveRpcEndpoint} busy={sending || preflighting} />
     </ToolPageLayout>
   );
 }

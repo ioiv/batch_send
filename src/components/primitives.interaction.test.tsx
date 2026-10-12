@@ -37,6 +37,18 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 afterEach(cleanup);
 
 describe("shadcn Base UI interactions", () => {
+  it('opens a controlled confirmation directly and disables signing when its validated context becomes invalid', async () => {
+    const confirm = vi.fn();
+    const user = userEvent.setup();
+    const props = { title: '确认批量操作', triggerLabel: '开始操作', confirmLabel: '签名执行', description: '已检查的金额', onConfirm: confirm, hideTrigger: true, open: true };
+    const { rerender } = render(<ConfirmActionDialog {...props} />);
+    expect(screen.getByRole('alertdialog', { name: '确认批量操作' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '开始操作' })).not.toBeInTheDocument();
+    rerender(<ConfirmActionDialog {...props} disabled />);
+    expect(screen.getByRole('button', { name: '签名执行' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '签名执行' }));
+    expect(confirm).not.toHaveBeenCalled();
+  });
   it("keeps collection progress visible and toggles pause and resume", async () => {
     const user = userEvent.setup();
 
@@ -62,16 +74,15 @@ describe("shadcn Base UI interactions", () => {
     expect(screen.getByRole("progressbar", { name: "EVM 归集进度（已暂停）" })).toBeVisible();
   });
 
-  it("shows one primary action and keeps task details and retry optional", async () => {
+  it("keeps the task summary and retry visible beside the primary action", async () => {
     const user = userEvent.setup();
     const retry = vi.fn();
     render(<ActionBar summary={<span>12 个地址 · 1 SOL</span>} feedback={<span role="status">请先连接钱包</span>}
       secondaryActions={<Button onClick={retry}>重试失败项</Button>}><Button>确认执行</Button></ActionBar>);
     expect(screen.getByRole("status")).toHaveTextContent("请先连接钱包");
     expect(document.querySelector(".workbench-action-bar__actions")?.querySelectorAll("button")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "重试失败项" })).not.toBeVisible();
-    expect(screen.getByText("12 个地址 · 1 SOL")).not.toBeVisible();
-    await user.click(screen.getByText("任务详情", { selector: "summary" }));
+    expect(screen.getByRole("button", { name: "重试失败项" })).toBeVisible();
+    expect(screen.queryByText("任务详情", { selector: "summary" })).not.toBeInTheDocument();
     expect(screen.getByText("12 个地址 · 1 SOL")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "重试失败项" }));
     expect(retry).toHaveBeenCalledOnce();

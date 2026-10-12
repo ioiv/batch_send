@@ -22,6 +22,10 @@ import { WorkflowFeedback, type WorkflowRequirement } from "../components/Workfl
 import { RpcSettings } from "../components/RpcSettings";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { CollectionResults } from "../components/CollectionResults";
+import { useTaskHistory } from "../hooks/useTaskHistory";
+import { TaskHistoryPanel } from "../components/TaskHistoryPanel";
+import type { CollectionModeConfig } from "../components/AutomaticCollectionWorkbench";
+import { describeCollectionAmount, type SolManualCollectionDraft } from "../lib/collection-mode-draft";
 import {
   ActionBar,
   AdvancedSettings,
@@ -87,6 +91,7 @@ type SolTokenRecognitionState = {
 const maximumArchivedRounds = 10;
 
 type ArchivedSolCollectionRound = {
+  historyRecordId?: string;
   message: string;
   requiresAcknowledgement: boolean;
   results: CollectionDisplayResult[];
@@ -362,6 +367,7 @@ function unavailableSolTokenHoldingToDisplay(
 
 function progressStatus(phase: SolCollectionProgress["phase"]): CollectionResultStatus {
   if (phase === "preparing") return "scanning";
+  if (phase === "submitting") return "submitting";
   if (phase === "submitted") return "confirming";
   if (phase === "success") return "success";
   if (phase === "skipped") return "skipped";
@@ -370,6 +376,7 @@ function progressStatus(phase: SolCollectionProgress["phase"]): CollectionResult
 
 function solTokenProgressStatus(phase: SolTokenCollectionProgress["phase"]): CollectionResultStatus {
   if (phase === "preparing") return "scanning";
+  if (phase === "submitting") return "submitting";
   if (phase === "submitted") return "confirming";
   if (phase === "success") return "success";
   if (phase === "skipped") return "skipped";
@@ -394,10 +401,11 @@ function groupWalletStatuses(results: readonly CollectionDisplayResult[]) {
 }
 
 export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConfig }: {
-  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: { networkId: string; rpcEndpoint: string; targetAddress: string }, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
+  onAutomatic?: (snapshot: SecretKeyInputSnapshot, config: CollectionModeConfig, rounds?: { label: string; results: CollectionDisplayResult[] }[]) => void;
   readInitialWallets?: () => SecretKeyInputSnapshot | null;
-  initialConfig?: { networkId: string; rpcEndpoint: string; targetAddress: string };
+  initialConfig?: CollectionModeConfig;
 } = {}) {
+  const initialDraft = initialConfig?.manualDraft?.kind === "solana" ? initialConfig.manualDraft : undefined;
   const initialNetworkId: SolanaNetworkId = getNetworkConfig((initialConfig?.networkId || "mainnet-beta") as SolanaNetworkId).id;
   const [networkId, setNetworkId] = useState<SolanaNetworkId>(initialNetworkId);
   const [rpcEndpoint, setRpcEndpoint] = useState(() => initialConfig?.rpcEndpoint ?? getPreferredRpcEndpoint(
@@ -405,22 +413,22 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
     initialNetworkId,
     getNetworkConfig(initialNetworkId).endpoint
   ));
-  const [tokenMintInput, setTokenMintInput] = useState("");
+  const [tokenMintInput, setTokenMintInput] = useState(initialDraft?.tokenMintInput ?? "");
   const [tokenMintInputMessage, setTokenMintInputMessage] = useState("");
   const [tokenRecognition, setTokenRecognition] = useState<SolTokenRecognitionState>(
     emptySolTokenRecognitionState
   );
   const [targetAddress, setTargetAddress] = useState(initialConfig?.targetAddress || "");
-  const [amountMode, setAmountMode] = useState<AmountMode>("all");
-  const [percentageAmount, setPercentageAmount] = useState("100");
-  const [fixedAmount, setFixedAmount] = useState("0.1");
-  const [randomMinimum, setRandomMinimum] = useState("0.01");
-  const [randomMaximum, setRandomMaximum] = useState("0.1");
-  const [reserveAmount, setReserveAmount] = useState("0");
-  const [minimumAmount, setMinimumAmount] = useState("0");
-  const [concurrency, setConcurrency] = useState("3");
-  const [minimumDelay, setMinimumDelay] = useState("0");
-  const [maximumDelay, setMaximumDelay] = useState("0");
+  const [amountMode, setAmountMode] = useState<AmountMode>(initialDraft?.amountMode ?? "all");
+  const [percentageAmount, setPercentageAmount] = useState(initialDraft?.percentageAmount ?? "100");
+  const [fixedAmount, setFixedAmount] = useState(initialDraft?.fixedAmount ?? "0.1");
+  const [randomMinimum, setRandomMinimum] = useState(initialDraft?.randomMinimum ?? "0.01");
+  const [randomMaximum, setRandomMaximum] = useState(initialDraft?.randomMaximum ?? "0.1");
+  const [reserveAmount, setReserveAmount] = useState(initialDraft?.reserveAmount ?? "0");
+  const [minimumAmount, setMinimumAmount] = useState(initialDraft?.minimumAmount ?? "0");
+  const [concurrency, setConcurrency] = useState(initialDraft?.concurrency ?? "3");
+  const [minimumDelay, setMinimumDelay] = useState(initialDraft?.minimumDelay ?? "0");
+  const [maximumDelay, setMaximumDelay] = useState(initialDraft?.maximumDelay ?? "0");
   const [sourceCount, setSourceCount] = useState(0);
   const [stage, setStage] = useState<CollectionStage>("editing");
   const [paused, setPaused] = useState(false);
@@ -444,7 +452,27 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   const pauseControllerRef = useRef(new CollectionPauseController());
   const retrySourcesRef = useRef<SolCollectionSource[]>([]);
   const retryTokenJobsRef = useRef<SolTokenCollectionJob[]>([]);
+  const executionResultsRef = useRef<CollectionDisplayResult[]>([]);
   const selectedNetwork = getNetworkConfig(networkId);
+  const taskNetwork = { kind: "solana" as const, id: networkId, label: selectedNetwork.label };
+  const taskHistory = useTaskHistory({ toolId: "sol-collection", label: "手动归集", network: taskNetwork,
+    targetAddress, results, busy: stage === "running", roundKey: roundSequence });
+  const commitExecutionResults = (nextResults: CollectionDisplayResult[]) => {
+    executionResultsRef.current = nextResults;
+    taskHistory.captureResults(nextResults);
+    setResults(nextResults);
+  };
+  useEffect(() => {
+    setArchivedRounds((current) => {
+      const next = current.map((round) => {
+        const record = taskHistory.records.find((item) => item.id === round.historyRecordId);
+        return round.requiresAcknowledgement && record
+          && (record.acknowledgedAt || !record.results.some((result) => result.uncertain || ["submitting", "confirming"].includes(result.status)))
+          ? { ...round, requiresAcknowledgement: false } : round;
+      });
+      return next.some((round, index) => round !== current[index]) ? next : current;
+    });
+  }, [archivedRounds, taskHistory.records]);
   const parsedTokenMints = useMemo(() => parseSolTokenMintInput(tokenMintInput), [tokenMintInput]);
   const tokenInputRows = useMemo(
     () => parsedTokenMints.rows.map((row) => row.value),
@@ -460,7 +488,8 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   const currentRoundRequiresAcknowledgement = roundIsTerminal
     && (workbenchStatus === "uncertain" || results.some((result) => result.uncertain));
   const acknowledgementRequired = currentRoundRequiresAcknowledgement
-    || archivedRounds.some((round) => round.requiresAcknowledgement);
+    || archivedRounds.some((round) => round.requiresAcknowledgement)
+    || taskHistory.needsRecoveryReview;
   const completedResultCount = results.filter((result) => (
     result.status === "success" || result.status === "error" || result.status === "skipped"
   )).length;
@@ -664,6 +693,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
     if (!results.length || (stage !== "complete" && stage !== "error")) return false;
     const requiresAcknowledgement = currentRoundRequiresAcknowledgement;
     setArchivedRounds((current) => [{
+      historyRecordId: taskHistory.currentRecordId,
       message: sanitizeRoundArchiveText(message || "任务已结束"),
       requiresAcknowledgement,
       results: results.map((result) => ({
@@ -878,7 +908,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   };
 
   const executeNativeCollection = async (retryOnly = false) => {
-    if (operationRef.current || keyImportingRef.current || running) return;
+    if (operationRef.current || keyImportingRef.current || running || taskHistory.checkRecoveryReview()) return;
     const prepared = validateAndReadSources();
     const sources = retryOnly ? retrySourcesRef.current : prepared.parsedSources.sources;
     if (prepared.issues.length || prepared.amountPolicy === null || prepared.executionSettings === null
@@ -907,8 +937,8 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       message: retryOnly ? "等待重试" : "等待执行",
       status: "pending"
     }));
-    setResults((current) => retryOnly
-      ? current.map((result) => initial.find((item) => item.address === result.address) || result)
+    commitExecutionResults(retryOnly
+      ? results.map((result) => initial.find((item) => item.address === result.address) || result)
       : initial);
 
     const connection = new Connection(rpcEndpoint.trim(), "confirmed");
@@ -917,7 +947,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       await assertSolanaRpcNetwork(connection, networkId);
       const updateProgress = (progress: SolCollectionProgress) => {
         if (progress.signature) submittedAddresses.add(progress.address);
-        setResults((current) => current.map((result) => {
+        commitExecutionResults(executionResultsRef.current.map((result) => {
           if (result.address !== progress.address) return result;
           return {
             ...result,
@@ -928,13 +958,15 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
             } : {}),
             message: progress.phase === "preparing"
               ? "正在读取余额并估算手续费"
-              : progress.phase === "submitted"
-                ? "交易已提交，正在等待链上确认"
-                : progress.phase === "success"
-                  ? "归集成功"
-                  : progress.phase === "skipped"
-                    ? "该来源已跳过"
-                    : "处理失败，请查看具体原因",
+              : progress.phase === "submitting"
+                ? "正在广播交易，请保留签名以便核对链上状态"
+                : progress.phase === "submitted"
+                  ? "交易已提交，正在等待链上确认"
+                  : progress.phase === "success"
+                    ? "归集成功"
+                    : progress.phase === "skipped"
+                      ? "该来源已跳过"
+                      : "处理失败，请查看具体原因",
             status: progressStatus(progress.phase)
           };
         }));
@@ -994,7 +1026,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   };
 
   const executeTokenCollection = async (retryOnly = false) => {
-    if (operationRef.current || keyImportingRef.current || running) return;
+    if (operationRef.current || keyImportingRef.current || running || taskHistory.checkRecoveryReview()) return;
     const prepared = validateAndReadSources();
     let jobs = retryOnly ? retryTokenJobsRef.current : [];
     let nonExecutableResults: CollectionDisplayResult[] = [];
@@ -1026,11 +1058,11 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
         message: "等待重试",
         status: "pending"
       }));
-      setResults((current) => current.map((result) => (
+      commitExecutionResults(results.map((result) => (
         initial.find((item) => item.executionId === result.executionId) || result
       )));
     } else {
-      setResults(prepared.parsedSources.sources.map((source): CollectionDisplayResult => ({
+      commitExecutionResults(prepared.parsedSources.sources.map((source): CollectionDisplayResult => ({
         address: source.address,
         amount: "—",
         asset: "SPL Token",
@@ -1089,7 +1121,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
           return;
         }
         setMessage(`已生成 ${jobs.length} 个 Token 账户任务；每笔都会重查余额、Mint、扩展、ATA、网络费和租金`);
-        setResults([
+        commitExecutionResults([
           ...nonExecutableResults,
           ...jobs.map((job): CollectionDisplayResult => ({
             address: job.sourceAddress,
@@ -1105,7 +1137,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       }
       const updateProgress = (progress: SolTokenCollectionProgress) => {
         if (progress.signature) submittedJobIds.add(progress.id);
-        setResults((current) => current.map((result) => {
+        commitExecutionResults(executionResultsRef.current.map((result) => {
           if (result.executionId !== progress.id) return result;
           return {
             ...result,
@@ -1118,13 +1150,15 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
             } : {}),
             message: progress.phase === "preparing"
               ? "正在重查 Token 账户、Mint、目标 ATA 与原生 SOL 费用"
-              : progress.phase === "submitted"
-                ? "交易已提交，正在等待链上确认"
-                : progress.phase === "success"
-                  ? "归集成功"
-                  : progress.phase === "skipped"
-                    ? "该 Token 账户已安全跳过"
-                    : "处理失败，请查看具体原因",
+              : progress.phase === "submitting"
+                ? "正在广播交易，请保留签名以便核对链上状态"
+                : progress.phase === "submitted"
+                  ? "交易已提交，正在等待链上确认"
+                  : progress.phase === "success"
+                    ? "归集成功"
+                    : progress.phase === "skipped"
+                      ? "该 Token 账户已安全跳过"
+                      : "处理失败，请查看具体原因",
             status: solTokenProgressStatus(progress.phase)
           };
         }));
@@ -1211,6 +1245,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
     && !acknowledgementRequired);
 
   const requirement: WorkflowRequirement | null = running || (roundIsTerminal && !acknowledgementRequired) ? null
+    : taskHistory.needsRecoveryReview ? { message: "请先在可恢复任务记录中核对上次交易的链上状态" }
     : acknowledgementRequired ? { message: "请先在归集记录中核对已提交交易的链上状态" }
     : !sourceCount ? { message: "请先导入并选择来源钱包", targetId: "source-wallet-import" }
     : !normalizedTarget || !splTargetValid ? { message: targetAddress.trim() ? "请修正目标钱包地址" : "请填写目标地址", targetId: "sol-collection-target" }
@@ -1227,6 +1262,11 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
   const plannedTotal = !sourceCount ? "—" : assetMode === "native" && amountMode === "fixed"
     ? fixedNativeAmount !== null ? `${formatLamports(fixedNativeAmount * BigInt(sourceCount))} SOL` : "—"
     : "按实时余额计算";
+  const manualDraft: SolManualCollectionDraft = {
+    kind: "solana", tokenMintInput, amountMode, percentageAmount, fixedAmount,
+    randomMinimum, randomMaximum, reserveAmount, minimumAmount, concurrency,
+    minimumDelay, maximumDelay
+  };
 
   const taskActions = (
         <ActionBar
@@ -1242,7 +1282,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                   triggerSize="lg"
                   confirmLabel={`重试 ${retryableCount} 个失败${assetMode === "spl" ? "账户" : "钱包"}`}
                   description="只重试尚未提交或已明确执行失败的项目；状态不确定的交易不会自动重发。"
-                  disabled={running}
+                  disabled={running || taskHistory.needsRecoveryReview}
                   onConfirm={() => executeCollection(true)}
                   title="确认重试失败项？"
                   triggerLabel={`重试失败项 (${retryableCount})`}
@@ -1299,9 +1339,16 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
                     : "SOL"}</strong></div>
                   <div><span>归集数量</span><strong>{assetMode === "spl"
                     ? "清单内 Token 全部实时余额"
-                    : amountModeLabels[amountMode]}</strong></div>
+                    : describeCollectionAmount(manualDraft, "SOL")}</strong></div>
+                  <div><span>配置总量</span><strong>{plannedTotal}</strong></div>
+                  {assetMode === "native" ? <>
+                    <div><span>每钱包保留</span><strong>{reserveAmount} SOL</strong></div>
+                    <div><span>最小归集金额</span><strong>{minimumAmount} SOL</strong></div>
+                  </> : null}
+                  <div><span>网络费</span><strong>发送前估算，由来源钱包支付</strong></div>
                   <div><span>并发</span><strong>{concurrency}</strong></div>
                   <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
+                  <p className="text-muted-foreground">实际发送数量以提交前的余额和费用检查为准。</p>
                 </div>
               )}
               disabled={!canStart}
@@ -1322,7 +1369,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
         <Tabs value="manual" onValueChange={(value) => {
           if (value !== "automatic" || controlsLocked || acknowledgementRequired) return;
           const snapshot = keyInputRef.current?.handoff();
-          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress }, [
+          if (snapshot) onAutomatic(snapshot, { networkId, rpcEndpoint, targetAddress, manualDraft }, [
             ...archivedRounds.map((round) => ({ label: `归集记录 #${round.sequence}`, results: round.results })),
             ...(roundIsTerminal && results.length ? [{ label: `归集记录 #${roundSequence}`, results }] : [])
           ]);
@@ -1691,16 +1738,20 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
 
           </div>
         </WorkbenchPanel>
+        <TaskHistoryPanel history={taskHistory} network={taskNetwork} rpcEndpoint={rpcEndpoint} busy={running} />
         {archivedRounds.length ? (
           <ReviewPanel
             actions={archivedRounds.some((round) => round.requiresAcknowledgement) ? (
               <ConfirmActionDialog
                 confirmLabel="确认已核对"
                 description="仅确认你已根据交易签名核对记录中的链上状态；这不会重试或撤销原交易。确认后才允许提交新的写入任务。"
-                onConfirm={() => setArchivedRounds((current) => current.map((round) => ({
-                  ...round,
-                  requiresAcknowledgement: false
-                })))}
+                onConfirm={() => {
+                  for (const round of archivedRounds.filter((item) => item.requiresAcknowledgement)) {
+                    const record = taskHistory.records.find((item) => item.id === round.historyRecordId);
+                    if (record) taskHistory.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() });
+                  }
+                  setArchivedRounds((current) => current.map((round) => ({ ...round, requiresAcknowledgement: false })));
+                }}
                 title="已核对记录中的链上状态？"
                 triggerLabel="已核对，开始新任务"
                 triggerVariant="outline"

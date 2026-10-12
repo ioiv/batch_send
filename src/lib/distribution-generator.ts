@@ -3,8 +3,9 @@ import {
   getListAddressKind,
   type AddressKind
 } from "./address";
+import { MAX_SOLANA_LAMPORTS } from "./amount";
 
-export type DistributionAmountMode = "fixed" | "random";
+export type DistributionAmountMode = "fixed" | "random" | "per-row";
 
 export const MAX_DISTRIBUTION_ROWS = 5_000;
 export const MAX_DISTRIBUTION_INPUT_CHARACTERS = 512 * 1024;
@@ -185,6 +186,8 @@ export type ImportedDistributionInput = {
 };
 
 export type ImportedDistributionFile = ImportedDistributionInput & {
+  /** Normalized source rows, retaining each supplied amount without recomputation. */
+  rows: string;
   invalidRows: number;
   sourceRows: number;
   truncated: boolean;
@@ -302,6 +305,7 @@ export function importDistributionFileText(input: string, maxRows = MAX_DISTRIBU
   const imported = importDistributionInput(normalizedRows.join("\n"));
   return {
     ...imported,
+    rows: normalizedRows.join("\n"),
     invalidRows,
     sourceRows: sourceRows.length,
     truncated
@@ -335,7 +339,7 @@ export function generateDistributionList(args: GenerateDistributionListArgs): Ge
       validCount: 0
     };
   }
-  const amountPlan = createAmountPlan(args);
+  const amountPlan = args.mode === "per-row" ? null : createAmountPlan(args);
   const seen = new Set<string>();
   const outputRows: string[] = [];
   const issues: string[] = [];
@@ -346,9 +350,18 @@ export function generateDistributionList(args: GenerateDistributionListArgs): Ge
     ? args.validateAddress(address)
     : getListAddressKind(address) === args.addressKind;
 
-  addresses.forEach((address, index) => {
+  addresses.forEach((sourceRow, index) => {
+    const parts = args.mode === "per-row" ? sourceRow.split(",").map((part) => part.trim()) : [sourceRow];
+    const address = parts[0];
     if (!isExpectedAddress(address)) {
       issues.push(`第 ${index + 1} 行地址格式不正确`);
+      invalid += 1;
+      return;
+    }
+
+    const rowAmount = args.mode === "per-row" && parts.length === 2 ? parseAmountToUnits(parts[1], args.decimals) : null;
+    if (args.mode === "per-row" && (rowAmount === null || args.addressKind === "solana" && (rowAmount > MAX_SOLANA_LAMPORTS || parts[1].length > 64))) {
+      issues.push(`第 ${index + 1} 行需要“地址,金额”，金额必须大于 0，最多 ${args.decimals} 位小数`);
       invalid += 1;
       return;
     }
@@ -360,17 +373,17 @@ export function generateDistributionList(args: GenerateDistributionListArgs): Ge
     }
     seen.add(duplicateKey);
 
-    if (!amountPlan.nextAmount) {
+    if (args.mode !== "per-row" && !amountPlan?.nextAmount) {
       invalid += 1;
       return;
     }
 
-    const amountUnits = amountPlan.nextAmount(address, index);
+    const amountUnits = rowAmount ?? amountPlan!.nextAmount!(address, index);
     totalUnits += amountUnits;
-    outputRows.push(`${address},${formatAmountUnits(amountUnits, args.decimals)}`);
+    outputRows.push(`${address},${args.mode === "per-row" ? parts[1] : formatAmountUnits(amountUnits, args.decimals)}`);
   });
 
-  if (amountPlan.issue && addresses.some(isExpectedAddress)) {
+  if (amountPlan?.issue && addresses.some(isExpectedAddress)) {
     issues.push(amountPlan.issue);
   }
 
@@ -385,10 +398,10 @@ export function generateDistributionList(args: GenerateDistributionListArgs): Ge
   };
 }
 
-export function dedupeDistributionAddresses(addresses: string, kind: AddressKind) {
+export function dedupeDistributionAddresses(addresses: string, kind: AddressKind, mode: DistributionAmountMode = "fixed") {
   const seen = new Set<string>();
   return getAddressRows(addresses).filter((address) => {
-    const duplicateKey = getDuplicateAddressKey(address, kind);
+    const duplicateKey = getDuplicateAddressKey(mode === "per-row" ? address.split(",")[0].trim() : address, kind);
     if (seen.has(duplicateKey)) return false;
     seen.add(duplicateKey);
     return true;

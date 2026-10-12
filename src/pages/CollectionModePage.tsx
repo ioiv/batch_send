@@ -17,7 +17,9 @@ export function CollectionModePage({ kind, fixedStandard = 'erc20' }: { kind: 'e
   }, []);
   function readInitialWallets() { const snapshot = snapshotRef.current; snapshotRef.current = null; return snapshot; }
   function switchMode(snapshot: SecretKeyInputSnapshot, config: CollectionModeConfig, next: boolean, rounds?: AutomaticCollectionRound[]) {
-    snapshotRef.current = snapshot; configRef.current = config;
+    snapshotRef.current = snapshot;
+    // Keep each mode's form draft while continuing to share the network and destination.
+    configRef.current = { ...configRef.current, ...config };
     if (rounds?.length) historyRef.current = [...rounds, ...historyRef.current].slice(0, 10);
     setAutomatic(next);
   }
