@@ -38,7 +38,7 @@ describe("observed website path discovery", () => {
     });
     const options = settings();
     const summary = await discoverWebsitePaths(options);
-    expect(summary).toMatchObject({ discovered: 10, validated: 10, truncated: false });
+    expect(summary).toMatchObject({ discovered: 6, validated: 6, truncated: false });
     expect(summary.sources.map(source => source.source)).toEqual(PATH_DISCOVERY_SOURCES.map(source => source.id));
     expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/odd-release-17`, sources: ["links", "sitemap", "wayback"] }));
     expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/api/chunk-endpoint`, sources: ["scripts"] }));
@@ -46,7 +46,163 @@ describe("observed website path discovery", () => {
     expect(requestedPaths).not.toContain("/historic-service");
     expect(requestedPaths).toContain("/map-page.xml");
     expect(scanWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ candidates: expect.not.arrayContaining([`${origin}/admin/`, `${origin}/login`]) }));
-    expect(options.onProgress).toHaveBeenLastCalledWith({ phase: "validating", completed: 10, total: 10, discovered: 10 });
+    expect(options.onProgress).toHaveBeenLastCalledWith({ phase: "validating", completed: 6, total: 6, discovered: 6 });
+  });
+
+  it("excludes static and metadata files from result counts, verification and source provenance while parsing script and sitemap clues", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      const key = `${payload.source}:${new URL(String(payload.url)).pathname}`;
+      return document(payload, ({
+        "links:/": [candidate("/theme.CSS", "links", "asset"), candidate("/logo%2EPNG"), candidate("/font.woff2"),
+          candidate("/download.zip"), candidate("/assets/extensionless", "links", "asset"), candidate("/app%2eJS", "links", "script"),
+          candidate("/page.html"), candidate("/contact.php"), candidate("/account.aspx"), candidate("/api/users.json")],
+        "scripts:/app%2eJS": [candidate("/api/live", "scripts"), candidate("/chunk.mjs", "scripts", "script"), candidate("/app.js.map", "scripts")],
+        "scripts:/chunk.mjs": [candidate("/api/chunk", "scripts")],
+        "sitemap:/sitemap.xml": [candidate("/child-map.xml", "sitemap", "sitemap")],
+        "sitemap:/child-map.xml": [candidate("/from-map", "sitemap")],
+        "wayback:/": [candidate("/archive.JS", "wayback"), candidate("/archive.css", "wayback"), candidate("/legacy-api.json", "wayback")]
+      } as Record<string, unknown[]>)[key] ?? []);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary).toMatchObject({ discovered: 9, validated: 9, truncated: false });
+    const verified = vi.mocked(scanWebsitePaths).mock.calls.flatMap(([options]) => options.candidates);
+    expect(verified).toEqual(expect.arrayContaining([`${origin}/page.html`, `${origin}/contact.php`, `${origin}/account.aspx`, `${origin}/api/users.json`, `${origin}/api/live`, `${origin}/api/chunk`, `${origin}/from-map`, `${origin}/legacy-api.json`]));
+    expect(verified.some(url => /CSS|PNG|woff|zip|extensionless|JS|\.mjs|\.map|\.xml|\.css/.test(url))).toBe(false);
+    expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "scripts", url: `${origin}/chunk.mjs` }), expect.any(AbortSignal));
+    expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "sitemap", url: `${origin}/child-map.xml` }), expect.any(AbortSignal));
+    expect(requestNetworkScan).not.toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/theme.CSS` }), expect.anything());
+    expect(summary.sources.find(source => source.source === "scripts")?.urls).toEqual([`${origin}/api/chunk`, `${origin}/api/live`]);
+    expect(summary.sources.find(source => source.source === "wayback")?.urls).toEqual([`${origin}/legacy-api.json`]);
+    expect(options.onProgress).toHaveBeenLastCalledWith({ phase: "validating", completed: 9, total: 9, discovered: 9 });
+  });
+
+  it("keeps resource entry URLs as clues rather than validated results and bootstraps the homepage", async () => {
+    for (const entry of ["/assets/app.js", "/assets/theme.css", "/custom-map.xml"]) {
+      vi.mocked(requestNetworkScan).mockClear();
+      vi.mocked(scanWebsitePaths).mockClear();
+      vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+        payload.url === `${origin}${entry}` && ["scripts", "sitemap"].includes(String(payload.source)) ? [candidate("/discovered-api", String(payload.source))] : []));
+      const summary = await discoverWebsitePaths(settings(`${origin}${entry}`));
+      expect(summary.discovered).toBe(entry.endsWith("css") ? 1 : 2);
+      expect(vi.mocked(scanWebsitePaths).mock.calls.flatMap(([options]) => options.candidates)).not.toContain(`${origin}${entry}`);
+      expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "links", url: `${origin}/` }), expect.any(AbortSignal));
+      if (entry.endsWith("js")) expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "scripts", url: `${origin}${entry}`, documentUrl: `${origin}/` }), expect.any(AbortSignal));
+      if (entry.endsWith("css")) expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.url === `${origin}${entry}` && payload.source !== "wayback")).toEqual([]);
+    }
+  });
+
+  it("allows more than 2000 resource clues across documents without consuming the actual path cap", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source !== "links") return document(payload);
+      const path = new URL(String(payload.url)).pathname;
+      return document(payload, path === "/" || path === "/child"
+        ? [...Array.from({ length: 1500 }, (_, index) => candidate(`/images/${path === "/" ? "root" : "child"}-${index}.png`, "links", "asset")),
+          candidate(path === "/" ? "/child" : "/real-endpoint")]
+        : []);
+    });
+    const summary = await discoverWebsitePaths(settings());
+    expect(summary).toMatchObject({ discovered: 3, validated: 3, truncated: false });
+    expect(scanWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ candidates: expect.arrayContaining([`${origin}/real-endpoint`]) }));
+    expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "links")).toHaveLength(3);
+  });
+
+  it.each([true, false])("removes extensionless resource paths regardless of archive arrival order (%s)", async archiveFirst => {
+    let releaseArchive!: () => void;
+    const archiveGate = new Promise<void>(resolve => { releaseArchive = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "wayback") {
+        if (!archiveFirst) await archiveGate;
+        return document(payload, [candidate("/assets/extensionless", "wayback"), candidate("/maps/extensionless", "wayback")]);
+      }
+      if (payload.source === "links" && payload.url === `${origin}/`) {
+        if (archiveFirst) await Promise.resolve();
+        releaseArchive();
+        return document(payload, [candidate("/assets/extensionless", "links", "script"), candidate("/maps/extensionless", "links", "sitemap")]);
+      }
+      return document(payload, payload.source === "scripts" || payload.source === "sitemap" && payload.url === `${origin}/maps/extensionless`
+        ? [candidate("/api/real", payload.source)] : []);
+    });
+    const summary = await discoverWebsitePaths(settings());
+    expect(summary).toMatchObject({ discovered: 2, validated: 2 });
+    const verified = vi.mocked(scanWebsitePaths).mock.calls.flatMap(([options]) => options.candidates);
+    expect(verified).toEqual(expect.arrayContaining([`${origin}/`, `${origin}/api/real`]));
+    expect(verified).not.toContain(`${origin}/assets/extensionless`);
+    expect(verified).not.toContain(`${origin}/maps/extensionless`);
+    expect(summary.sources.find(source => source.source === "wayback")?.urls).toEqual([]);
+    expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "scripts", url: `${origin}/assets/extensionless` }), expect.any(AbortSignal));
+    expect(requestNetworkScan).toHaveBeenCalledWith(expect.objectContaining({ source: "sitemap", url: `${origin}/maps/extensionless` }), expect.any(AbortSignal));
+  });
+
+  it.each([true, false])("suppresses explicit stylesheet markers from historical results in either arrival order (%s)", async archiveFirst => {
+    let releaseArchive!: () => void;
+    const archiveGate = new Promise<void>(resolve => { releaseArchive = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "wayback") {
+        if (!archiveFirst) await archiveGate;
+        return document(payload, [candidate("/styles", "wayback"), candidate("/image.php", "wayback"), candidate("/historic-page", "wayback")]);
+      }
+      if (payload.source === "links" && payload.url === `${origin}/`) {
+        if (archiveFirst) await Promise.resolve();
+        releaseArchive();
+        return { ...document(payload), ignoredUrls: [`${origin}/styles`, `${origin}/image.php`] };
+      }
+      return document(payload);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary).toMatchObject({ discovered: 2, validated: 2 });
+    const verified = vi.mocked(scanWebsitePaths).mock.calls.flatMap(([options]) => options.candidates);
+    expect(verified).toEqual(expect.arrayContaining([`${origin}/`, `${origin}/historic-page`]));
+    expect(verified).not.toContain(`${origin}/styles`);
+    expect(verified).not.toContain(`${origin}/image.php`);
+    expect(summary.sources.find(source => source.source === "wayback")?.urls).toEqual([`${origin}/historic-page`]);
+    const rows = options.onResult.mock.calls.map(([result]) => result);
+    expect(exportDiscoveredWebsitePathsCsv(rows)).not.toMatch(/styles|image\.php/);
+  });
+
+  it("rejects untrusted resource marker metadata before suppressing any valid site paths", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ ...document(payload),
+      ...(payload.source === "wayback" ? { ignoredUrls: ["https://other.com/styles"] } : {}) }));
+    const summary = await discoverWebsitePaths(settings());
+    expect(summary).toMatchObject({ discovered: 1, validated: 1 });
+    expect(summary.sources.find(source => source.source === "wayback")?.status).toBe("error");
+  });
+  it("refreshes prior source counts immediately when later asset evidence removes their paths", async () => {
+    let releaseArchive!: () => void;
+    const archiveAccepted = new Promise<void>(resolve => { releaseArchive = resolve; });
+    let assertRefreshedOnChildRead = false;
+    let initialArchiveSeen = false;
+    const options = settings();
+    options.onSource.mockImplementation(result => {
+      if (result.source === "wayback" && result.urls.includes(`${origin}/styles`)) {
+        initialArchiveSeen = true;
+        releaseArchive();
+      }
+    });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "wayback") return document(payload, [candidate("/styles", "wayback")]);
+      if (payload.source === "links" && payload.url === `${origin}/`) {
+        await archiveAccepted;
+        return { ...document(payload, [candidate("/child")]), ignoredUrls: [`${origin}/styles`] };
+      }
+      if (payload.source === "links" && payload.url === `${origin}/child`) {
+        const snapshots = options.onSource.mock.calls.map(([result]) => result).filter(result => result.source === "wayback");
+        expect(snapshots.at(-1)?.urls).toEqual([]);
+        assertRefreshedOnChildRead = true;
+      }
+      return document(payload);
+    });
+    await discoverWebsitePaths(options);
+    expect(initialArchiveSeen).toBe(true);
+    expect(assertRefreshedOnChildRead).toBe(true);
+  });
+
+  it("omits static files from CSV while retaining page and JSON API results", () => {
+    const csv = exportDiscoveredWebsitePathsCsv(["/theme.CSS", "/app%2eJS", "/map.xml", "/route.html", "/api/list.json"].map(path => ({ url: `${origin}${path}`, sources: ["links"], status: "responded", statusCode: 200 })));
+    expect(csv).not.toMatch(/theme|app%2eJS|map\.xml/);
+    expect(csv).toContain("route.html");
+    expect(csv).toContain("/api/list.json");
   });
 
   it("preserves merged page and inline-script provenance supplied for the same URL", async () => {

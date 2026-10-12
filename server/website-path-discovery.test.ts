@@ -24,7 +24,7 @@ describe("observed HTML and script paths", () => {
     const provider = dependencies(() => document(`<base href="/docs/"><base href="/ignored/"><a href="getting-started?utm_source=x#section">x</a><a href="&#x2f;index.html">file</a><script src="../app.js?v=1"></script><link rel="stylesheet" href="style.css"><img src="hero.png"><a href="https://evil.com/no">outside</a><a href="//example.com.evil/no">evil</a><a href="http://example.com/other">other origin</a><a href="javascript:alert(1)">js</a><form action="/submit"><input name="action"></form><a href="#anchor">anchor</a>`));
     const result = await discoverWebsitePaths("https://example.com/start", "https://example.com/start", "links", 1000, provider.adapter);
     expect(result.status).toBe("success");
-    expect(urls(result)).toEqual(["https://example.com/docs/getting-started", "https://example.com/index.html", "https://example.com/app.js", "https://example.com/docs/style.css", "https://example.com/docs/hero.png"]);
+    expect(urls(result)).toEqual(["https://example.com/docs/getting-started", "https://example.com/index.html", "https://example.com/app.js"]);
     expect(result.candidates.find((candidate) => candidate.kind === "script")).toMatchObject({ documentUrl: "https://example.com/docs/" });
     expect(provider.fetchDocument).toHaveBeenCalledTimes(1);
   });
@@ -33,14 +33,12 @@ describe("observed HTML and script paths", () => {
     const provider = dependencies(() => document(`<base href="https://cdn.other.com/assets/"><a href="relative">x</a><script src="https://example.com/app.js"></script><a href="https://example.com/absolute">x</a><script>fetch('relative/api');fetch('https://example.com/api');import('https://example.com/module.js');</script>`));
     const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
     expect(result.status).toBe("partial");
-    expect(urls(result)).toEqual(["https://example.com/app.js", "https://example.com/absolute", "https://example.com/api", "https://example.com/module.js"]);
-    expect(result.candidates[0].kind).toBe("asset");
-    expect(result.candidates[3].kind).toBe("asset");
+    expect(urls(result)).toEqual(["https://example.com/absolute", "https://example.com/api"]);
   });
   it("strips query templates before inspecting concrete paths and normalizes base owner contexts", async () => {
     const provider = dependencies(() => document(`<base href="/docs/?v=1#frag"><script src="app.js"></script><a href="/api?filter=%7Bvalue%7D">x</a><a href="/api?glob=*">x</a><a href="/search?q=hello%20world">x</a><a href="/files/Quarterly%20Report.pdf">x</a>`));
     const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
-    expect(urls(result)).toEqual(["https://example.com/docs/app.js", "https://example.com/api", "https://example.com/search", "https://example.com/files/Quarterly%20Report.pdf"]);
+    expect(urls(result)).toEqual(["https://example.com/docs/app.js", "https://example.com/api", "https://example.com/search"]);
     expect(result.candidates[0].documentUrl).toBe("https://example.com/docs/");
   });
   it("keeps script owner context on kind upgrades and combines actual source provenance", async () => {
@@ -67,7 +65,40 @@ describe("observed HTML and script paths", () => {
   it("skips bare modules and ambiguous relatives while resolving import.meta and worker imports correctly", async () => {
     const provider = dependencies(() => document(`import React from 'react';import('package/path');export { x } from 'other-package';new URL('./logo.svg', import.meta.url);importScripts('worker.js');const ambiguous='./maybe';fetch('/api/' /* dynamic */ + id);const route='/route';`));
     const result = await discoverWebsitePaths("https://example.com/", "https://example.com/assets/main.js", "scripts", 1000, provider.adapter, undefined, "https://example.com/docs/page");
-    expect(urls(result)).toEqual(["https://example.com/assets/logo.svg", "https://example.com/assets/worker.js", "https://example.com/route"]);
+    expect(urls(result)).toEqual(["https://example.com/assets/worker.js", "https://example.com/route"]);
+  });
+  it("ignores static files regardless of encoded extension case and retains JSON APIs", async () => {
+    const provider = dependencies(() => document(`<a href="/theme.CSS">x</a><img src="/hero%2EPNG"><link rel="stylesheet" href="/styles"><script src="/app%2eJS"></script><a href="/api/users.json">x</a><a href="/page.html">x</a><a href="/account.php">x</a><a href="/login.aspx">x</a>`));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(urls(result)).toEqual(["https://example.com/app%2eJS", "https://example.com/api/users.json", "https://example.com/page.html", "https://example.com/account.php", "https://example.com/login.aspx"]);
+    expect(result.candidates[0].kind).toBe("script");
+  });
+  it("lets more than 2000 assets precede actual paths without exhausting page capacity", async () => {
+    const provider = dependencies(() => document(Array.from({ length: 2200 }, (_, i) => `<img src="/image-${i}.png">`).join("") + '<a href="/actual-page">x</a><script src="/app.js"></script>'));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(result.status).toBe("success");
+    expect(urls(result)).toEqual(["https://example.com/actual-page", "https://example.com/app.js"]);
+  });
+  it("preserves explicit extensionless or page-named asset markers without consuming page or script capacity", async () => {
+    const provider = dependencies(() => document('<a href="/styles">old link</a><link rel="stylesheet" href="/styles"><img src="/image.php"><a href="/styles">same link later</a><img src="/known.png"><script src="/app.js"></script><a href="/actual-page">x</a>'));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(result).toMatchObject({ status: "success", ignoredUrls: ["https://example.com/styles", "https://example.com/image.php"] });
+    expect(urls(result)).toEqual(["https://example.com/app.js", "https://example.com/actual-page"]);
+  });
+  it("bounds extensionless resource metadata independently and reports omitted markers", async () => {
+    const provider = dependencies(() => document(Array.from({ length: 2001 }, (_, i) => `<img src="/image/unknown-${i}">`).join("") + '<a href="/actual-page">x</a><script src="/app.js"></script>'));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(result.status).toBe("partial");
+    expect(result.ignoredUrls).toHaveLength(2000);
+    expect(result.message).toContain("标记上限");
+    expect(urls(result)).toEqual(["https://example.com/actual-page", "https://example.com/app.js"]);
+  });
+  it("caps script clues independently without dropping actual page paths", async () => {
+    const provider = dependencies(() => document(Array.from({ length: 45 }, (_, i) => `<script src="/app-${i}.js"></script>`).join("") + '<a href="/actual-page">x</a>'));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(result.status).toBe("partial");
+    expect(result.candidates.filter(candidate => candidate.kind === "script")).toHaveLength(40);
+    expect(urls(result)).toContain("https://example.com/actual-page");
   });
 
   it("rejects dynamic/credential/control paths before transport and skips non-JS script responses", async () => {

@@ -12,21 +12,51 @@ function options<T>(onResult: (result: T) => void) {
 }
 
 describe("network scan targets", () => {
-  it("normalizes hostnames and rejects URLs that widen the domain input", () => {
+  it("extracts the DNS hostname from pasted website addresses", () => {
     expect(normalizeDomain("HTTPS://EXAMPLE.com./")).toBe("example.com");
     expect(normalizeDomain("例子.中国")).toBe("xn--fsqu00a.xn--fiqs8s");
-    for (const invalid of ["localhost", "127.0.0.1", "example.com/a", "https://user:pass@example.com", "example.com:8000", "example.com?q=1", "a..com", "-a.com"]) {
+    expect(normalizeDomain("https://example.com/a?x=1#heading")).toBe("example.com");
+    expect(normalizeDomain("example.com:8000/path?q=1")).toBe("example.com");
+    expect(normalizeDomain("网站： https://EXAMPLE.com/path，复制的网址")).toBe("example.com");
+    expect(normalizeDomain("“https://例子。中国/目录”")).toBe("xn--fsqu00a.xn--fiqs8s");
+    for (const invalid of ["localhost", "127.0.0.1", "https://user:pass@example.com", "https://@example.com", "a..com", "-a.com", "user@example.com", "example.com\\@other.com"]) {
       expect(() => normalizeDomain(invalid)).toThrow();
     }
   });
 
-  it("preserves exact entry paths and rejects credentials, ports and query inputs", () => {
+  it("extracts the website entry, preserves exact paths and removes query parameters and fragments", () => {
     expect(normalizeWebsiteUrl("EXAMPLE.com/site")).toBe("https://example.com/site");
     expect(normalizeWebsiteUrl("https://example.com/index.html")).toBe("https://example.com/index.html");
     expect(normalizeWebsiteUrl("example.com")).toBe("https://example.com/");
-    for (const invalid of ["javascript:alert(1)", "https://example.com:8443/", "https://user:pass@example.com/a", "https://example.com/?q=1", "https://example.com/#fragment", ""]) {
+    expect(normalizeWebsiteUrl("https://example.com/INDEX.HTML?q=1#section")).toBe("https://example.com/INDEX.HTML");
+    expect(normalizeWebsiteUrl("链接：[文档](https://example.com/docs?q=1#section)")).toBe("https://example.com/docs");
+    expect(normalizeWebsiteUrl("访问 example.com/about?tracking=x。 ")).toBe("https://example.com/about");
+    expect(normalizeWebsiteUrl("//example.com/path?q=1")).toBe("https://example.com/path");
+    expect(normalizeWebsiteUrl("https://example.com/?email=user@example.com")).toBe("https://example.com/");
+    for (const invalid of ["javascript:alert(1)", "https://example.com:8443/", "https://user:pass@example.com/a", "https://@example.com/", ""]) {
       expect(() => normalizeWebsiteUrl(invalid)).toThrow();
     }
+  });
+
+  it("rejects unsupported/malformed schemes and unsafe selected tokens instead of silently changing the target", () => {
+    for (const invalid of ["https:", "https:/", "https", "https:/example.com/path", "ssh:example.com", "javascript:example.com", "ftp://example.com/a", "example.com:bad", "example.com\\path", "https://evil.com\\@example.com/"]) {
+      expect(() => normalizeWebsiteUrl(invalid)).toThrow();
+      expect(() => normalizeDomain(invalid)).toThrow();
+    }
+    expect(() => normalizeWebsiteUrl("first https://user:pass@example.com/a then https://safe.com/")).toThrow();
+    expect(() => normalizeWebsiteUrl("first https://example.com:8443/a then https://safe.com/")).toThrow();
+    expect(normalizeWebsiteUrl("first https://example.com/a then https://safe.com/")).toBe("https://example.com/a");
+    expect(normalizeWebsiteUrl("https://example.com/a，https://safe.com/second")).toBe("https://example.com/a");
+    expect(normalizeWebsiteUrl("https://example.com/a，这是网址")).toBe("https://example.com/a");
+    expect(normalizeWebsiteUrl("URL: https://example.com/a?tracking=1")).toBe("https://example.com/a");
+  });
+
+  it("retains literal punctuation on standalone and quoted exact entry URLs", () => {
+    for (const path of ["/action!", "/v1.", "/a_(b)", "/plain)"]) {
+      expect(normalizeWebsiteUrl(`https://example.com${path}`)).toBe(`https://example.com${path}`);
+      expect(normalizeWebsiteUrl(`“https://example.com${path}”`)).toBe(`https://example.com${path}`);
+    }
+    expect(normalizeWebsiteUrl("Read [docs](https://example.com/a_(b)).")).toBe("https://example.com/a_(b)");
   });
 });
 

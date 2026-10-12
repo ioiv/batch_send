@@ -51,6 +51,43 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Subdomain discovery workbench", () => {
+  it("extracts a domain from entered text on blur without changing the value during typing", async () => {
+    const user = userEvent.setup();
+    render(<SubdomainScanPage />);
+    const input = screen.getByRole("textbox", { name: "主域名" });
+    const pasted = "请扫描 https://EXAMPLE.COM:8443/team/index.html?x=1#top";
+    await user.click(input);
+    fireEvent.change(input, { target: { value: pasted } });
+    expect(input).toHaveValue(pasted);
+    await user.tab();
+    expect(input).toHaveValue("example.com");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(discoverSubdomains).toHaveBeenCalledWith(expect.objectContaining({ domain: "example.com" })));
+  });
+
+  it("immediately extracts valid pasted URLs and leaves invalid pastes to the browser", () => {
+    render(<SubdomainScanPage />);
+    const input = screen.getByRole("textbox", { name: "主域名" });
+    expect(fireEvent.paste(input, { clipboardData: { getData: () => "网址：https://EXAMPLE.COM:8443/docs?q=1#top" } })).toBe(false);
+    expect(input).toHaveValue("example.com");
+    expect(fireEvent.paste(input, { clipboardData: { getData: () => "https://" } })).toBe(true);
+    expect(input).toHaveValue("example.com");
+    expect(discoverSubdomains).not.toHaveBeenCalled();
+  });
+
+  it("formats a full URL when submitted directly and leaves incomplete input untouched on blur", async () => {
+    render(<SubdomainScanPage />);
+    const input = screen.getByRole("textbox", { name: "主域名" });
+    domainInput("https://");
+    fireEvent.blur(input);
+    expect(input).toHaveValue("https://");
+    expect(discoverSubdomains).not.toHaveBeenCalled();
+    domainInput("https://EXAMPLE.COM/docs?x=1#top");
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(discoverSubdomains).toHaveBeenCalledWith(expect.objectContaining({ domain: "example.com" })));
+    expect(input).toHaveValue("example.com");
+  });
+
   it("queries multiple public sources without exposing a dictionary and preserves the submitted configuration", async () => {
     const user = userEvent.setup();
     render(<SubdomainScanPage />);
@@ -64,7 +101,7 @@ describe("Subdomain discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
     expect(discoverSubdomains).toHaveBeenCalledWith(expect.objectContaining({ domain: "example.com", concurrency: 2, timeoutMs: 3000 }));
-    expect(screen.getByRole("textbox", { name: "主域名" })).toHaveValue("EXAMPLE.COM");
+    expect(screen.getByRole("textbox", { name: "主域名" })).toHaveValue("example.com");
     expect(screen.getByRole("spinbutton", { name: "DNS 验证并发数" })).toHaveValue(2);
   });
 

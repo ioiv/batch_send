@@ -31,28 +31,48 @@ function domainFromHostname(hostname: string) {
   return domain;
 }
 
-export function normalizeDomain(input: string): string {
-  const value = input.trim();
-  if (!value || value.length > 2048 || /\s/.test(value)) throw new Error("请输入有效的域名，例如 example.com。");
-  let url: URL;
-  try { url = new URL(value.includes("://") ? value : `https://${value}`); }
-  catch { throw new Error("请输入有效的域名，例如 example.com。"); }
-  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port
-    || url.search || url.hash || url.pathname !== "/") {
-    throw new Error("子域名扫描只接受域名，请移除端口、路径和查询参数。");
+function extractNetworkUrl(input: string): URL {
+  let value = input.trim();
+  if (!value || value.length > 65_536 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) throw new Error("请输入有效的网址或域名。");
+  for (const [open, close] of [['"', '"'], ["'", "'"], ["`", "`"], ["“", "”"], ["‘", "’"], ["「", "」"], ["『", "』"], ["<", ">"], ["(", ")"]]) {
+    if (value.startsWith(open) && value.endsWith(close)) value = value.slice(open.length, -close.length).trim();
   }
-  return domainFromHostname(url.hostname);
+  const explicitMatch = value.match(/(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)[^\s<>"'`，；！？【】「」『』“”‘’]+/iu);
+  const scheme = value.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
+  const hostPort = /^[^:/?#\s]+:\d+(?:[/?#]|$)/.test(value);
+  if (scheme && !hostPort && (!/^https?$/i.test(scheme) || !/^https?:\/\//i.test(value))
+    && (!explicitMatch || explicitMatch.index === 0)) throw new Error("请输入 HTTP / HTTPS 网址或域名。");
+  const explicit = explicitMatch?.[0];
+  const bare = !explicit ? value.match(/(?:^|[\s：:([{<，；“"'`])((?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?)(?:[.\u3002\uff0e\uff61][\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?)+(?::\d+)?(?:[/?#][^\s<>"'`，；！？【】「」『』“”‘’]*)?)(?=$|[\s<>"'`，。；！？、)\]}])/iu)?.[1] : undefined;
+  let candidate = explicit ?? bare ?? value;
+  const quotedEnd = explicitMatch && /["'`”’」』]/u.test(value[explicitMatch.index! + explicitMatch[0].length] ?? "");
+  if (candidate !== value && !quotedEnd) candidate = candidate.replace(/[，。；！？、,;!.]+$/u, "");
+  // Closing prose/Markdown brackets are trimmed only when they are not balanced inside the URL.
+  if (candidate !== value) {
+    for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
+      while (candidate.endsWith(close) && candidate.split(close).length > candidate.split(open).length) candidate = candidate.slice(0, -1);
+    }
+  }
+  if (!candidate || candidate.length > 2048 || /[\u0000-\u0020\u007f\\]/.test(candidate)) throw new Error("请输入有效的网址或域名。");
+  const uri = candidate.startsWith("//") ? `https:${candidate}` : candidate.includes("://") ? candidate : `https://${candidate}`;
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(uri)) throw new Error("网址不能包含账号信息。");
+  let url: URL;
+  try { url = new URL(uri); } catch { throw new Error("请输入有效的网址或域名。"); }
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) throw new Error("请输入 HTTP / HTTPS 网址或域名。");
+  url.hostname = url.hostname.replace(/\.$/, "");
+  return url;
+}
+
+export function normalizeDomain(input: string): string {
+  return domainFromHostname(extractNetworkUrl(input).hostname);
 }
 
 export function normalizeWebsiteUrl(input: string): string {
-  const value = input.trim();
-  if (!value || value.length > 2048 || /[\u0000-\u0020\u007f\\]/.test(value)) throw new Error("请输入有效的网站地址，例如 https://example.com/。");
-  let url: URL;
-  try { url = new URL(value.includes("://") ? value : `https://${value}`); }
-  catch { throw new Error("请输入有效的网站地址，例如 https://example.com/。"); }
-  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port || url.search || url.hash) {
-    throw new Error("网站地址仅支持 HTTP / HTTPS 默认端口，请移除账号、查询参数和片段。");
-  }
+  const url = extractNetworkUrl(input);
+  if (url.port) throw new Error("网站地址仅支持 HTTP / HTTPS 默认端口。");
+  if (!/^\d+(?:\.\d+){3}$/.test(url.hostname) && !url.hostname.startsWith("[")) domainFromHostname(url.hostname);
+  url.search = "";
+  url.hash = "";
   return url.href;
 }
 

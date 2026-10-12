@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { ToolPageLayout, type WorkbenchStatus } from "./ToolPageLayout";
 import { ExecutionProgress, WorkbenchPanel, WorkbenchSummary } from "./WorkbenchPrimitives";
@@ -110,6 +110,7 @@ export function NetworkScanWorkbench() {
   const [summary, setSummary] = useState<WebsitePathDiscoverySummary | null>(null);
   const [progress, setProgress] = useState<WebsitePathDiscoveryProgress>({ phase: "discovering", completed: 0, total: 0, discovered: 0 });
   const [filter, setFilter] = useState<ResultFilter>("all");
+  const [httpStatus, setHttpStatus] = useState<number | "all">("all");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const jobRef = useRef<ScanJob | null>(null);
@@ -126,11 +127,23 @@ export function NetworkScanWorkbench() {
     results.forEach((result) => { value[resultGroup(result)] += 1; });
     return value;
   }, [results]);
+  const httpStatusCounts = useMemo(() => {
+    const codes = new Map<number, number>();
+    results.forEach((result) => {
+      if (resultGroup(result) === "found" && result.statusCode !== undefined) {
+        codes.set(result.statusCode, (codes.get(result.statusCode) ?? 0) + 1);
+      }
+    });
+    // Keep the chosen code visible if live updates remove its final matching row.
+    if (httpStatus !== "all" && !codes.has(httpStatus)) codes.set(httpStatus, 0);
+    return [...codes].sort(([first], [second]) => first - second);
+  }, [httpStatus, results]);
   const visibleResults = useMemo(() => {
     const search = query.trim().toLowerCase();
     return results.filter((result) => (filter === "all" || resultGroup(result) === filter)
+      && (filter !== "found" || httpStatus === "all" || result.statusCode === httpStatus)
       && (!search || [result.url, resultLabel(result), result.message, result.title, result.location, result.statusCode, result.sources.map(sourceLabel).join(" ")].join(" ").toLowerCase().includes(search)));
-  }, [filter, query, results]);
+  }, [filter, httpStatus, query, results]);
   const pageCount = Math.max(1, Math.ceil(visibleResults.length / RESULTS_PER_PAGE));
   const currentPage = Math.min(page, pageCount - 1);
   const pageResults = visibleResults.slice(currentPage * RESULTS_PER_PAGE, (currentPage + 1) * RESULTS_PER_PAGE);
@@ -146,6 +159,23 @@ export function NetworkScanWorkbench() {
     if (inputError?.field === field) setInputError(null);
   }
 
+  function formatTarget() {
+    if (busy) return;
+    try {
+      setTarget(normalizeWebsiteUrl(target));
+      if (inputError?.field === "target") setInputError(null);
+    } catch { /* Keep incomplete input available for editing and validation. */ }
+  }
+
+  function pasteTarget(event: ClipboardEvent<HTMLInputElement>) {
+    if (busy) return;
+    try {
+      const normalized = normalizeWebsiteUrl(event.clipboardData.getData("text"));
+      event.preventDefault();
+      changeInput("target", normalized);
+    } catch { /* Let the browser paste incomplete input for editing. */ }
+  }
+
   async function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (jobRef.current) return;
@@ -155,6 +185,7 @@ export function NetworkScanWorkbench() {
     let timeoutMs: number;
     try {
       normalized = normalizeWebsiteUrl(target);
+      setTarget(normalized);
       field = "concurrency";
       parallel = Number(concurrency);
       if (!Number.isInteger(parallel) || parallel < 1 || parallel > 8) throw new Error("并发数需要是 1–8 的整数");
@@ -177,6 +208,7 @@ export function NetworkScanWorkbench() {
     setRoundTarget(normalized);
     setProgress({ phase: "discovering", completed: 0, total: 0, discovered: 0 });
     setFilter("all");
+    setHttpStatus("all");
     setQuery("");
     setPage(0);
     setState("running");
@@ -230,12 +262,12 @@ export function NetworkScanWorkbench() {
 
   return <ToolPageLayout className="network-scan-workbench" currentToolId={toolId} status={pageStatus} statusLabel={statusLabel} title="网站路径扫描">
     <form noValidate onSubmit={(event) => { void start(event); }}>
-      <WorkbenchPanel title={<span className="network-scan-label">自动路径发现<HelpTooltip label="自动路径发现">从同源页面链接、脚本中的路径线索、robots.txt、Sitemap 和 Wayback 历史记录自动发现路径，去重后验证 HTTP 响应。发现阶段最多 90 秒，每轮最多验证 2,000 个路径，最多读取 100 个页面、40 个脚本、20 个 Sitemap，抓取深度最多 3 层；范围为当前网站，包含入口目录之外的同源路径。站点请求使用下方所设的超时，历史记录查询最长 20 秒。去除查询参数与片段，不执行 JavaScript、不登录，可能遗漏动态路由和未公开引用的路径。只扫描你有权测试的公网网站。请求使用 GET，单次请求不自动跟随跳转；同源跳转地址作为线索单独读取和验证，跨源跳转不跟随。响应验证最多分析前 64 KiB，响应大小为 Content-Length 声明值。</HelpTooltip></span>} footer={<div className="network-scan-actions">
+      <WorkbenchPanel title={<span className="network-scan-label">自动路径发现<HelpTooltip label="自动路径发现">从同源页面链接、脚本中的路径线索、robots.txt、Sitemap 和 Wayback 历史记录自动发现路径，去重后验证 HTTP 响应。CSS、JavaScript、图片等静态文件不进入结果或导出，脚本和 Sitemap 仍用于提取路径线索。发现阶段最多 90 秒，每轮最多验证 2,000 个路径，最多读取 100 个页面、40 个脚本、20 个 Sitemap，抓取深度最多 3 层；范围为当前网站，包含入口目录之外的同源路径。站点请求使用下方所设的超时，历史记录查询最长 20 秒。去除查询参数与片段，不执行 JavaScript、不登录，可能遗漏动态路由和未公开引用的路径。只扫描你有权测试的公网网站。请求使用 GET，单次请求不自动跟随跳转；同源跳转地址作为线索单独读取和验证，跨源跳转不跟随。响应验证最多分析前 64 KiB，响应大小为 Content-Length 声明值。</HelpTooltip></span>} footer={<div className="network-scan-actions">
         <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? "正在自动发现网站路径…" : "正在验证已发现路径…" : "自动发现同源路径，无需提供字典"}</span>
         <div>{busy ? <Button disabled={state === "stopping"} onClick={stop} type="button" variant="outline">{state === "stopping" ? "停止中…" : "停止扫描"}</Button> : <Button type="submit">{roundTarget ? "重新扫描" : "开始扫描"}</Button>}</div>
       </div>}>
         <div className="network-scan-fields">
-          <div className="network-scan-field"><Label htmlFor={`${toolId}-target`}>网站地址</Label><Input {...inputProps("target")} autoCapitalize="none" autoComplete="off" id={`${toolId}-target`} onChange={(event) => changeInput("target", event.target.value)} placeholder="https://example.com/" ref={(element) => { inputRefs.current.target = element; }} spellCheck={false} value={target} /></div>
+          <div className="network-scan-field"><div className="network-scan-label"><Label htmlFor={`${toolId}-target`}>网站地址</Label><HelpTooltip label="网站地址输入">可粘贴完整网址或包含网址的文本，粘贴时自动提取网站地址；手动输入会在离开输入框或开始扫描时提取。保留入口路径并去掉查询参数与片段，多个网址取第一个。</HelpTooltip></div><Input {...inputProps("target")} autoCapitalize="none" autoComplete="off" id={`${toolId}-target`} onBlur={formatTarget} onChange={(event) => changeInput("target", event.target.value)} onPaste={pasteTarget} placeholder="粘贴网址，自动提取网站地址" ref={(element) => { inputRefs.current.target = element; }} spellCheck={false} value={target} /></div>
           <div className="network-scan-options">
             <div className="network-scan-field"><Label htmlFor={`${toolId}-concurrency`}>响应验证并发数</Label><Input {...inputProps("concurrency")} id={`${toolId}-concurrency`} max={8} min={1} onChange={(event) => changeInput("concurrency", event.target.value)} ref={(element) => { inputRefs.current.concurrency = element; }} step={1} type="number" value={concurrency} /></div>
             <div className="network-scan-field"><Label htmlFor={`${toolId}-timeout`}>站点请求超时（秒）</Label><Input {...inputProps("timeout")} id={`${toolId}-timeout`} max={10} min={1} onChange={(event) => changeInput("timeout", event.target.value)} ref={(element) => { inputRefs.current.timeout = element; }} step={1} type="number" value={timeout} /></div>
@@ -255,7 +287,12 @@ export function NetworkScanWorkbench() {
         {scanError ? <p className="network-scan-error" role="alert">{scanError}</p> : null}
         {state === "complete" && incomplete ? <p className="network-scan-note website-path-discovery-partial">{summary?.truncated ? "已达到本轮发现上限，仅验证已保留的路径。" : ""}{partialSources ? "部分来源受限或未完整返回，详情见来源说明。" : ""}本轮结果可能不完整。</p> : null}
         <WorkbenchSummary items={[{ label: "已发现", value: progress.discovered.toLocaleString() }, { label: "有响应", value: counts.found }, { label: <span className="network-scan-label">疑似软 404<HelpTooltip label="疑似软 404">与随机不存在路径的响应相似，可能是统一页面，不能据此确认该路径仍存在。随机对比请求不计入结果进度及导出。</HelpTooltip></span>, value: counts.suspected }, { label: "未找到", value: counts.missing }, { label: "请求错误", value: counts.error }]} />
-        <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setPage(0); }} value={filter}><TabsList aria-label="筛选扫描结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="found">有响应</TabsTrigger><TabsTrigger value="suspected">疑似软 404</TabsTrigger><TabsTrigger value="missing">未找到</TabsTrigger><TabsTrigger value="error">请求错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索扫描结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索路径、标题、状态码或来源" type="search" value={query} /></div>
+        <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setHttpStatus("all"); setPage(0); }} value={filter}><TabsList aria-label="筛选扫描结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="found">有响应</TabsTrigger><TabsTrigger value="suspected">疑似软 404</TabsTrigger><TabsTrigger value="missing">未找到</TabsTrigger><TabsTrigger value="error">请求错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索扫描结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索路径、标题、状态码或来源" type="search" value={query} /></div>
+        {filter === "found" ? <div aria-label="HTTP状态码筛选" className="website-path-status-filter" role="group">
+          <span className="network-scan-note">状态码</span>
+          <Button aria-pressed={httpStatus === "all"} onClick={() => { setHttpStatus("all"); setPage(0); }} size="sm" type="button" variant={httpStatus === "all" ? "default" : "outline"}>全部状态 · {counts.found.toLocaleString()}</Button>
+          {httpStatusCounts.map(([code, count]) => <Button aria-pressed={httpStatus === code} key={code} onClick={() => { setHttpStatus(code); setPage(0); }} size="sm" type="button" variant={httpStatus === code ? "default" : "outline"}>{code} · {count.toLocaleString()}</Button>)}
+        </div> : null}
         <p className="network-scan-note">匹配 {visibleResults.length.toLocaleString()} / {results.length.toLocaleString()} 条 · CSV 导出本轮全部已验证结果</p>
         {visibleResults.length ? <ScanResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? "正在自动发现路径，随后验证响应…" : "等待响应验证结果…" : state === "complete" ? incomplete ? "本轮未返回验证结果，部分来源未完整读取，请查看来源说明" : "本轮未发现可验证路径，不能据此确认网站没有其他路径" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
         {pageCount > 1 ? <nav aria-label="路径结果分页" className="website-path-discovery-pagination"><span className="network-scan-note">第 {currentPage + 1} / {pageCount} 页 · 每页 {RESULTS_PER_PAGE} 条</span><Button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} size="sm" type="button" variant="outline">上一页</Button><Button disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)} size="sm" type="button" variant="outline">下一页</Button></nav> : null}

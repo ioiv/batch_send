@@ -1,5 +1,6 @@
 import { fetchPublicDocument, normalizeUrl, type PublicDocumentResult } from "./network-scan.js";
 import { createBrotliDecompress, createGunzip, createInflate, constants } from "node:zlib";
+import { pathResourceKind } from "../src/lib/website-path-kind.js";
 
 export type WebsitePathDiscoverySource = "links" | "scripts" | "robots" | "sitemap" | "wayback";
 export type WebsitePathCandidateKind = "page" | "script" | "sitemap" | "asset";
@@ -15,6 +16,7 @@ export interface WebsitePathDiscoveryResult {
   url: string;
   status: "success" | "partial" | "error";
   candidates: WebsitePathCandidate[];
+  ignoredUrls?: string[];
   message?: string;
 }
 export interface WebsitePathDiscoveryDependencies {
@@ -25,7 +27,6 @@ export const MAX_PATH_DISCOVERY_CANDIDATES = 2000;
 export const MAX_PATH_DISCOVERY_BYTES = 1024 * 1024;
 const MAX_ARCHIVE_PAGES = 4;
 const SOURCES: WebsitePathDiscoverySource[] = ["links", "scripts", "robots", "sitemap", "wayback"];
-const ASSET_EXTENSIONS = /\.(?:avif|bmp|css|csv|eot|gif|ico|jpe?g|json|map|mp[34]|ogg|otf|pdf|png|rar|svg|tar|tiff?|ttf|txt|wav|web[mp]|woff2?|xml|zip|gz)$/i;
 class SourceFailure extends Error {}
 
 function decodeEntities(input: string): string {
@@ -48,13 +49,15 @@ function concreteValue(value: string): boolean {
 }
 
 function pathKind(url: string): WebsitePathCandidateKind {
-  const pathname = new URL(url).pathname;
-  if (/\.(?:mjs|cjs|js)$/i.test(pathname)) return "script";
-  return ASSET_EXTENSIONS.test(pathname) ? "asset" : "page";
+  return pathResourceKind(url) ?? "page";
 }
 
 class CandidateCollector {
   readonly candidates = new Map<string, WebsitePathCandidate>();
+  readonly ignoredUrls = new Set<string>();
+  ignoredUrlsCapped = false;
+  readonly counts = { page: 0, script: 0, sitemap: 0 };
+  readonly cappedKinds = new Set<"page" | "script" | "sitemap">();
   capped = false;
   constructor(readonly origin: string, readonly source: WebsitePathDiscoverySource) {}
   add(value: string, documentUrl: URL, kind?: WebsitePathCandidateKind, ownerDocument?: URL, observedSource = this.source): void {
@@ -67,7 +70,7 @@ class CandidateCollector {
     url.search = "";
     url.hash = "";
     try { normalizeUrl(url.href); } catch { return; }
-    const candidate: WebsitePathCandidate = { url: url.href, kind: kind ?? pathKind(url.href), source: observedSource };
+    const candidate: WebsitePathCandidate = { url: url.href, kind: kind === "page" || kind === undefined ? pathKind(url.href) : kind, source: observedSource };
     if (candidate.kind === "script" && ownerDocument) {
       if (ownerDocument.origin !== this.origin || ownerDocument.username || ownerDocument.password || ownerDocument.port) candidate.kind = "asset";
       else {
@@ -77,6 +80,19 @@ class CandidateCollector {
         candidate.documentUrl = owner.href;
       }
     }
+    if (candidate.kind === "asset") {
+      if (!pathResourceKind(url.href)) {
+        if (this.ignoredUrls.size < MAX_PATH_DISCOVERY_CANDIDATES) this.ignoredUrls.add(url.href);
+        else if (!this.ignoredUrls.has(url.href)) this.ignoredUrlsCapped = true;
+        const previous = this.candidates.get(url.href);
+        if (previous) {
+          this.counts[previous.kind as "page" | "script" | "sitemap"]--;
+          this.candidates.delete(url.href);
+        }
+      }
+      return;
+    }
+    if (this.ignoredUrls.has(url.href)) return;
     const existing = this.candidates.get(url.href);
     if (existing) {
       const sources = new Set(existing.sources ?? [existing.source]);
@@ -84,14 +100,27 @@ class CandidateCollector {
       if (sources.size > 1) existing.sources = [...sources];
       // Explicit script/sitemap clues should survive a less specific navigation link.
       if (candidate.kind === "sitemap" || (candidate.kind === "script" && existing.kind !== "sitemap")) {
+        if (existing.kind !== candidate.kind) {
+          const limit = candidate.kind === "script" ? 40 : 20;
+          if (this.counts[candidate.kind] >= limit) {
+            this.cappedKinds.add(candidate.kind);
+            this.counts[existing.kind as "page" | "script" | "sitemap"]--;
+            this.candidates.delete(url.href);
+            return;
+          }
+          this.counts[existing.kind as "page" | "script" | "sitemap"]--;
+          this.counts[candidate.kind]++;
+        }
         existing.kind = candidate.kind;
         if (candidate.documentUrl) existing.documentUrl = candidate.documentUrl;
       }
       return;
     }
-    if (this.candidates.size >= MAX_PATH_DISCOVERY_CANDIDATES) { this.capped = true; return; }
+    const candidateKind = candidate.kind;
+    const limit = candidateKind === "page" ? MAX_PATH_DISCOVERY_CANDIDATES : candidateKind === "script" ? 40 : 20;
+    if (this.counts[candidateKind] >= limit) { this.cappedKinds.add(candidateKind); if (candidateKind === "page") this.capped = true; return; }
     this.candidates.set(url.href, candidate);
-    if (this.candidates.size === MAX_PATH_DISCOVERY_CANDIDATES) this.capped = true;
+    this.counts[candidateKind]++;
   }
   archive(value: string, current: URL): void {
     let historical: URL;
@@ -351,7 +380,7 @@ export async function discoverWebsitePaths(baseInput: string, documentInput: str
   const context: Context = { documentUrl, ownerDocument, source, collector, deadline: Date.now() + timeoutMs, signal: controller.signal, dependencies, warnings: new Set() };
   let onAbort: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = (status: WebsitePathDiscoveryResult["status"], message?: string): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()], ...(message ? { message } : {}) });
+  const result = (status: WebsitePathDiscoveryResult["status"], message?: string): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()], ...(collector.ignoredUrls.size ? { ignoredUrls: [...collector.ignoredUrls] } : {}), ...(message ? { message } : {}) });
   if (signal?.aborted) return result("error", "发现查询已取消");
   const interruption = new Promise<never>((_, reject) => {
     onAbort = () => { controller.abort(); reject(new SourceFailure("发现查询已取消")); };
@@ -362,6 +391,9 @@ export async function discoverWebsitePaths(baseInput: string, documentInput: str
   try {
     await Promise.race([source === "wayback" ? discoverArchive(context) : discoverDocument(context), interruption]);
     if (collector.capped) context.warnings.add("达到每份文档 2000 个路径上限，结果可能不完整");
+    if (collector.cappedKinds.has("script")) context.warnings.add("达到每份文档 40 份脚本线索上限，已保留实际路径");
+    if (collector.cappedKinds.has("sitemap")) context.warnings.add("达到每份文档 20 份地图线索上限，已保留实际路径");
+    if (collector.ignoredUrlsCapped) context.warnings.add("部分无扩展名资源超过 2000 项标记上限，筛选可能不完整");
     return result(context.warnings.size ? "partial" : "success", context.warnings.size ? [...context.warnings].join("；") : context.note);
   } catch (error) {
     return result(collector.candidates.size ? "partial" : "error", error instanceof SourceFailure ? error.message : controller.signal.aborted ? "发现查询超时或已取消" : "文档查询失败，请稍后重试");

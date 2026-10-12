@@ -38,6 +38,43 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Automatic website path discovery workbench", () => {
+  it("extracts an entered website on blur, preserving its entry path and removing query and fragment", async () => {
+    const user = userEvent.setup();
+    render(<WebsitePathScanPage />);
+    const input = screen.getByRole("textbox", { name: "网站地址" });
+    const pasted = "目标：https://EXAMPLE.COM/docs/page.html?utm=1#part";
+    await user.click(input);
+    fireEvent.change(input, { target: { value: pasted } });
+    expect(input).toHaveValue(pasted);
+    await user.tab();
+    expect(input).toHaveValue("https://example.com/docs/page.html");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(discoverWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://example.com/docs/page.html" })));
+  });
+
+  it("immediately extracts valid pasted websites without intercepting incomplete pastes", () => {
+    render(<WebsitePathScanPage />);
+    const input = screen.getByRole("textbox", { name: "网站地址" });
+    expect(fireEvent.paste(input, { clipboardData: { getData: () => "网址：https://EXAMPLE.COM/docs/page.html?q=1#top" } })).toBe(false);
+    expect(input).toHaveValue("https://example.com/docs/page.html");
+    expect(fireEvent.paste(input, { clipboardData: { getData: () => "https://" } })).toBe(true);
+    expect(input).toHaveValue("https://example.com/docs/page.html");
+    expect(discoverWebsitePaths).not.toHaveBeenCalled();
+  });
+
+  it("formats direct submissions and keeps incomplete website input available for editing", async () => {
+    render(<WebsitePathScanPage />);
+    const input = screen.getByRole("textbox", { name: "网站地址" });
+    targetInput("https://");
+    fireEvent.blur(input);
+    expect(input).toHaveValue("https://");
+    expect(discoverWebsitePaths).not.toHaveBeenCalled();
+    targetInput("https://EXAMPLE.COM/docs/index.html?x=1#top");
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(discoverWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://example.com/docs/index.html" })));
+    expect(input).toHaveValue("https://example.com/docs/index.html");
+  });
+
   it("starts automatic discovery without a dictionary and preserves the website and configured options", async () => {
     const user = userEvent.setup();
     render(<WebsitePathScanPage />);
@@ -64,7 +101,7 @@ describe("Automatic website path discovery workbench", () => {
     targetInput();
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     const sources: PathDiscoverySourceResult[] = [
-      { source: "links", status: "success", urls: ["https://example.com/docs/robots.txt", "https://example.com/login"] },
+      { source: "links", status: "success", urls: ["https://example.com/docs/guide.html", "https://example.com/login"] },
       { source: "scripts", status: "partial", urls: ["https://example.com/catchall"], message: "达到脚本读取上限" },
       { source: "robots", status: "success", urls: [] },
       { source: "sitemap", status: "success", urls: ["https://example.com/missing"] },
@@ -81,7 +118,7 @@ describe("Automatic website path discovery workbench", () => {
     expect(await screen.findByText("历史来源限流")).toBeVisible();
     await user.keyboard("{Escape}");
     await act(async () => {
-      options.onResult({ url: "https://example.com/docs/robots.txt", status: "responded", statusCode: 200, title: "Robots", contentLength: 128, sources: ["links", "robots"] });
+      options.onResult({ url: "https://example.com/docs/guide.html", status: "responded", statusCode: 200, title: "Guide", contentLength: 128, sources: ["links", "robots"] });
       options.onResult({ url: "https://example.com/login", status: "responded", statusCode: 302, location: "/signin", sources: ["links"] });
       options.onResult({ url: "https://example.com/missing", status: "responded", statusCode: 404, sources: ["sitemap"] });
       options.onResult({ url: "https://example.com/catchall", status: "responded", statusCode: 200, soft404: true, title: "统一页面", sources: ["scripts"] });
@@ -90,17 +127,17 @@ describe("Automatic website path discovery workbench", () => {
     });
     expect(screen.getByText("响应验证中 · 已验证 5 / 5 项 · 发现 5 个路径")).toBeVisible();
     let table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
-    expect(table.getByRole("link", { name: "/docs/robots.txt" })).toHaveAttribute("href", "https://example.com/docs/robots.txt");
-    expect(table.getByText("Robots")).toBeVisible();
+    expect(table.getByRole("link", { name: "/docs/guide.html" })).toHaveAttribute("href", "https://example.com/docs/guide.html");
+    expect(table.getByText("Guide")).toBeVisible();
     expect(table.getByText("页面 +1")).toBeVisible();
     expect(table.getByText("重定向 · 302")).toBeVisible();
     expect(table.getByText("未找到 · 404")).toBeVisible();
     expect(table.getByText("疑似软 404 · 200")).toBeVisible();
     expect(table.getByText("请求错误")).toBeVisible();
     expect(screen.queryByText("128 B")).not.toBeInTheDocument();
-    await user.click(table.getByRole("button", { name: "说明：https://example.com/docs/robots.txt 的响应详情" }));
+    await user.click(table.getByRole("button", { name: "说明：https://example.com/docs/guide.html 的响应详情" }));
     expect(await screen.findByText("128 B")).toBeVisible();
-    expect(screen.getByText("https://example.com/docs/robots.txt")).toBeVisible();
+    expect(screen.getByText("https://example.com/docs/guide.html")).toBeVisible();
     await user.keyboard("{Escape}");
     await user.click(table.getByRole("button", { name: "说明：https://example.com/login 的响应详情" }));
     expect(await screen.findByRole("link", { name: "/signin" })).toHaveAttribute("href", "https://example.com/signin");
@@ -112,12 +149,12 @@ describe("Automatic website path discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "导出 CSV" }));
     const [filename, csv] = vi.mocked(downloadScanCsv).mock.calls[0];
     expect(filename).toMatch(/^website-path-discovery-.*\.csv$/u);
-    for (const expected of ["robots.txt", "/login", "/missing", "/catchall", "/broken", "links", "scripts"]) expect(csv).toContain(expected);
+    for (const expected of ["guide.html", "/login", "/missing", "/catchall", "/broken", "links", "scripts"]) expect(csv).toContain(expected);
     await user.click(screen.getByRole("tab", { name: "全部" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "脚本线索" } });
     table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
     expect(table.getByText("统一页面")).toBeVisible();
-    expect(table.queryByText("Robots")).not.toBeInTheDocument();
+    expect(table.queryByText("Guide")).not.toBeInTheDocument();
     await act(async () => { pending.resolve({ discovered: 5, validated: 5, truncated: false, sources }); await pending.promise; });
     expect(screen.getByRole("status", { name: "扫描完成 · 数据不完整" })).toBeVisible();
   });
@@ -154,6 +191,63 @@ describe("Automatic website path discovery workbench", () => {
     await waitFor(() => expect(discoverWebsitePaths).toHaveBeenCalledTimes(2));
     await act(async () => { options.onResult({ url: "https://example.com/stale", status: "responded", statusCode: 200, sources: ["links"] }); });
     expect(screen.queryByRole("link", { name: "/stale" })).not.toBeInTheDocument();
+  });
+
+  it("filters responding paths by exact HTTP code, combines search and resets the code for another category or round", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async (options) => {
+      for (const [path, statusCode] of [["alpha", 200], ["beta", 200], ["moved", 301], ["redirect", 302], ["forbidden", 403], ["server-error", 500]] as const) {
+        options.onResult({ url: `https://example.com/${path}`, status: "responded", statusCode, sources: ["links"] });
+      }
+      options.onResult({ url: "https://example.com/catchall", status: "responded", statusCode: 200, soft404: true, sources: ["links"] });
+      options.onResult({ url: "https://example.com/missing", status: "responded", statusCode: 404, sources: ["links"] });
+      options.onResult({ url: "https://example.com/request-error", status: "error", message: "连接失败", sources: ["links"] });
+      return { discovered: 9, validated: 9, truncated: false, sources: completedSources() };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    expect(screen.queryByRole("group", { name: "HTTP状态码筛选" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    let codes = within(screen.getByRole("group", { name: "HTTP状态码筛选" }));
+    expect(codes.getAllByRole("button").map((button) => button.textContent)).toEqual(["全部状态 · 6", "200 · 2", "301 · 1", "302 · 1", "403 · 1", "500 · 1"]);
+    expect(codes.getByRole("button", { name: "全部状态 · 6" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(codes.getByRole("button", { name: "301 · 1" }));
+    let table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    expect(table.getByRole("link", { name: "/moved" })).toBeVisible();
+    expect(table.queryByRole("link", { name: "/redirect" })).not.toBeInTheDocument();
+    expect(table.getAllByRole("row")).toHaveLength(2);
+    expect(codes.getByRole("button", { name: "301 · 1" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(codes.getByRole("button", { name: "403 · 1" }));
+    expect(screen.getByRole("link", { name: "/forbidden" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/moved" })).not.toBeInTheDocument();
+    await user.click(codes.getByRole("button", { name: "500 · 1" }));
+    expect(screen.getByRole("link", { name: "/server-error" })).toBeVisible();
+    await user.click(codes.getByRole("button", { name: "200 · 2" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "beta" } });
+    table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    expect(table.getByRole("link", { name: "/beta" })).toBeVisible();
+    expect(table.queryByRole("link", { name: "/alpha" })).not.toBeInTheDocument();
+    expect(codes.getByRole("button", { name: "200 · 2" })).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "redirect" } });
+    expect(screen.queryByRole("table", { name: "网站路径扫描结果" })).not.toBeInTheDocument();
+    expect(screen.getByText("暂无匹配结果")).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "" } });
+    await user.click(screen.getByRole("tab", { name: "全部" }));
+    expect(screen.queryByRole("group", { name: "HTTP状态码筛选" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    codes = within(screen.getByRole("group", { name: "HTTP状态码筛选" }));
+    expect(codes.getByRole("button", { name: "全部状态 · 6" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(codes.getByRole("button", { name: "302 · 1" }));
+    expect(screen.getByRole("link", { name: "/redirect" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "重新扫描" }));
+    await waitFor(() => expect(discoverWebsitePaths).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("group", { name: "HTTP状态码筛选" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    codes = within(screen.getByRole("group", { name: "HTTP状态码筛选" }));
+    expect(codes.getByRole("button", { name: "全部状态 · 6" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByRole("table", { name: "网站路径扫描结果" })).getAllByRole("row")).toHaveLength(7);
   });
 
   it("aborts discovery and discards updates on unmount", async () => {
@@ -218,6 +312,14 @@ describe("Automatic website path discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "下一页" }));
     table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
     expect(table.getByRole("link", { name: "/path100" })).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByRole("link", { name: "/path100" })).toBeVisible();
+    await user.click(within(screen.getByRole("group", { name: "HTTP状态码筛选" })).getByRole("button", { name: "200 · 101" }));
+    expect(screen.getByRole("link", { name: "/path0" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/path100" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "下一页" }));
     await user.click(screen.getByRole("button", { name: "导出 CSV" }));
     expect(vi.mocked(downloadScanCsv).mock.calls[0][1]).toContain("/path0");
     expect(vi.mocked(downloadScanCsv).mock.calls[0][1]).toContain("/path100");

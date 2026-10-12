@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { ToolPageLayout, type WorkbenchStatus } from "./ToolPageLayout";
 import { ExecutionProgress, WorkbenchPanel, WorkbenchSummary } from "./WorkbenchPrimitives";
@@ -136,6 +136,23 @@ export function SubdomainDiscoveryWorkbench() {
     if (inputError?.field === field) setInputError(null);
   }
 
+  function formatDomain() {
+    if (busy) return;
+    try {
+      setDomain(normalizeDomain(domain));
+      if (inputError?.field === "domain") setInputError(null);
+    } catch { /* Keep incomplete input available for editing and validation. */ }
+  }
+
+  function pasteDomain(event: ClipboardEvent<HTMLInputElement>) {
+    if (busy) return;
+    try {
+      const normalized = normalizeDomain(event.clipboardData.getData("text"));
+      event.preventDefault();
+      changeInput("domain", normalized);
+    } catch { /* Let the browser paste incomplete input for editing. */ }
+  }
+
   async function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (jobRef.current) return;
@@ -145,6 +162,7 @@ export function SubdomainDiscoveryWorkbench() {
     let timeoutMs: number;
     try {
       normalized = normalizeDomain(domain);
+      setDomain(normalized);
       field = "concurrency";
       parallel = Number(concurrency);
       if (!Number.isInteger(parallel) || parallel < 1 || parallel > 8) throw new Error("并发数需要是 1–8 的整数");
@@ -229,7 +247,7 @@ export function SubdomainDiscoveryWorkbench() {
         <div>{busy ? <Button disabled={state === "stopping"} onClick={stop} type="button" variant="outline">{state === "stopping" ? "停止中…" : "停止扫描"}</Button> : <Button type="submit">{roundDomain ? "重新扫描" : "开始扫描"}</Button>}</div>
       </div>}>
         <div className="network-scan-fields">
-          <div className="network-scan-field"><Label htmlFor="subdomain-discovery-domain">主域名</Label><Input {...inputProps("domain")} autoCapitalize="none" autoComplete="off" id="subdomain-discovery-domain" onChange={(event) => changeInput("domain", event.target.value)} placeholder="example.com" ref={(element) => { inputRefs.current.domain = element; }} spellCheck={false} value={domain} /></div>
+          <div className="network-scan-field"><div className="network-scan-label"><Label htmlFor="subdomain-discovery-domain">主域名</Label><HelpTooltip label="域名输入">可粘贴完整网址或包含网址的文本，粘贴时自动提取域名；手动输入会在离开输入框或开始扫描时提取。多个网址取第一个。</HelpTooltip></div><Input {...inputProps("domain")} autoCapitalize="none" autoComplete="off" id="subdomain-discovery-domain" onBlur={formatDomain} onChange={(event) => changeInput("domain", event.target.value)} onPaste={pasteDomain} placeholder="域名或完整网址" ref={(element) => { inputRefs.current.domain = element; }} spellCheck={false} value={domain} /></div>
           <div className="network-scan-options">
             <div className="network-scan-field"><Label htmlFor="subdomain-discovery-concurrency">DNS 验证并发数</Label><Input {...inputProps("concurrency")} id="subdomain-discovery-concurrency" max={8} min={1} onChange={(event) => changeInput("concurrency", event.target.value)} ref={(element) => { inputRefs.current.concurrency = element; }} step={1} type="number" value={concurrency} /></div>
             <div className="network-scan-field"><Label htmlFor="subdomain-discovery-timeout">单项 DNS 超时（秒）</Label><Input {...inputProps("timeout")} id="subdomain-discovery-timeout" max={10} min={1} onChange={(event) => changeInput("timeout", event.target.value)} ref={(element) => { inputRefs.current.timeout = element; }} step={1} type="number" value={timeout} /></div>

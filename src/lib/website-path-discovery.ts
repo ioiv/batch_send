@@ -1,4 +1,5 @@
 import { formatScanCsv, MAX_SCAN_CANDIDATES, normalizeWebsiteUrl, requestNetworkScan, scanWebsitePaths, type WebsitePathScanResult } from "./network-scan";
+import { MAX_PATH_SOURCE_CANDIDATES, pathResourceKind } from "./website-path-kind";
 
 export type PathDiscoverySource = "links" | "scripts" | "robots" | "sitemap" | "wayback";
 export const PATH_DISCOVERY_SOURCES: { id: PathDiscoverySource; label: string }[] = [
@@ -15,6 +16,7 @@ interface PathCandidate { url: string; kind: CandidateKind; source: PathDiscover
 interface DiscoveryDocument {
   source: PathDiscoverySource; url: string; status: "success" | "partial" | "error";
   candidates: PathCandidate[]; message?: string;
+  ignoredUrls?: string[];
 }
 export interface PathDiscoverySourceResult {
   source: PathDiscoverySource; status: "success" | "partial" | "error"; urls: string[]; message?: string;
@@ -50,7 +52,9 @@ async function readDocument(baseUrl: string, job: { url: string; source: PathDis
       ...(job.documentUrl ? { documentUrl: job.documentUrl } : {}), timeoutMs }, signal);
     const sourceIds = PATH_DISCOVERY_SOURCES.map(source => source.id);
     if (result.source !== job.source || result.url !== job.url || !["success", "partial", "error"].includes(result.status)
-      || !Array.isArray(result.candidates) || result.candidates.length > MAX_DISCOVERED_WEBSITE_PATHS
+      || !Array.isArray(result.candidates) || result.candidates.length > MAX_PATH_SOURCE_CANDIDATES
+      || (result.ignoredUrls !== undefined && (!Array.isArray(result.ignoredUrls) || result.ignoredUrls.length > MAX_DISCOVERED_WEBSITE_PATHS
+        || result.ignoredUrls.some(url => !validCandidateUrl(url, new URL(baseUrl).origin))))
       || (result.message !== undefined && typeof result.message !== "string")
       || result.candidates.some(candidate => !candidate || !validCandidateUrl(candidate.url, new URL(baseUrl).origin)
         || !["page", "script", "sitemap", "asset"].includes(candidate.kind) || !sourceIds.includes(candidate.source)
@@ -73,6 +77,7 @@ export async function discoverWebsitePaths(options: DiscoveryOptions): Promise<W
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1000 || options.timeoutMs > 10_000) throw new Error("单项超时必须在 1–10 秒之间。");
   options.signal.throwIfAborted();
   const candidates = new Map<string, Set<PathDiscoverySource>>();
+  const resourceUrls = new Set<string>();
   const states = Object.fromEntries(PATH_DISCOVERY_SOURCES.map(({ id }) => [id,
     { completed: 0, succeeded: 0, partial: false, messages: new Set<string>() }])) as Record<PathDiscoverySource, SourceState>;
   const queue: CrawlJob[] = [];
@@ -99,7 +104,17 @@ export async function discoverWebsitePaths(options: DiscoveryOptions): Promise<W
     if (!options.signal.aborted) options.onProgress?.({ phase: "discovering", completed: crawlCompleted + Number(archiveCompleted),
       total: queue.length + 1, discovered: candidates.size });
   }
-  function collect(candidate: PathCandidate) {
+  function ignoreResource(url: string, touched?: Set<PathDiscoverySource>) {
+    candidates.get(url)?.forEach(source => touched?.add(source));
+    resourceUrls.add(url);
+    candidates.delete(url);
+  }
+  function collect(candidate: PathCandidate, touched?: Set<PathDiscoverySource>) {
+    if (candidate.kind !== "page" || pathResourceKind(candidate.url)) {
+      ignoreResource(candidate.url, touched);
+      return true;
+    }
+    if (resourceUrls.has(candidate.url)) return false;
     const provenance = new Set([candidate.source, ...candidate.sources ?? []]);
     const existing = candidates.get(candidate.url);
     if (existing) { provenance.forEach(source => existing.add(source)); return true; }
@@ -134,11 +149,13 @@ export async function discoverWebsitePaths(options: DiscoveryOptions): Promise<W
     if (result.status === "partial") state.partial = true;
     if (result.message) state.messages.add(result.message);
     const touched = new Set<PathDiscoverySource>([result.source]);
+    for (const url of result.ignoredUrls ?? []) ignoreResource(url, touched);
     for (const candidate of result.candidates) {
       touched.add(candidate.source);
       candidate.sources?.forEach(source => touched.add(source));
-      if (!collect(candidate) || !crawl || candidate.kind === "asset") continue;
-      const source = candidate.kind === "script" ? "scripts" : candidate.kind === "sitemap" ? "sitemap" : "links";
+      const kind = candidate.kind === "page" ? pathResourceKind(candidate.url) ?? "page" : candidate.kind;
+      if (!collect(candidate, touched) || !crawl || kind === "asset") continue;
+      const source = kind === "script" ? "scripts" : kind === "sitemap" ? "sitemap" : "links";
       // Nested sitemap indexes have their own document cap; they do not consume page depth.
       enqueue({ url: candidate.url, source, depth: source === "sitemap" ? 0 : depth + 1,
         ...(source === "scripts" ? { documentUrl: candidate.documentUrl ?? (result.source === "links" ? result.url : documentUrl ?? baseUrl) } : {}) });
@@ -149,7 +166,10 @@ export async function discoverWebsitePaths(options: DiscoveryOptions): Promise<W
 
   collect({ url: baseUrl, source: "links", kind: "page" });
   collect({ url: `${origin}/`, source: "links", kind: "page" });
-  enqueue({ url: baseUrl, source: "links", depth: 0 });
+  const entryResourceKind = pathResourceKind(baseUrl);
+  if (entryResourceKind === "script") enqueue({ url: baseUrl, source: "scripts", documentUrl: `${origin}/`, depth: 0 });
+  else if (entryResourceKind === "asset" && /\.xml(?:\.gz)?$/i.test(decodeURIComponent(new URL(baseUrl).pathname))) enqueue({ url: baseUrl, source: "sitemap", depth: 0 });
+  else if (!entryResourceKind) enqueue({ url: baseUrl, source: "links", depth: 0 });
   enqueue({ url: `${origin}/`, source: "links", depth: 0 });
   enqueue({ url: `${origin}/robots.txt`, source: "robots", depth: 0 });
   enqueue({ url: `${origin}/sitemap.xml`, source: "sitemap", depth: 0 });
@@ -213,6 +233,6 @@ export async function discoverWebsitePaths(options: DiscoveryOptions): Promise<W
 
 export function exportDiscoveredWebsitePathsCsv(results: DiscoveredWebsitePathResult[]) {
   return formatScanCsv(["url", "discovery_sources", "status", "http_status", "title", "content_length", "redirect_location", "possible_soft_404", "message"],
-    results.map(result => [result.url, result.sources.join("; "), result.status, result.statusCode, result.title, result.contentLength,
+    results.filter(result => !pathResourceKind(result.url)).map(result => [result.url, result.sources.join("; "), result.status, result.statusCode, result.title, result.contentLength,
       result.location, Boolean(result.soft404), result.message]));
 }
