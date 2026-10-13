@@ -252,7 +252,7 @@ async function importEvmSecret(
 ) {
   await user.click(screen.getByRole("button", { name: /导入钱包/ }));
   const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
-  await user.type(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), secret);
+  fireEvent.input(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), { target: { value: secret } });
   await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 

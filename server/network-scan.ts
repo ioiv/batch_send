@@ -4,7 +4,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
-import type { SubdomainDiscoveryResult, SubdomainDiscoverySource } from "./subdomain-discovery.js";
+import type { SubdomainDiscoveryOptions, SubdomainDiscoveryResult, SubdomainDiscoverySource } from "./subdomain-discovery.js";
 import type { WebsitePathDiscoveryResult, WebsitePathDiscoverySource } from "./website-path-discovery.js";
 
 export interface SubdomainScanResult {
@@ -56,6 +56,8 @@ export const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_URL_LENGTH = 2048;
 const DEFAULT_TIMEOUT_MS = 5000;
 const NOT_FOUND_CODES = new Set(["ENOTFOUND", "ENODATA"]);
+const CONNECTION_FAILURE_CODES = new Set(["ENETUNREACH", "EHOSTUNREACH", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"]);
+const MAX_CONNECTION_ATTEMPTS = 3;
 
 class ValidationError extends Error {
   constructor(message: string, readonly statusCode = 400) { super(message); }
@@ -63,6 +65,11 @@ class ValidationError extends Error {
 
 class ScanFailure extends Error {
   constructor(readonly reason: "timeout" | "dns" | "private" | "request") { super(reason); }
+}
+
+/** Only failures before HTTP headers arrive may switch to another already vetted address. */
+class ConnectionFailure extends ScanFailure {
+  constructor() { super("request"); }
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -163,8 +170,10 @@ export function validateScanPayload(payload: unknown): NetworkScanPayload {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new ValidationError("请求格式无效");
   const input = payload as Record<string, unknown>;
   const discovery = input.kind === "subdomain-discovery" || input.kind === "path-discovery";
-  const timeoutMs = discovery ? (input.timeoutMs === undefined ? 20000 : input.timeoutMs) : timeoutValue(input.timeoutMs);
-  if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > (discovery ? 20000 : 10000)) throw new ValidationError("发现来源超时必须在 1000–20000 毫秒之间");
+  const pentesttools = input.kind === "subdomain-discovery" && input.source === "pentesttools";
+  const discoveryTimeoutMs = pentesttools ? 120000 : 20000;
+  const timeoutMs = discovery ? (input.timeoutMs === undefined ? discoveryTimeoutMs : input.timeoutMs) : timeoutValue(input.timeoutMs);
+  if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > (discovery ? discoveryTimeoutMs : 10000)) throw new ValidationError(`发现来源超时必须在 1000–${discoveryTimeoutMs} 毫秒之间`);
   const allowed = input.kind === "path-discovery" ? ["kind", "baseUrl", "url", "documentUrl", "source", "timeoutMs"] : discovery ? ["kind", "domain", "source", "timeoutMs"] : input.kind === "subdomain" ? ["kind", "domain", "timeoutMs"] : ["kind", "url", "timeoutMs"];
   if (Object.keys(input).some((key) => !allowed.includes(key))) throw new ValidationError("请求包含不支持的字段");
   if (input.kind === "path-discovery" && typeof input.baseUrl === "string" && typeof input.url === "string" && typeof input.source === "string" && ["links", "scripts", "robots", "sitemap", "wayback"].includes(input.source)) {
@@ -182,7 +191,7 @@ export function validateScanPayload(payload: unknown): NetworkScanPayload {
     url.search = "";
     return { kind: "path-discovery", baseUrl: baseUrl.href, url: url.href, ...(documentUrl ? { documentUrl: documentUrl.href } : {}), source: input.source as WebsitePathDiscoverySource, timeoutMs };
   }
-  if (input.kind === "subdomain-discovery" && typeof input.domain === "string" && typeof input.source === "string" && ["crtsh", "certspotter", "hackertarget", "dns", "website", "wayback"].includes(input.source)) {
+  if (input.kind === "subdomain-discovery" && typeof input.domain === "string" && typeof input.source === "string" && ["subdomaincenter", "certspotter", "hackertarget", "dns", "common", "website", "anubis", "pentesttools", "certkit"].includes(input.source)) {
     return { kind: "subdomain-discovery", domain: normalizeDomain(input.domain), source: input.source as SubdomainDiscoverySource, timeoutMs };
   }
   if (input.kind === "subdomain" && typeof input.domain === "string") return { kind: "subdomain", domain: normalizeDomain(input.domain), timeoutMs };
@@ -212,10 +221,18 @@ async function resolvePublicAddresses(hostname: string, timeoutMs: number, depen
     return { addresses: [hostname] };
   }
   const resolver = dependencies.createResolver();
+  let cancelled = false;
+  // resolver.cancel() releases the handle; a timeout, an abort and the finally block
+  // can all fire, so every path shares one guarded cancel.
+  const cancelResolver = () => {
+    if (cancelled) return;
+    cancelled = true;
+    try { resolver.cancel(); } catch { /* Cancelling an already finished resolver is not a scan failure. */ }
+  };
   try {
     const answers = await withTimeout(Promise.allSettled([
       resolver.resolve4(hostname), resolver.resolve6(hostname), ...(includeCname ? [resolver.resolveCname(hostname)] : [])
-    ]), timeoutMs, () => resolver.cancel(), signal);
+    ]), timeoutMs, cancelResolver, signal);
     const addresses = [...new Set(answers.slice(0, 2).flatMap((answer) => answer.status === "fulfilled" ? answer.value : []))];
     if (addresses.length > 64 || addresses.some((address) => !isIP(address))) throw new ScanFailure("dns");
     let privateRecords = addresses.some((address) => !isPublicIp(address));
@@ -235,7 +252,7 @@ async function resolvePublicAddresses(hostname: string, timeoutMs: number, depen
       }
     }
     return { addresses, ...(cname ? { cname } : {}), ...(privateRecords ? { privateRecords: true } : {}) };
-  } finally { resolver.cancel(); }
+  } finally { cancelResolver(); }
 }
 
 export async function scanSubdomain(domainInput: string, timeoutMs = DEFAULT_TIMEOUT_MS, dependencies = defaults, signal?: AbortSignal): Promise<SubdomainScanResult> {
@@ -256,6 +273,16 @@ function responseTitle(body: Buffer): string | undefined {
     .replace(/\s+/g, " ").trim().slice(0, 200) || undefined;
 }
 
+/** Server-controlled transport options; browser scan payloads cannot supply them. */
+export interface PublicDocumentOptions {
+  timeoutMs: number;
+  maxBytes: number;
+  signal?: AbortSignal;
+  headers?: Readonly<Record<string, string>>;
+  method?: "GET" | "POST";
+  body?: string;
+}
+
 export interface PublicDocumentResult {
   url: string;
   statusCode: number;
@@ -265,9 +292,10 @@ export interface PublicDocumentResult {
   contentType?: string;
   contentEncoding?: string;
   location?: string;
+  setCookies?: string[];
 }
 
-function getResponse(url: URL, addresses: string[], timeoutMs: number, dependencies: NetworkScanDependencies, signal?: AbortSignal, maxBytes = MAX_RESPONSE_BYTES): Promise<PublicDocumentResult> {
+function getResponseAtAddress(url: URL, address: string, timeoutMs: number, dependencies: NetworkScanDependencies, signal?: AbortSignal, maxBytes = MAX_RESPONSE_BYTES, headers?: Readonly<Record<string, string>>, method: "GET" | "POST" = "GET", requestBody?: string): Promise<PublicDocumentResult> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   return new Promise((resolve, reject) => {
     let request: ClientRequest | undefined;
@@ -276,6 +304,7 @@ function getResponse(url: URL, addresses: string[], timeoutMs: number, dependenc
     let byteLength = 0;
     const chunks: Buffer[] = [];
     const timer = setTimeout(() => fail(new ScanFailure("timeout")), Math.max(1, timeoutMs));
+    let onAbort: () => void = () => undefined;
     const cleanup = () => {
       clearTimeout(timer);
       response?.removeListener("data", onData);
@@ -283,6 +312,8 @@ function getResponse(url: URL, addresses: string[], timeoutMs: number, dependenc
       response?.removeListener("aborted", onAborted);
       response?.removeListener("close", onClose);
       signal?.removeEventListener("abort", onAbort);
+      // destroy() can emit a later request error (for example ECONNRESET before
+      // headers arrive). Keep its listener; fail() ignores errors after settling.
     };
     const fail = (error: unknown) => {
       if (settled) return;
@@ -302,10 +333,11 @@ function getResponse(url: URL, addresses: string[], timeoutMs: number, dependenc
       const location = typeof response.headers.location === "string" ? response.headers.location.slice(0, MAX_URL_LENGTH) : undefined;
       const contentType = typeof response.headers["content-type"] === "string" ? response.headers["content-type"].slice(0, 200) : undefined;
       const contentEncoding = typeof response.headers["content-encoding"] === "string" ? response.headers["content-encoding"].slice(0, 100) : undefined;
+      const setCookies = response.headers["set-cookie"];
       resolve({
         url: url.href, statusCode: response.statusCode ?? 0, body, truncated,
         ...(contentType ? { contentType } : {}), ...(contentEncoding ? { contentEncoding } : {}), ...(Number.isSafeInteger(contentLength) ? { contentLength } : {}),
-        ...(location ? { location } : {})
+        ...(location ? { location } : {}), ...(setCookies?.length ? { setCookies: [...setCookies] } : {})
       });
       // Destroy immediately after the bounded sample; never download the rest or follow a redirect.
       response.destroy();
@@ -319,17 +351,18 @@ function getResponse(url: URL, addresses: string[], timeoutMs: number, dependenc
       if (byteLength === maxBytes) finish(true);
     };
     const onAborted = () => fail(new ScanFailure("request"));
-    const onAbort = () => fail(new ScanFailure("request"));
+    onAbort = () => fail(new ScanFailure("request"));
     const onClose = () => { if (!response?.complete) fail(new ScanFailure("request")); };
+    const onRequestError = (error: unknown) => fail(!response && CONNECTION_FAILURE_CODES.has(errorCode(error) ?? "") ? new ConnectionFailure() : new ScanFailure("request"));
     try {
       if (signal?.aborted) { onAbort(); return; }
       signal?.addEventListener("abort", onAbort, { once: true });
       request = dependencies.request(url.protocol as "http:" | "https:", {
-        protocol: url.protocol, hostname, method: "GET", path: `${url.pathname}${url.search}`, agent: false,
+        protocol: url.protocol, hostname, family: isIP(address), method, path: `${url.pathname}${url.search}`, agent: false,
         ...(isIP(hostname) ? {} : { servername: hostname }),
-        headers: { "User-Agent": "ToolboxNetworkScanner/1.0", Accept: "text/html,application/xhtml+xml,*/*;q=0.5", "Accept-Encoding": "identity" },
+        headers: { "User-Agent": "ToolboxNetworkScanner/1.0", Accept: "text/html,application/xhtml+xml,*/*;q=0.5", "Accept-Encoding": "identity", ...headers },
         lookup: (_name, options, callback) => {
-          const selected = addresses.find((address) => !options.family || isIP(address) === options.family);
+          const selected = !options.family || isIP(address) === options.family ? address : undefined;
           if (!selected) { callback(Object.assign(new Error("Address unavailable"), { code: "EAI_NONAME" }), ""); return; }
           if (options.all) callback(null, [{ address: selected, family: isIP(selected) }]);
           else callback(null, selected, isIP(selected));
@@ -343,22 +376,52 @@ function getResponse(url: URL, addresses: string[], timeoutMs: number, dependenc
         response.once("close", onClose);
         response.on("error", () => fail(new ScanFailure("request")));
       });
-      request.on("error", () => fail(new ScanFailure("request")));
-      request.end();
+      request.on("error", onRequestError);
+      request.end(requestBody);
     } catch { fail(new ScanFailure("request")); }
   });
 }
 
-/** Public-only pinned transport shared by path probes and passive discovery sources. */
-export async function fetchPublicDocument(urlInput: string, options: { timeoutMs: number; maxBytes: number; signal?: AbortSignal }, dependencies = defaults): Promise<PublicDocumentResult> {
+async function getResponse(url: URL, addresses: string[], deadline: number, dependencies: NetworkScanDependencies, signal?: AbortSignal, maxBytes = MAX_RESPONSE_BYTES, headers?: Readonly<Record<string, string>>, method: "GET" | "POST" = "GET", requestBody?: string): Promise<PublicDocumentResult> {
+  if (addresses.some((address) => !isPublicIp(address))) throw new ScanFailure("private");
+  const families = [addresses.filter((address) => isIP(address) === 4), addresses.filter((address) => isIP(address) === 6)];
+  // Prefer IPv4 whenever it exists: dual-stack hosts with broken IPv6 connectivity would
+  // otherwise spend the whole budget before the reachable family is tried.
+  if (!families[0].length || (families[1].length && isIP(addresses[0] ?? "") === 6)) families.reverse();
+  const candidates: string[] = [];
+  for (let index = 0; candidates.length < MAX_CONNECTION_ATTEMPTS; index += 1) {
+    const next = families.flatMap((family) => family[index] ? [family[index]] : []);
+    if (!next.length) break;
+    candidates.push(...next.slice(0, MAX_CONNECTION_ATTEMPTS - candidates.length));
+  }
+  if (!candidates.length) throw new ScanFailure("dns");
+  for (const address of candidates) {
+    if (signal?.aborted) throw new ScanFailure("request");
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ScanFailure("timeout");
+    try { return await getResponseAtAddress(url, address, remaining, dependencies, signal, maxBytes, headers, method, requestBody); }
+    // POST may already have created a remote job even if headers never arrived.
+    catch (error) { if (method === "POST" || !(error instanceof ConnectionFailure)) throw error; }
+  }
+  throw new ScanFailure("request");
+}
+
+/** Public-only pinned transport shared by path probes and discovery sources. */
+export async function fetchPublicDocument(urlInput: string, options: PublicDocumentOptions, dependencies = defaults): Promise<PublicDocumentResult> {
   const url = normalizeUrl(urlInput);
   if (!Number.isInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 4 * 1024 * 1024 || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 20000) throw new ValidationError("读取限制无效");
+  const method = options.method ?? "GET";
+  if ((method !== "GET" && method !== "POST") || (options.body !== undefined && (method !== "POST" || typeof options.body !== "string" || Buffer.byteLength(options.body) > MAX_PAYLOAD_BYTES))) throw new ValidationError("请求方法或正文无效");
+  const headers = method === "POST" ? {
+    ...Object.fromEntries(Object.entries(options.headers ?? {}).filter(([name]) => name.toLowerCase() !== "content-length")),
+    "Content-Length": String(Buffer.byteLength(options.body ?? ""))
+  } : options.headers;
   const deadline = Date.now() + options.timeoutMs;
   const { addresses } = await resolvePublicAddresses(url.hostname.replace(/^\[|\]$/g, ""), options.timeoutMs, dependencies, false, options.signal);
   if (!addresses.length) throw new ScanFailure("dns");
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new ScanFailure("timeout");
-  return getResponse(url, addresses, remaining, dependencies, options.signal, options.maxBytes);
+  return getResponse(url, addresses, deadline, dependencies, options.signal, options.maxBytes, headers, method, options.body);
 }
 
 export async function scanWebsitePath(urlInput: string, timeoutMs = DEFAULT_TIMEOUT_MS, dependencies = defaults, signal?: AbortSignal): Promise<PathScanResult> {
@@ -370,7 +433,7 @@ export async function scanWebsitePath(urlInput: string, timeoutMs = DEFAULT_TIME
     if (!addresses.length) throw new ScanFailure("dns");
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScanFailure("timeout");
-    const response = await getResponse(url, addresses, remaining, dependencies, signal);
+    const response = await getResponse(url, addresses, deadline, dependencies, signal);
     const title = responseTitle(response.body);
     return { url: response.url, status: "responded", statusCode: response.statusCode,
       ...(title ? { title } : {}), ...(response.contentLength === undefined ? {} : { contentLength: response.contentLength }),
@@ -459,7 +522,7 @@ function sendJson(response: ServerResponse, statusCode: number, payload: { resul
 }
 
 /** Shared Node handler for Vite middleware and the Vercel serverless entry point. */
-export async function handleNetworkScanRequest(request: ScanRequest, response: ServerResponse): Promise<void> {
+export async function handleNetworkScanRequest(request: ScanRequest, response: ServerResponse, options?: SubdomainDiscoveryOptions): Promise<void> {
   if (request.method !== "POST") {
     response.setHeader("Allow", "POST");
     sendJson(response, 405, { error: "仅支持 POST 请求" });
@@ -479,7 +542,7 @@ export async function handleNetworkScanRequest(request: ScanRequest, response: S
   try {
     const payload = validateScanPayload(await readBody(request, controller.signal));
     const result = payload.kind === "subdomain-discovery"
-      ? await (await import("./subdomain-discovery.js")).discoverSubdomains(payload.domain, payload.source, payload.timeoutMs, undefined, controller.signal)
+      ? await (await import("./subdomain-discovery.js")).discoverSubdomains(payload.domain, payload.source, payload.timeoutMs, undefined, controller.signal, options)
       : payload.kind === "path-discovery" ? await (await import("./website-path-discovery.js")).discoverWebsitePaths(payload.baseUrl, payload.url, payload.source, payload.timeoutMs, undefined, controller.signal, payload.documentUrl)
       : payload.kind === "subdomain" ? await scanSubdomain(payload.domain, payload.timeoutMs, defaults, controller.signal) : await scanWebsitePath(payload.url, payload.timeoutMs, defaults, controller.signal);
     sendJson(response, 200, { result });

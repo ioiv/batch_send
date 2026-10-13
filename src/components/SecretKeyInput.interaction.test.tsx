@@ -8,11 +8,135 @@ import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecretKeyInput, type SecretKeyInputHandle } from "@/components/SecretKeyInput";
 import { buildWalletAssetOverview } from "@/lib/wallet-asset-overview";
+import * as xlsxImport from "@/lib/wallet-xlsx-import";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+function binaryWalletFile(name = "wallets.xlsx") {
+  const file = new File([new Uint8Array([80, 75, 3, 4])], name, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  Object.defineProperty(file, "arrayBuffer", { value: async () => new ArrayBuffer(4) });
+  Object.defineProperty(file, "text", { value: vi.fn(async () => { throw new Error("read as binary"); }) });
+  return file;
+}
+
+describe("Excel private-wallet import", () => {
+  it("previews the selected sheet and imports only that sheet", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const first = `0x${"91".repeat(32)}` as const;
+    const second = `0x${"92".repeat(32)}` as const;
+    const firstAddress = privateKeyToAccount(first).address;
+    const secondAddress = privateKeyToAccount(second).address;
+    vi.spyOn(xlsxImport, "readWalletXlsxFile").mockResolvedValue([
+      { name: "运营钱包", text: `备注,address,private_key\n运营,${firstAddress},${first}` },
+      { name: "备用钱包", text: `private_key\n${second}` }
+    ]);
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    render(<SecretKeyInput mode="evm" ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, binaryWalletFile());
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    const select = await within(dialog).findByRole("combobox", { name: "Excel 工作表" });
+    expect(select).toHaveValue("0");
+    expect(within(dialog).getByLabelText("钱包导入预览")).toHaveTextContent(firstAddress);
+    expect(dialog).toHaveTextContent("当前工作表：运营钱包。只导入当前工作表的内容。");
+    expect(dialog.textContent).not.toContain(first);
+    expect(dialog.textContent).not.toContain(second);
+    await user.selectOptions(select, "1");
+    expect(within(dialog).getByLabelText("钱包导入预览")).toHaveTextContent(secondAddress);
+    expect(within(dialog).getByLabelText("钱包导入预览")).not.toHaveTextContent(firstAddress);
+    expect(ref.current!.read()).toBe("");
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current!.read()).toBe(second);
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    expect(storageWrite).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "继续导入钱包" }));
+    expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+  });
+
+  it("can switch from a header-only sheet and forgets the workbook after a pasted edit", async () => {
+    const user = userEvent.setup();
+    const secret = `0x${"93".repeat(32)}`;
+    vi.spyOn(xlsxImport, "readWalletXlsxFile").mockResolvedValue([{ name: "说明", text: "private_key" }, { name: "钱包", text: `private_key\n${secret}` }]);
+    render(<SecretKeyInput mode="evm" />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, binaryWalletFile());
+    const select = await screen.findByRole("combobox", { name: "Excel 工作表" });
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
+    await user.selectOptions(select, "1");
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeEnabled();
+    fireEvent.input(screen.getByRole("textbox", { name: "粘贴私钥" }), { target: { value: secret } });
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+  });
+
+  it.each(["cancel", "disable", "pagehide", "unmount"])("clears and ignores a late workbook result after %s", async (action) => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const secret = `0x${"94".repeat(32)}`;
+    let resolveRead!: (sheets: { name: string; text: string }[]) => void;
+    vi.spyOn(xlsxImport, "readWalletXlsxFile").mockImplementation(() => new Promise((resolve) => { resolveRead = resolve; }));
+    const onImportingChange = vi.fn();
+    const mounted = render(<SecretKeyInput mode="evm" ref={ref} onImportingChange={onImportingChange} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const draft = screen.getByRole("textbox", { name: "粘贴私钥" }) as HTMLTextAreaElement;
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, binaryWalletFile());
+    expect(onImportingChange).toHaveBeenLastCalledWith(true);
+    if (action === "cancel") await user.click(screen.getByRole("button", { name: "取消" }));
+    else if (action === "disable") mounted.rerender(<SecretKeyInput disabled mode="evm" ref={ref} onImportingChange={onImportingChange} />);
+    else if (action === "pagehide") act(() => window.dispatchEvent(new Event("pagehide")));
+    else mounted.unmount();
+    await act(async () => resolveRead([{ name: "钱包", text: `private_key\n${secret}` }]));
+    expect(draft.value).toBe("");
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("钱包导入预览")).not.toBeInTheDocument();
+    expect(onImportingChange).toHaveBeenLastCalledWith(false);
+    if (action !== "unmount") expect(ref.current!.read()).toBe("");
+  });
+
+  it("clears the loaded workbook when a new file replaces it", async () => {
+    const user = userEvent.setup();
+    const secret = `0x${"95".repeat(32)}`;
+    vi.spyOn(xlsxImport, "readWalletXlsxFile").mockResolvedValue([{ name: "旧钱包", text: `private_key\n${secret}` }]);
+    render(<SecretKeyInput mode="evm" />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    await user.upload(fileInput, binaryWalletFile());
+    await screen.findByRole("combobox", { name: "Excel 工作表" });
+    const textFile = new File(["bad"], "addresses.txt", { type: "text/plain" });
+    Object.defineProperty(textFile, "text", { value: async () => "bad" });
+    await user.upload(fileInput, textFile);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("bad"));
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
+  });
+
+  it.each(["cancel", "disable", "pagehide", "unmount"])("clears a loaded workbook and its detached draft DOM after %s", async (action) => {
+    const user = userEvent.setup();
+    const secret = `0x${"96".repeat(32)}`;
+    vi.spyOn(xlsxImport, "readWalletXlsxFile").mockResolvedValue([{ name: "钱包", text: `private_key\n${secret}` }]);
+    const mounted = render(<SecretKeyInput mode="evm" />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, binaryWalletFile());
+    await screen.findByRole("combobox", { name: "Excel 工作表" });
+    const draft = screen.getByRole("textbox", { name: "粘贴私钥" }) as HTMLTextAreaElement;
+    expect(draft.value).toContain(secret);
+    if (action === "cancel") await user.click(screen.getByRole("button", { name: "取消" }));
+    else if (action === "disable") mounted.rerender(<SecretKeyInput disabled mode="evm" />);
+    else if (action === "pagehide") act(() => window.dispatchEvent(new Event("pagehide")));
+    else mounted.unmount();
+    expect(draft.value).toBe("");
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    if (action === "cancel" || action === "pagehide") {
+      await user.click(screen.getByRole("button", { name: "导入钱包" }));
+      expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+      expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    }
+  });
 });
 
 describe("wallet file drop", () => {
@@ -366,5 +490,106 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     expect(within(walletBrowser).queryByText(/已显示/)).not.toBeInTheDocument();
     expect(within(walletList).getAllByRole("listitem")).toHaveLength(85);
     expect(within(walletBrowser).queryByRole("button", { name: "加载更多钱包" })).not.toBeInTheDocument();
+  });
+});
+
+describe("smart private-wallet import preview", () => {
+  it("shows only public addresses and requires explicit consent to skip invalid rows", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const first = `0x${"77".repeat(32)}` as const;
+    const second = `0x${"78".repeat(32)}` as const;
+    const address = privateKeyToAccount(first).address;
+    const source = `label,address,private_key\nops,${address},${first}\ninvalid,${address},${second}\nduplicate,${address},${first}`;
+    const file = new File([source], "export.csv", { type: "text/csv" });
+    Object.defineProperty(file, "text", { value: async () => source });
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    render(<SecretKeyInput mode="evm" ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, file);
+    await waitFor(() => expect(within(dialog).getByLabelText("钱包导入预览")).toBeVisible());
+    const preview = within(dialog).getByLabelText("钱包导入预览");
+    expect(preview).toHaveTextContent("有效钱包 1");
+    expect(preview).toHaveTextContent("重复 1");
+    expect(preview).toHaveTextContent("问题 1");
+    expect(preview).toHaveTextContent(address);
+    expect(preview.textContent).not.toContain(first);
+    expect(preview.textContent).not.toContain(second);
+    expect(dialog.textContent).toContain("第 3 行 / 条");
+    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue(source);
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
+    expect(ref.current!.read()).toBe("");
+    await user.click(within(dialog).getByRole("checkbox", { name: /仅导入 1 个有效钱包/ }));
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current!.read()).toBe(`ops,${first}`);
+    expect(ref.current!.read()).not.toContain(second);
+    expect(storageWrite).not.toHaveBeenCalled();
+  });
+
+  it("lets the user fix an invalid row and resets permission to skip when content changes", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const first = `0x${"79".repeat(32)}`;
+    const second = `0x${"80".repeat(32)}`;
+    render(<SecretKeyInput mode="evm" ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    const draft = within(dialog).getByRole("textbox", { name: "粘贴私钥" });
+    fireEvent.input(draft, { target: { value: `${first}\nbad` } });
+    await user.click(within(dialog).getByRole("checkbox", { name: /仅导入 1 个有效钱包/ }));
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeEnabled();
+    fireEvent.input(draft, { target: { value: `${first}\nother-bad` } });
+    expect(within(dialog).getByRole("checkbox", { name: /仅导入 1 个有效钱包/ })).not.toBeChecked();
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
+    fireEvent.input(draft, { target: { value: `${first}\n${second}` } });
+    expect(within(dialog).queryByRole("checkbox", { name: /仅导入/ })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current!.read()).toBe(`${first}\n${second}`);
+  });
+
+  it("imports JSON objects through the same preview and preserves safe labels", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const pair = Keypair.fromSeed(new Uint8Array(32).fill(39));
+    const bytes = Array.from(pair.secretKey);
+    const source = JSON.stringify({ wallets: [{ name: "备用钱包", publicKey: pair.publicKey.toBase58(), secretKey: bytes }] });
+    const file = new File([source], "wallets.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => source });
+    render(<SecretKeyInput mode="solana" ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, file);
+    await waitFor(() => expect(within(dialog).getByLabelText("钱包导入预览")).toHaveTextContent(pair.publicKey.toBase58()));
+    expect(within(dialog).getByLabelText("钱包导入预览")).toHaveTextContent("备用钱包");
+    expect(dialog.textContent).not.toContain(JSON.stringify(bytes));
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current!.read()).toBe(`备用钱包,${JSON.stringify(bytes)}`);
+  });
+
+  it.each(["cancel", "disable", "unmount"])("ignores file results after %s", async (action) => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const secret = `0x${"81".repeat(32)}`;
+    let resolveRead!: (value: string) => void;
+    const file = new File([secret], "keys.txt", { type: "text/plain" });
+    Object.defineProperty(file, "text", { value: () => new Promise<string>((resolve) => { resolveRead = resolve; }) });
+    const onImportingChange = vi.fn();
+    const mounted = render(<SecretKeyInput mode="evm" onImportingChange={onImportingChange} ref={ref} />);
+    const secretStore = document.querySelector<HTMLTextAreaElement>(".secret-dom-store")!;
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    const draft = within(dialog).getByRole("textbox", { name: "粘贴私钥" }) as HTMLTextAreaElement;
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, file);
+    expect(onImportingChange).toHaveBeenLastCalledWith(true);
+    if (action === "cancel") await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    else if (action === "disable") mounted.rerender(<SecretKeyInput disabled mode="evm" onImportingChange={onImportingChange} ref={ref} />);
+    else mounted.unmount();
+    await act(async () => resolveRead(secret));
+    expect(secretStore.value).toBe("");
+    expect(draft.value).toBe("");
+    expect(screen.queryByLabelText("钱包导入预览")).not.toBeInTheDocument();
+    expect(onImportingChange).toHaveBeenLastCalledWith(false);
+    if (action !== "unmount") expect(ref.current!.read()).toBe("");
   });
 });

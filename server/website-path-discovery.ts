@@ -3,13 +3,16 @@ import { createBrotliDecompress, createGunzip, createInflate, constants } from "
 import { pathResourceKind } from "../src/lib/website-path-kind.js";
 
 export type WebsitePathDiscoverySource = "links" | "scripts" | "robots" | "sitemap" | "wayback";
-export type WebsitePathCandidateKind = "page" | "script" | "sitemap" | "asset";
+export type WebsitePathCandidateKind = "page" | "script" | "sitemap" | "asset" | "probe";
+/** Fixed exposure probes are a client-side concern; only these kinds consume document limits. */
+type CountedKind = "page" | "script" | "sitemap";
 export interface WebsitePathCandidate {
   url: string;
   kind: WebsitePathCandidateKind;
   source: WebsitePathDiscoverySource;
   sources?: WebsitePathDiscoverySource[];
   documentUrl?: string;
+  clientRoute?: boolean;
 }
 export interface WebsitePathDiscoveryResult {
   source: WebsitePathDiscoverySource;
@@ -17,6 +20,7 @@ export interface WebsitePathDiscoveryResult {
   status: "success" | "partial" | "error";
   candidates: WebsitePathCandidate[];
   ignoredUrls?: string[];
+  canonicalUrl?: string;
   message?: string;
 }
 export interface WebsitePathDiscoveryDependencies {
@@ -45,7 +49,7 @@ function concreteValue(value: string): boolean {
   try { decoded = decodeURIComponent(value); } catch { return false; }
   return value.length > 0 && value.length <= 2048 && !/[\u0000-\u0020\u007f\\]/.test(value)
     && !/[\u0000-\u001f\u007f\\{}<>]/.test(decoded) && !/\$\{|(^|\/):[a-z_]/i.test(decoded)
-    && !decoded.includes("*") && !/^[#?]/.test(value);
+    && !decoded.includes("*") && decoded !== "/&" && !decoded.split("/").some(part => part === ":" || part === "$") && !/^[#?]/.test(value);
 }
 
 function pathKind(url: string): WebsitePathCandidateKind {
@@ -57,10 +61,10 @@ class CandidateCollector {
   readonly ignoredUrls = new Set<string>();
   ignoredUrlsCapped = false;
   readonly counts = { page: 0, script: 0, sitemap: 0 };
-  readonly cappedKinds = new Set<"page" | "script" | "sitemap">();
+  readonly cappedKinds = new Set<CountedKind>();
   capped = false;
   constructor(readonly origin: string, readonly source: WebsitePathDiscoverySource) {}
-  add(value: string, documentUrl: URL, kind?: WebsitePathCandidateKind, ownerDocument?: URL, observedSource = this.source): void {
+  add(value: string, documentUrl: URL, kind?: WebsitePathCandidateKind, ownerDocument?: URL, observedSource = this.source, clientRoute = false): void {
     // Queries and fragments are intentionally not scanned; their templates/tracking must not discard an observed concrete pathname.
     const raw = value.trim().split(/[?#]/, 1)[0];
     if (!concreteValue(raw)) return;
@@ -71,6 +75,7 @@ class CandidateCollector {
     url.hash = "";
     try { normalizeUrl(url.href); } catch { return; }
     const candidate: WebsitePathCandidate = { url: url.href, kind: kind === "page" || kind === undefined ? pathKind(url.href) : kind, source: observedSource };
+    if (clientRoute && candidate.kind === "page") candidate.clientRoute = true;
     if (candidate.kind === "script" && ownerDocument) {
       if (ownerDocument.origin !== this.origin || ownerDocument.username || ownerDocument.password || ownerDocument.port) candidate.kind = "asset";
       else {
@@ -95,6 +100,7 @@ class CandidateCollector {
     if (this.ignoredUrls.has(url.href)) return;
     const existing = this.candidates.get(url.href);
     if (existing) {
+      if (candidate.clientRoute && existing.kind === "page") existing.clientRoute = true;
       const sources = new Set(existing.sources ?? [existing.source]);
       sources.add(candidate.source);
       if (sources.size > 1) existing.sources = [...sources];
@@ -102,21 +108,23 @@ class CandidateCollector {
       if (candidate.kind === "sitemap" || (candidate.kind === "script" && existing.kind !== "sitemap")) {
         if (existing.kind !== candidate.kind) {
           const limit = candidate.kind === "script" ? 40 : 20;
-          if (this.counts[candidate.kind] >= limit) {
-            this.cappedKinds.add(candidate.kind);
-            this.counts[existing.kind as "page" | "script" | "sitemap"]--;
+          const candidateKind = candidate.kind as CountedKind;
+          if (this.counts[candidateKind] >= limit) {
+            this.cappedKinds.add(candidateKind);
+            this.counts[existing.kind as CountedKind]--;
             this.candidates.delete(url.href);
             return;
           }
-          this.counts[existing.kind as "page" | "script" | "sitemap"]--;
-          this.counts[candidate.kind]++;
+          this.counts[existing.kind as CountedKind]--;
+          this.counts[candidateKind]++;
         }
         existing.kind = candidate.kind;
+        delete existing.clientRoute;
         if (candidate.documentUrl) existing.documentUrl = candidate.documentUrl;
       }
       return;
     }
-    const candidateKind = candidate.kind;
+    const candidateKind = candidate.kind as CountedKind;
     const limit = candidateKind === "page" ? MAX_PATH_DISCOVERY_CANDIDATES : candidateKind === "script" ? 40 : 20;
     if (this.counts[candidateKind] >= limit) { this.cappedKinds.add(candidateKind); if (candidateKind === "page") this.capped = true; return; }
     this.candidates.set(url.href, candidate);
@@ -141,6 +149,7 @@ interface Context {
   dependencies: WebsitePathDiscoveryDependencies;
   warnings: Set<string>;
   note?: string;
+  canonicalUrl?: string;
 }
 
 async function readDocument(context: Context, url: URL): Promise<PublicDocumentResult> {
@@ -212,11 +221,252 @@ function decodeJsLiteral(literal: string): string | undefined {
   } catch { return; }
 }
 
-const JS_LITERAL = /\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)|"(?:\\[\s\S]|[^"\\\r\n])*"|'(?:\\[\s\S]|[^'\\\r\n])*'|`(?:\\[\s\S]|[^`\\])*`/g;
+interface JavascriptToken { 0: string; index: number; comment: boolean }
+/** A static lexer keeps nested template literals from shifting every subsequent string boundary. */
+function javascriptTokens(text: string): JavascriptToken[] {
+  const tokens: JavascriptToken[] = [];
+  const commentEnd = (start: number) => text[start + 1] === "/" ? (() => {
+    const end = text.indexOf("\n", start + 2); return end < 0 ? text.length : end;
+  })() : (() => { const end = text.indexOf("*/", start + 2); return end < 0 ? text.length : end + 2; })();
+  const regexStart = (start: number) => {
+    const previous = text.slice(Math.max(0, start - 60), start).trimEnd();
+    return !previous || /[=(:,!&|?;\[{]$/.test(previous) || /\b(?:return|throw|case|yield|void|typeof|delete)\s*$/.test(previous);
+  };
+  const regexEnd = (start: number) => {
+    let characterClass = false;
+    for (let index = start + 1; index < text.length; index++) {
+      if (text[index] === "\\") { index++; continue; }
+      if (text[index] === "\n" || text[index] === "\r") return start + 1;
+      if (text[index] === "[") characterClass = true;
+      else if (text[index] === "]") characterClass = false;
+      else if (text[index] === "/" && !characterClass) {
+        index++;
+        while (/[a-z]/i.test(text[index] ?? "") && index < text.length) index++;
+        return index;
+      }
+    }
+    return start + 1;
+  };
+  const quotedEnd = (start: number, level: number): number => {
+    if (level > 32) return text.length;
+    const quote = text[start];
+    let index = start + 1;
+    while (index < text.length) {
+      if (text[index] === "\\") { index += 2; continue; }
+      if (text[index] === quote) return index + 1;
+      if (quote !== "`" && /[\r\n]/.test(text[index])) return index;
+      if (quote === "`" && text[index] === "$" && text[index + 1] === "{") {
+        index += 2;
+        let braces = 1;
+        while (index < text.length && braces) {
+          const current = text[index];
+          if (["'", '"', "`"].includes(current)) { index = quotedEnd(index, level + 1); continue; }
+          if (current === "/" && ["/", "*"].includes(text[index + 1])) { index = commentEnd(index); continue; }
+          if (current === "/" && regexStart(index)) { index = regexEnd(index); continue; }
+          if (current === "{") braces++;
+          else if (current === "}") braces--;
+          index++;
+        }
+        continue;
+      }
+      index++;
+    }
+    return index;
+  };
+  for (let index = 0; index < text.length;) {
+    const current = text[index];
+    const comment = current === "/" && ["/", "*"].includes(text[index + 1]);
+    const regex = current === "/" && !comment && regexStart(index);
+    if (comment || regex || ["'", '"', "`"].includes(current)) {
+      const end = comment ? commentEnd(index) : regex ? regexEnd(index) : quotedEnd(index, 0);
+      tokens.push({ 0: text.slice(index, end), index, comment: comment || regex });
+      index = Math.max(index + 1, end);
+    } else index++;
+  }
+  return tokens;
+}
+function maskJavascriptTokens(text: string, tokens: JavascriptToken[], commentsOnly = false): string {
+  const parts: string[] = [];
+  let offset = 0;
+  for (const token of tokens) {
+    if (commentsOnly && !token.comment) continue;
+    parts.push(text.slice(offset, token.index), token[0].replace(/[^\r\n]/g, " "));
+    offset = token.index + token[0].length;
+  }
+  parts.push(text.slice(offset));
+  return parts.join("");
+}
+const JS_IDENTIFIER = "[a-zA-Z_$][\\w$]*";
+function escapePattern(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function closingDelimiter(syntax: string, start: number, open: string, close: string): number {
+  let depth = 0;
+  for (let index = start; index < syntax.length; index++) {
+    if (syntax[index] === open) depth++;
+    else if (syntax[index] === close && --depth === 0) return index;
+  }
+  return -1;
+}
+
+/** Resolve only route templates backed by a literal prefix, a simple navigation helper and published parameter values. */
+function extractClientRouteManifests(context: Context, code: string, ownerBase: URL, tokens: JavascriptToken[]): void {
+  const deadline = Math.min(context.deadline, Date.now() + 300);
+  const withinBudget = () => {
+    if (Date.now() < deadline && !context.signal.aborted) return true;
+    context.warnings.add("达到静态前端路由解析时间上限，已保留解析结果");
+    return false;
+  };
+  const allLiterals = tokens.filter(match => !match.comment);
+  const literals = allLiterals.slice(0, 20000);
+  if (allLiterals.length > literals.length) context.warnings.add("达到静态前端路由字符串读取上限，已保留解析结果");
+  const syntax = maskJavascriptTokens(code, tokens);
+  const scopeDepth = new Uint16Array(syntax.length + 1);
+  let depth = 0;
+  for (let index = 0; index < syntax.length; index++) {
+    scopeDepth[index] = depth;
+    if (syntax[index] === "{") depth++;
+    else if (syntax[index] === "}") depth = Math.max(0, depth - 1);
+  }
+  const constants = new Map<string, Set<string>>();
+  for (const match of literals) {
+    if (!withinBudget()) return;
+    const value = decodeJsLiteral(match[0]);
+    if (value === undefined) continue;
+    const assignment = new RegExp(`(?:^|[;,{}]|\\b(?:const|let|var))\\s*(${JS_IDENTIFIER})\\s*=\\s*$`).exec(code.slice(Math.max(0, match.index! - 100), match.index));
+    if (!assignment || scopeDepth[match.index!] !== 0 || !/^\s*[,;})]/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
+    const values = constants.get(assignment[1]) ?? new Set<string>();
+    values.add(value);
+    constants.set(assignment[1], values);
+  }
+  const prefixValue = (binding: string) => {
+    const values = constants.get(binding);
+    if (values?.size !== 1) return;
+    const writes = [...syntax.matchAll(new RegExp(`\\b${escapePattern(binding)}\\s*=(?!=)`, "g"))].filter(match => scopeDepth[match.index!] === 0);
+    return writes.length === 1 ? [...values][0] : undefined;
+  };
+  const routes: { prefix: string; key: string }[] = [];
+  const routeKeys = new Set<string>();
+  for (const match of literals) {
+    if (!withinBudget()) return;
+    if (!/\bpath\s*:\s*$/.test(code.slice(Math.max(0, match.index! - 35), match.index))) continue;
+    const contents = match[0].slice(1, -1);
+    const template = /^\$\{([a-zA-Z_$][\w$]*)\}(\/[^${}]*)\/:([a-zA-Z_][\w]*)$/.exec(contents)
+      ?? /^\$\{([a-zA-Z_$][\w$]*)\}()\/:([a-zA-Z_][\w]*)$/.exec(contents);
+    const direct = /^([^${}]*)\/:([a-zA-Z_][\w]*)$/.exec(contents);
+    const prefix = template ? prefixValue(template[1]) : direct?.[1];
+    if (prefix === undefined) continue;
+    const resolved = `${prefix}${template?.[2] ?? ""}`.replace(/\/$/, "");
+    if (!resolved.startsWith("/") || !concreteValue(resolved || "/")) continue;
+    const key = template?.[3] ?? direct![2];
+    if (routeKeys.has(`${resolved}:${key}`)) continue;
+    if (routes.length === 20) { context.warnings.add("达到静态前端路由清单读取上限，已保留解析结果"); break; }
+    routeKeys.add(`${resolved}:${key}`);
+    routes.push({ prefix: resolved, key });
+  }
+  for (const route of routes) {
+    if (!withinBudget()) return;
+    let helper: string | undefined;
+    for (const match of literals) {
+      if (!withinBudget()) return;
+      if (match[0][0] !== "`") continue;
+      const before = code.slice(Math.max(0, match.index! - 160), match.index);
+      const declaration = new RegExp(`\\bfunction\\s+(${JS_IDENTIFIER})\\s*\\(\\s*(${JS_IDENTIFIER})\\s*\\)\\s*\\{\\s*return\\s*$`).exec(before);
+      if (!declaration || !/^\s*;?\s*}/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
+      const contents = match[0].slice(1, -1);
+      const variable = new RegExp(`^\\$\\{(${JS_IDENTIFIER})\\}/\\$\\{${escapePattern(declaration[2])}\\}$`).exec(contents);
+      const literal = contents.endsWith(`/\${${declaration[2]}}`) ? contents.slice(0, -(`/\${${declaration[2]}}`.length)) : undefined;
+      const helperPrefix = variable ? prefixValue(variable[1]) : literal;
+      if (helperPrefix?.replace(/\/$/, "") !== route.prefix) continue;
+      const navigation = new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(declaration[1])}\\s*\\(\\s*${JS_IDENTIFIER}\\.${escapePattern(route.key)}\\s*\\)`);
+      if (navigation.test(code)) { helper = declaration[1]; break; }
+    }
+    if (!helper) continue;
+    // Restrict values to an actual array consumed by the navigation map. Unrelated slug objects are not route declarations.
+    const arrayPattern = new RegExp(`(?:^|[;,{}]|\\b(?:const|let|var))\\s*(${JS_IDENTIFIER})\\s*=\\s*\\[`, "g");
+    let arrays = 0;
+    for (const array of syntax.matchAll(arrayPattern)) {
+      if (!withinBudget()) return;
+      const start = array.index! + array[0].lastIndexOf("[");
+      if (scopeDepth[start] !== 0) continue;
+      const end = closingDelimiter(syntax, start, "[", "]");
+      if (end < 0) continue;
+      let cursor = start + 1;
+      let braces = 0;
+      let arraysDepth = 0;
+      let parentheses = 0;
+      const keyPattern = new RegExp(`\\b${escapePattern(route.key)}\\s*:\\s*$`);
+      const values = literals.filter(match => {
+        if (match.index! <= start || match.index! >= end) return false;
+        for (; cursor < match.index!; cursor++) {
+          const character = syntax[cursor];
+          if (character === "{") braces++; else if (character === "}") braces--;
+          else if (character === "[") arraysDepth++; else if (character === "]") arraysDepth--;
+          else if (character === "(") parentheses++; else if (character === ")") parentheses--;
+        }
+        return braces === 1 && arraysDepth === 0 && parentheses === 0 && keyPattern.test(code.slice(Math.max(start, match.index! - 80), match.index));
+      });
+      if (!values.length) continue;
+      if (++arrays > 32) { context.warnings.add("达到静态前端路由数组读取上限，已保留解析结果"); break; }
+      const aliases = new Set([array[1]]);
+      const groupedAliases = new Set<string>();
+      for (let pass = 0; pass < 4; pass++) {
+        if (!withinBudget()) return;
+        const size = aliases.size;
+        for (const alias of [...aliases]) {
+          if (!withinBudget()) return;
+          const derived = new RegExp(`\\b(${JS_IDENTIFIER})\\s*=\\s*${escapePattern(alias)}\\.(filter|slice|reduce)\\s*\\(`, "g");
+          for (const match of syntax.matchAll(derived)) {
+            if (aliases.size >= 8) break;
+            if (match[2] === "reduce") {
+              const begin = match.index! + match[0].lastIndexOf("(");
+              const finish = closingDelimiter(syntax, begin, "(", ")");
+              const body = code.slice(begin + 1, finish);
+              const reducer = new RegExp(`^\\s*\\(\\s*${JS_IDENTIFIER}\\s*,\\s*(${JS_IDENTIFIER})\\s*\\)\\s*=>`).exec(body);
+              if (!reducer || !new RegExp(`\\bpages\\s*:\\s*\\[(?:\\.\\.\\.${JS_IDENTIFIER}\\.pages\\s*,\\s*)?${escapePattern(reducer[1])}\\s*\\]`).test(body)
+                || new RegExp(`\\b${escapePattern(reducer[1])}\\s*(?:\\.\\s*${escapePattern(route.key)}\\s*)?=(?!=)`).test(body)) continue;
+              groupedAliases.add(match[1]);
+            }
+            if (groupedAliases.has(alias)) groupedAliases.add(match[1]);
+            aliases.add(match[1]);
+          }
+        }
+        if (aliases.size === size) break;
+      }
+      const rendered = [...aliases].some(alias => {
+        if (!withinBudget()) return false;
+        for (const map of syntax.matchAll(new RegExp(`\\b${escapePattern(alias)}\\.map\\s*\\(`, "g"))) {
+          if (!withinBudget()) return false;
+          const begin = map.index! + map[0].lastIndexOf("(");
+          const finish = closingDelimiter(syntax, begin, "(", ")");
+          const body = code.slice(begin + 1, finish);
+          const callback = new RegExp(`^\\s*\\(?\\s*(${JS_IDENTIFIER})(?:\\s*,\\s*${JS_IDENTIFIER})?\\s*\\)?\\s*=>`).exec(body);
+          if (finish >= 0 && callback && new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(helper!)}\\s*\\(\\s*${escapePattern(callback[1])}\\.${escapePattern(route.key)}\\s*\\)`).test(body)) return true;
+          if (finish < 0 || !callback || !groupedAliases.has(alias)) continue;
+          const pagesMap = new RegExp(`\\b${escapePattern(callback[1])}\\.pages\\.map\\s*\\(\\s*\\(?\\s*(${JS_IDENTIFIER})(?:\\s*,\\s*${JS_IDENTIFIER})?\\s*\\)?\\s*=>`, "g");
+          for (const nested of body.matchAll(pagesMap)) {
+            const nestedBegin = begin + 1 + nested.index! + nested[0].indexOf("(");
+            const nestedEnd = closingDelimiter(syntax, nestedBegin, "(", ")");
+            if (nestedEnd >= 0 && new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(helper!)}\\s*\\(\\s*${escapePattern(nested[1])}\\.${escapePattern(route.key)}\\s*\\)`).test(code.slice(nestedBegin, nestedEnd + 1))) return true;
+          }
+        }
+        return false;
+      });
+      if (!rendered) continue;
+      for (const match of values) {
+        const value = decodeJsLiteral(match[0]);
+        if (!value || !concreteValue(value) || /[/?#]/.test(value)) continue;
+        if (!/^\s*[,}]/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
+        context.collector.add(`${route.prefix}/${value}`, ownerBase, "page", undefined, "scripts", true);
+      }
+    }
+  }
+}
+
 function extractJavascript(context: Context, text: string, scriptBase: URL, ownerBase: URL): void {
-  const code = text.replace(JS_LITERAL, (token) => token.startsWith("//") || token.startsWith("/*") ? token.replace(/[^\r\n]/g, " ") : token);
-  for (const match of code.matchAll(JS_LITERAL)) {
-    if (!["'", '"', "`"].includes(match[0][0])) continue;
+  const tokens = javascriptTokens(text);
+  const code = maskJavascriptTokens(text, tokens, true);
+  extractClientRouteManifests(context, code, ownerBase, tokens);
+  for (const match of tokens) {
+    if (match.comment) continue;
     const value = decodeJsLiteral(match[0]);
     if (!value) continue;
     const prefix = code.slice(Math.max(0, match.index! - 140), match.index);
@@ -302,6 +552,19 @@ function extractSitemap(context: Context, text: string, truncated: boolean): voi
 async function discoverDocument(context: Context): Promise<void> {
   const response = await readDocument(context, context.documentUrl);
   if (response.statusCode >= 300 && response.statusCode < 400) {
+    if (response.location && context.source === "links" && context.documentUrl.protocol === "http:") {
+      try {
+        const destination = new URL(response.location, context.documentUrl);
+        destination.search = "";
+        destination.hash = "";
+        if (destination.protocol === "https:" && destination.hostname === context.documentUrl.hostname
+          && !destination.username && !destination.password && !destination.port && concreteValue(destination.pathname)) {
+          context.canonicalUrl = normalizeUrl(destination.href).href;
+          context.note = "网站入口已跳转到同主机 HTTPS 地址";
+          return;
+        }
+      } catch { /* Only a concrete, observed same-host HTTPS upgrade can change the scan scope. */ }
+    }
     if (response.location) context.collector.add(response.location, context.documentUrl, context.source === "scripts" ? "script" : context.source === "sitemap" ? "sitemap" : "page");
     if (!context.collector.candidates.size) throw new SourceFailure("文档重定向至站外或无可用地址");
     context.warnings.add("文档返回重定向，已保留同源跳转地址");
@@ -380,7 +643,7 @@ export async function discoverWebsitePaths(baseInput: string, documentInput: str
   const context: Context = { documentUrl, ownerDocument, source, collector, deadline: Date.now() + timeoutMs, signal: controller.signal, dependencies, warnings: new Set() };
   let onAbort: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = (status: WebsitePathDiscoveryResult["status"], message?: string): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()], ...(collector.ignoredUrls.size ? { ignoredUrls: [...collector.ignoredUrls] } : {}), ...(message ? { message } : {}) });
+  const result = (status: WebsitePathDiscoveryResult["status"], message?: string): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()], ...(collector.ignoredUrls.size ? { ignoredUrls: [...collector.ignoredUrls] } : {}), ...(context.canonicalUrl ? { canonicalUrl: context.canonicalUrl } : {}), ...(message ? { message } : {}) });
   if (signal?.aborted) return result("error", "发现查询已取消");
   const interruption = new Promise<never>((_, reject) => {
     onAbort = () => { controller.abort(); reject(new SourceFailure("发现查询已取消")); };

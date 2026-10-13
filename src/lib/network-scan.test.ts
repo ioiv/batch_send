@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { confirmedExposure } from "./exposure-path";
 import {
   exportPathResultsCsv, normalizeDomain, normalizeWebsiteUrl,
   scanSubdomains, scanWebsitePaths
@@ -128,6 +129,35 @@ describe("network scan execution", () => {
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ url: "https://example.com/catchall", soft404: true }));
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, soft404: false }));
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404, soft404: false }));
+  });
+
+  it("does not claim an exposure when the missing-path comparison failed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const { url } = JSON.parse(String(init.body));
+      return json(url.includes("chainkit-") ? { url, status: "error", message: "请求超时" }
+        : { url, status: "responded", statusCode: 200, fingerprint: "fallback" });
+    }));
+    const onResult = vi.fn();
+    await scanWebsitePaths({ ...options(onResult), baseUrl: "https://example.com/", candidates: ["https://example.com/.env"] });
+    const result = onResult.mock.calls[0][0];
+    expect(result.missingPathBaseline).toBeUndefined();
+    expect(confirmedExposure(result, result.missingPathBaseline)).toBeUndefined();
+  });
+
+  it("measures each response without counting baseline latency or its queue wait", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const { url } = JSON.parse(String(init.body));
+      await new Promise(resolve => setTimeout(resolve, url.includes("chainkit-") ? 1000 : 100));
+      return json({ url, status: "responded", statusCode: 200, fingerprint: url });
+    }));
+    const onResult = vi.fn();
+    const pending = scanWebsitePaths({ ...options(onResult), concurrency: 1, baseUrl: "https://example.com/",
+      candidates: ["https://example.com/first", "https://example.com/second"] });
+    await vi.advanceTimersByTimeAsync(1200);
+    await pending;
+    expect(onResult.mock.calls.map(([result]) => result.durationMs)).toEqual([100, 100]);
+    expect(onResult.mock.calls.every(([result]) => result.missingPathBaseline.statusCode === 200)).toBe(true);
   });
 
   it("bounds concurrency and stops queued work without late callbacks", async () => {

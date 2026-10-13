@@ -354,7 +354,7 @@ describe("importDistributionInput", () => {
 
 describe("importDistributionFileText", () => {
   it("accepts a csv header and preserves one shared amount", () => {
-    expect(importDistributionFileText(`\uFEFFaddress,amount\n${evmAddressOne},0.5\n${evmAddressTwo},0.5`)).toEqual({
+    expect(importDistributionFileText(`\uFEFFaddress,amount\n${evmAddressOne},0.5\n${evmAddressTwo},0.5`)).toMatchObject({
       addresses: `${evmAddressOne}\n${evmAddressTwo}`,
       fixedAmount: "0.5",
       hadAmounts: true,
@@ -372,7 +372,7 @@ describe("importDistributionFileText", () => {
   });
 
   it("reports mixed amounts and truncation without silently changing the first rows", () => {
-    expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo},2`, 1)).toEqual({
+    expect(importDistributionFileText(`${evmAddressOne},1\n${evmAddressTwo},2`, 1)).toMatchObject({
       addresses: evmAddressOne,
       fixedAmount: "1",
       hadAmounts: true,

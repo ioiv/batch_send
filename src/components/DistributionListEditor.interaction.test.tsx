@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DistributionListEditor } from "./DistributionListEditor";
@@ -9,6 +9,13 @@ import { DistributionListGenerator } from "./DistributionListGenerator";
 import type { DistributionAmountMode } from "../lib/distribution-generator";
 
 afterEach(cleanup);
+
+function getAddresses(name = "收款地址") {
+  if (!screen.queryByRole("textbox", { name })) {
+    fireEvent.click(screen.getByText("编辑原始清单", { selector: "summary" }));
+  }
+  return screen.getByRole("textbox", { name });
+}
 
 function ControlledEditor() {
   const [addresses, setAddresses] = useState("");
@@ -50,24 +57,24 @@ describe("DistributionListEditor interactions", () => {
       Object.defineProperty(file, 'text', { value: vi.fn().mockResolvedValue(`${two},${amount}`) }); return file;
     };
     await user.upload(fileInput, makeFile());
-    let dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    let dialog = await screen.findByRole('dialog', { name: '导入收款钱包' });
     expect(within(dialog).getByText('每个地址 0.5 ETH')).toBeVisible();
     await user.click(within(dialog).getByRole('button', { name: '取消' }));
-    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    expect(getAddresses()).toHaveValue(one);
     await user.upload(fileInput, makeFile('0.1'));
-    dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    dialog = await screen.findByRole('dialog', { name: '导入收款钱包' });
     await user.click(within(dialog).getByRole('button', { name: '追加到当前清单' }));
-    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(`${one}\n${two}`);
+    expect(getAddresses()).toHaveValue(`${one}\n${two}`);
     expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.1);
     await user.click(screen.getByRole('button', { name: '撤销导入' }));
-    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    expect(getAddresses()).toHaveValue(one);
     await user.upload(fileInput, makeFile());
-    dialog = await screen.findByRole('dialog', { name: '确认导入收款清单' });
+    dialog = await screen.findByRole('dialog', { name: '导入收款钱包' });
     await user.click(within(dialog).getByRole('button', { name: '替换当前清单' }));
-    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(two);
+    expect(getAddresses()).toHaveValue(two);
     expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.5);
     await user.click(screen.getByRole('button', { name: '撤销导入' }));
-    expect(screen.getByRole('textbox', { name: '收款地址' })).toHaveValue(one);
+    expect(getAddresses()).toHaveValue(one);
     expect(screen.getByRole('spinbutton', { name: '每个地址的金额（ETH）' })).toHaveValue(0.1);
   });
   it("keeps list actions in its heading and exposes regeneration only for random amounts", async () => {
@@ -75,7 +82,7 @@ describe("DistributionListEditor interactions", () => {
     render(
       <DistributionListGenerator addressKind="solana" decimals={9} initialAddresses="11111111111111111111111111111111" onResultChange={() => undefined} symbol="SOL" />
     );
-    for (const name of ["导入 TXT/CSV", "去重", "清空"]) {
+    for (const name of ["去重", "清空"]) {
       expect(screen.getByRole("button", { name }).closest(".distribution-generator__heading")).not.toBeNull();
     }
     expect(screen.queryByRole("button", { name: "重新随机" })).not.toBeInTheDocument();
@@ -95,7 +102,7 @@ describe("DistributionListEditor interactions", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "导入 TXT/CSV" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "导入收款钱包" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Choose File" })).not.toBeInTheDocument();
     expect(document.querySelector('input[type="file"]')).toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector('input[type="file"]')).toHaveAttribute("hidden");
@@ -112,7 +119,7 @@ describe("DistributionListEditor interactions", () => {
       />
     );
 
-    const addresses = screen.getByRole("textbox", { name: "收款地址" });
+    const addresses = getAddresses();
     await user.type(addresses, "11111111111111111111111111111111");
 
     await user.click(screen.getByRole("button", { name: "清空" }));
@@ -134,7 +141,7 @@ describe("DistributionListEditor interactions", () => {
     expect(screen.getByRole("tab", { name: "固定金额" })).toHaveAttribute("aria-controls");
     expect(screen.getByRole("tabpanel")).toBeVisible();
 
-    const addresses = screen.getByRole("textbox", { name: "收款地址" });
+    const addresses = getAddresses();
     await user.type(addresses, "11111111111111111111111111111111");
     expect(addresses).toHaveValue("11111111111111111111111111111111");
 

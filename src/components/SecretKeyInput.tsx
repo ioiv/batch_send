@@ -43,7 +43,10 @@ import {
   type CollectionResultDisplayStatus
 } from "../lib/collection-results";
 import { copyText } from "../lib/clipboard";
-import { readSecretKeyFile, SecretKeyImportError } from "../lib/secret-key-import";
+import {
+  analyzeSecretKeyText, readSecretKeyFile, SecretKeyImportError,
+  type SecretKeyImportPreview, type SecretKeyTextImportResult, type SecretKeyImportSheet
+} from "../lib/secret-key-import";
 import { parseSolanaSourceKeys } from "../lib/sol-collection";
 
 export type SecretKeyInputHandle = {
@@ -386,6 +389,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   const selectedIdsRef = useRef<Set<string>>(new Set());
   const walletListRef = useRef<HTMLDivElement>(null);
   const initialWalletsReadRef = useRef(false);
+  const importPreviewRef = useRef<SecretKeyTextImportResult | null>(null);
+  const workbookSheetsRef = useRef<SecretKeyImportSheet[]>([]);
+  const [workbookSheetNames, setWorkbookSheetNames] = useState<string[]>([]);
+  const [selectedWorkbookSheet, setSelectedWorkbookSheet] = useState(0);
+  const [importPreview, setImportPreview] = useState<SecretKeyImportPreview | null>(null);
+  const [allowPartialImport, setAllowPartialImport] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [draftLineCount, setDraftLineCount] = useState(0);
@@ -408,6 +417,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   disabledRef.current = disabled;
   selectedIdsRef.current = selectedIds;
 
+  const assignDraftElement = useCallback((element: HTMLTextAreaElement | null) => {
+    // React detaches refs before effect cleanup; clear the old DOM node at detachment.
+    if (!element && draftTextareaRef.current) draftTextareaRef.current.value = "";
+    draftTextareaRef.current = element;
+  }, []);
+
   const updateSelectedIds = useCallback((nextSelectedIds: Set<string>) => {
     selectedIdsRef.current = nextSelectedIds;
     setSelectedIds(nextSelectedIds);
@@ -425,6 +440,12 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     setImportActive(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (draftTextareaRef.current) draftTextareaRef.current.value = "";
+    importPreviewRef.current = null;
+    workbookSheetsRef.current = [];
+    setWorkbookSheetNames([]);
+    setSelectedWorkbookSheet(0);
+    setImportPreview(null);
+    setAllowPartialImport(false);
     setDraftLineCount(0);
     setImportIssues([]);
     setFileStatus({ kind: "idle", message: "" });
@@ -501,11 +522,40 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     window.requestAnimationFrame(() => draftTextareaRef.current?.focus());
   };
 
+  const showImportPreview = (analysis: SecretKeyTextImportResult) => {
+    importPreviewRef.current = analysis;
+    const { value: _value, ...publicPreview } = analysis;
+    setImportPreview(publicPreview);
+    setDraftLineCount(analysis.lineCount);
+    setImportIssues(analysis.issues.map((issue) => `第 ${issue.line} 行 / 条：${issue.message}`));
+    setAllowPartialImport(false);
+  };
+
+  const analyzeDraft = (value: string) => {
+    importPreviewRef.current = null;
+    setImportPreview(null);
+    setAllowPartialImport(false);
+    setImportIssues([]);
+    setDraftLineCount(countSecretInputLines(value));
+    if (!value.trim()) return;
+    try { showImportPreview(analyzeSecretKeyText(value, mode)); }
+    catch (error) {
+      setImportIssues([error instanceof SecretKeyImportError ? error.message : "内容无法识别，请检查格式后重试"]);
+    }
+  };
+
   const readWalletFile = async (file: File) => {
     if (disabledRef.current) return;
     const requestId = importRequestRef.current + 1;
     importRequestRef.current = requestId;
     setImportActive(true);
+    workbookSheetsRef.current = [];
+    setWorkbookSheetNames([]);
+    setSelectedWorkbookSheet(0);
+    if (draftTextareaRef.current) draftTextareaRef.current.value = "";
+    importPreviewRef.current = null;
+    setImportPreview(null);
+    setAllowPartialImport(false);
     setImportIssues([]);
     setFileStatus({ kind: "loading", message: "正在本地读取文件…" });
 
@@ -513,8 +563,11 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       const imported = await readSecretKeyFile(file, mode);
       if (requestId !== importRequestRef.current || disabledRef.current || !draftTextareaRef.current) return;
 
-      draftTextareaRef.current.value = imported.value;
-      setDraftLineCount(imported.lineCount);
+      draftTextareaRef.current.value = imported.sourceValue;
+      workbookSheetsRef.current = imported.sheets || [];
+      setWorkbookSheetNames((imported.sheets || []).map((sheet) => sheet.name));
+      const { value, duplicates, format, issues, lineCount, wallets: incomingWallets } = imported;
+      showImportPreview({ value, duplicates, format, issues, lineCount, wallets: incomingWallets });
       setFileStatus({
         fileName: imported.fileName,
         kind: "success",
@@ -533,6 +586,27 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     }
   };
 
+  const selectWorkbookSheet = (index: number) => {
+    if (inputLocked || !Number.isInteger(index)) return;
+    const sheet = workbookSheetsRef.current[index];
+    if (!sheet || !draftTextareaRef.current) return;
+    setSelectedWorkbookSheet(index);
+    draftTextareaRef.current.value = sheet.text;
+    importPreviewRef.current = null;
+    setImportPreview(null);
+    setAllowPartialImport(false);
+    setImportIssues([]);
+    setDraftLineCount(0);
+    try {
+      const analysis = analyzeSecretKeyText(sheet.text, mode, "xlsx");
+      showImportPreview(analysis);
+      setFileStatus((current) => current.kind === "success" ? { ...current, lineCount: analysis.lineCount } : current);
+    } catch (error) {
+      setImportIssues([error instanceof SecretKeyImportError ? error.message : "工作表内容无法识别，请检查格式后重试"]);
+      setFileStatus((current) => current.kind === "success" ? { ...current, lineCount: 0 } : current);
+    }
+  };
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
@@ -540,7 +614,10 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   };
 
   const importWallets = useCallback((initialKeys?: string, initialSelectedIds?: readonly string[]) => {
-    const draft = initialKeys ?? draftTextareaRef.current?.value ?? "";
+    if (disabledRef.current) return;
+    const preview = initialKeys === undefined ? importPreviewRef.current : null;
+    if (initialKeys === undefined && (!preview || (preview.issues.length && !allowPartialImport))) return;
+    const draft = initialKeys ?? preview?.value ?? "";
     if (!draft.trim()) {
       setImportIssues(["请粘贴私钥或选择钱包文件"]);
       draftTextareaRef.current?.focus();
@@ -587,7 +664,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     if (parsed.wallets.some((wallet) => !existingIds.has(wallet.id))) onDirty?.("import");
     setDialogOpen(false);
     resetDraft();
-  }, [mode, onDirty, resetDraft, updateSelectedIds, wallets]);
+  }, [allowPartialImport, mode, onDirty, resetDraft, updateSelectedIds, wallets]);
 
   useEffect(() => {
     if (initialWalletsReadRef.current) return;
@@ -706,7 +783,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         tabIndex={-1}
       />
       <Input
-        accept=".txt,.csv,.json,text/plain,text/csv,application/json"
+        accept=".txt,.csv,.tsv,.json,.xlsx,text/plain,text/csv,text/tab-separated-values,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         aria-hidden="true"
         className="sr-only"
         disabled={inputLocked}
@@ -755,7 +832,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
         >
           <HugeiconsIcon aria-hidden="true" icon={Upload01Icon} size={20} strokeWidth={1.8} />
           <span>{wallets.length ? `已导入 ${wallets.length} 个钱包` : "拖入文件或点击导入"}</span>
-          <span className="secret-import-dropzone__hint">{wallets.length ? "继续导入钱包" : "TXT、CSV、JSON · 支持粘贴私钥"}</span>
+          <span className="secret-import-dropzone__hint">{wallets.length ? "继续导入钱包" : "TXT、CSV、TSV、JSON、XLSX · 支持粘贴私钥"}</span>
         </DialogTrigger>
         <DialogContent className="secret-import-dialog">
           <DialogHeader>
@@ -787,12 +864,14 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
               id={`${mode}-secret-draft`}
               maxLength={maximumSecretInputCharacters}
               onInput={(event) => {
-                setDraftLineCount(countSecretInputLines(event.currentTarget.value));
-                setImportIssues([]);
+                workbookSheetsRef.current = [];
+                setWorkbookSheetNames([]);
+                setSelectedWorkbookSheet(0);
+                analyzeDraft(event.currentTarget.value);
                 setFileStatus({ kind: "idle", message: "" });
               }}
               placeholder={placeholder}
-              ref={draftTextareaRef}
+              ref={assignDraftElement}
               rows={8}
               spellCheck={false}
             />
@@ -806,27 +885,58 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             </Button>
             <span aria-live="polite" className="secret-file-status">
               {fileStatus.kind === "success"
-                ? `${fileStatus.fileName} · 已读取 ${fileStatus.lineCount} 行`
+                ? `${fileStatus.fileName} · 已读取 ${fileStatus.lineCount} 条`
                 : fileStatus.kind === "loading" ? fileStatus.message : ""}
             </span>
           </div>
+          {workbookSheetNames.length ? <Field>
+            <FieldLabel htmlFor={`${mode}-secret-sheet`}>Excel 工作表</FieldLabel>
+            <select className="wallet-import-sheet-selector" disabled={inputLocked} id={`${mode}-secret-sheet`} value={selectedWorkbookSheet} onChange={(event) => selectWorkbookSheet(Number(event.currentTarget.value))}>
+              {workbookSheetNames.map((name, index) => <option key={index} value={index}>{name}</option>)}
+            </select>
+            <FieldDescription>当前工作表：{workbookSheetNames[selectedWorkbookSheet]}。只导入当前工作表的内容。</FieldDescription>
+          </Field> : null}
+          <FieldDescription>自动识别私钥、地址和备注列；支持 Excel 工作表、钱包 JSON 与 Solana 字节数组。助记词和加密 Keystore 请先转换为私钥。</FieldDescription>
           {fileStatus.kind === "error" ? (
             <CompactNotice summary={fileStatus.message} tone="error">{fileStatus.message}</CompactNotice>
           ) : null}
+          {importPreview ? (
+            <div aria-label="钱包导入预览" className="secret-import-preview">
+              <p className="secret-import-preview__summary">
+                <strong>有效钱包 {importPreview.wallets.length}</strong>
+                <span>重复 {importPreview.duplicates + importPreview.wallets.filter((wallet) => wallets.some((existing) => existing.id === wallet.id)).length}</span>
+                <span>问题 {importPreview.issues.length}</span>
+              </p>
+              <FieldDescription>{importPreview.format} · 仅展示钱包地址，重复钱包会自动合并</FieldDescription>
+              {importPreview.wallets.length ? <div className="secret-import-preview__wallets">
+                {importPreview.wallets.slice(0, 8).map((wallet) => <div key={wallet.id}>
+                  {wallet.label ? <span>{wallet.label}</span> : null}
+                  <code title={wallet.address}>{wallet.address}</code>
+                  {wallets.some((existing) => existing.id === wallet.id) ? <Badge variant="outline">已导入</Badge> : null}
+                </div>)}
+                {importPreview.wallets.length > 8 ? <FieldDescription>另有 {importPreview.wallets.length - 8} 个有效钱包</FieldDescription> : null}
+              </div> : null}
+            </div>
+          ) : null}
           {importIssues.length ? (
             <CompactNotice summary={importIssues.length === 1 ? importIssues[0] : `${importIssues.length} 项导入问题`} tone="error">
-              <ul>{importIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+              <ul>{importIssues.slice(0, 20).map((issue) => <li key={issue}>{issue}</li>)}</ul>
+              {importIssues.length > 20 ? <p>另有 {importIssues.length - 20} 项问题，请修正文件后重新导入。</p> : null}
             </CompactNotice>
           ) : null}
+          {importPreview?.issues.length && importPreview.wallets.length ? <label className="secret-import-partial">
+            <Checkbox checked={allowPartialImport} disabled={inputLocked} onCheckedChange={(checked) => setAllowPartialImport(Boolean(checked))} />
+            <span>仅导入 {importPreview.wallets.length} 个有效钱包，跳过 {importPreview.issues.length} 个问题条目</span>
+          </label> : null}
           <DialogFooter>
             <Button onClick={() => handleDialogOpenChange(false)} type="button" variant="outline">取消</Button>
             <Button
               aria-label="确认导入"
-              disabled={inputLocked || !draftLineCount || draftLineCount > maximumSecretInputLines}
+              disabled={inputLocked || !importPreview?.wallets.length || Boolean(importPreview.issues.length && !allowPartialImport)}
               onClick={() => importWallets()}
               type="button"
             >
-              {draftLineCount ? `导入 ${draftLineCount.toLocaleString("zh-CN")} 个钱包` : "确认导入"}
+              {importPreview?.wallets.length ? `导入 ${importPreview.wallets.length.toLocaleString("zh-CN")} 个钱包` : "确认导入"}
             </Button>
           </DialogFooter>
         </DialogContent>

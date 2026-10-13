@@ -4,6 +4,7 @@ import { expandSettings, expandTaskDetails } from "../test/workbench";
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Keypair } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
 import type {
@@ -17,8 +18,7 @@ const solMocks = vi.hoisted(() => ({
   collectTokenJobs: vi.fn(),
   createTokenJobs: vi.fn(),
   discoverHoldings: vi.fn(),
-  inspectMints: vi.fn(),
-  parseSources: vi.fn()
+  inspectMints: vi.fn()
 }));
 
 vi.mock("../lib/solana", async (importOriginal) => {
@@ -30,8 +30,7 @@ vi.mock("../lib/sol-collection", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/sol-collection")>();
   return {
     ...actual,
-    collectSolFromSources: solMocks.collect,
-    parseSolanaSourceKeys: solMocks.parseSources
+    collectSolFromSources: solMocks.collect
   };
 });
 
@@ -49,8 +48,12 @@ vi.mock("../lib/sol-token-collection", async (importOriginal) => {
 import { getSolCollectionWorkbenchStatus, SolCollectionPage } from "./SolCollectionPage";
 
 const targetAddress = "11111111111111111111111111111111";
-const firstSourceAddress = "So11111111111111111111111111111111111111112";
-const secondSourceAddress = "Vote111111111111111111111111111111111111111";
+const firstSourceKeypair = Keypair.fromSeed(new Uint8Array(32).fill(21));
+const secondSourceKeypair = Keypair.fromSeed(new Uint8Array(32).fill(22));
+const firstSourceAddress = firstSourceKeypair.publicKey.toBase58();
+const secondSourceAddress = secondSourceKeypair.publicKey.toBase58();
+const firstSourceSecret = `来源一,${JSON.stringify(Array.from(firstSourceKeypair.secretKey))}`;
+const secondSourceSecret = `来源二,${JSON.stringify(Array.from(secondSourceKeypair.secretKey))}`;
 const classicTokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const token2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const classicMint = "5WcE8o73vmsSZXeeWTLm3ty3fAJKCnBWRF6VuKUme5nu";
@@ -60,7 +63,7 @@ const secondTokenAccount = "Bow1CGKGDB9mNxeWdw85E2aCthQ1oZX4oFEe7fYT17ew";
 const destinationTokenAccount = "8sbwsw9cnbGTy8L4CN8guhQ4fU3T8D4Qiq71f72ECbKe";
 
 function source(address = firstSourceAddress, label = "来源一", line = 1) {
-  return { address, keypair: {}, label, line };
+  return { address, keypair: address === secondSourceAddress ? secondSourceKeypair : firstSourceKeypair, label, line };
 }
 
 function result({
@@ -169,7 +172,6 @@ afterEach(() => {
 beforeEach(() => {
   window.localStorage.clear();
   solMocks.assertNetwork.mockResolvedValue(undefined);
-  solMocks.parseSources.mockReturnValue({ duplicates: [], errors: [], sources: [source()] });
   solMocks.collect.mockResolvedValue([]);
   solMocks.collectTokenJobs.mockResolvedValue([]);
   solMocks.createTokenJobs.mockReturnValue([]);
@@ -186,18 +188,18 @@ beforeEach(() => {
   ));
 });
 
-async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret = "local-secret") {
+async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret = firstSourceSecret) {
   await user.click(screen.getByRole("button", { name: /导入钱包/ }));
   const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
-  await user.type(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), secret);
+  fireEvent.input(within(dialog).getByRole("textbox", { name: "粘贴私钥" }), { target: { value: secret } });
   await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 
-async function prepareSolPage() {
+async function prepareSolPage(secret = firstSourceSecret) {
   const user = userEvent.setup();
   render(<SolCollectionPage />);
   await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-  await importSolSecret(user);
+  await importSolSecret(user, secret);
   expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   return user;
 }
@@ -268,7 +270,7 @@ describe("SolCollectionPage workbench", () => {
     expect(snapshot.selectedIds).toContain(firstSourceAddress);
     expect(config).toEqual(expect.objectContaining({ networkId: "mainnet-beta", rpcEndpoint: "https://rpc.example.com", targetAddress }));
     expect(config.manualDraft).toEqual(expect.objectContaining({ kind: "solana", amountMode: "all", tokenMintInput: "" }));
-    expect(JSON.stringify(config)).not.toContain("local-secret");
+    expect(JSON.stringify(config)).not.toContain(JSON.stringify(Array.from(firstSourceKeypair.secretKey)));
     expect(rounds).toEqual([]);
     expect(solMocks.collect).not.toHaveBeenCalled();
   });
@@ -766,11 +768,6 @@ describe("SolCollectionPage workbench", () => {
   });
 
   it("offers retry for safe failures and retries only those wallets", async () => {
-    solMocks.parseSources.mockReturnValue({
-      duplicates: [],
-      errors: [],
-      sources: [source(), source(secondSourceAddress, "来源二", 2)]
-    });
     solMocks.collect
       .mockResolvedValueOnce([
         result({}),
@@ -779,7 +776,7 @@ describe("SolCollectionPage workbench", () => {
       .mockResolvedValueOnce([
         result({ address: secondSourceAddress, label: "来源二" })
       ]);
-    const user = await prepareSolPage();
+    const user = await prepareSolPage(`${firstSourceSecret}\n${secondSourceSecret}`);
     await confirmExecution(user);
 
     expandTaskDetails();

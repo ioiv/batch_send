@@ -1,4 +1,5 @@
-export const MAX_PATH_SOURCE_CANDIDATES = 2060;
+/** 2,000 site paths, 40 script clues, 20 sitemap clues and 44 fixed exposure probes share one bounded document. */
+export const MAX_PATH_SOURCE_CANDIDATES = 2200;
 
 const SCRIPT_EXTENSION = /\.(?:cjs|mjs|js|jsx)$/i;
 const RESOURCE_EXTENSION = /\.(?:css|less|scss|sass|map|avif|bmp|gif|heic|ico|jpe?g|png|svg|tiff?|webp|eot|otf|ttf|woff2?|aac|avi|flac|m4[av]|mkv|mov|mp[34]|ogg|opus|wav|webm|7z|bz2|exe|gz|rar|tar|zip|pdf|docx?|xlsx?|pptx?|csv|txt|xml|wasm|webmanifest|ts|tsx)$/i;

@@ -9,6 +9,7 @@ import { Label } from "./ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 import { downloadScanCsv, normalizeDomain } from "../lib/network-scan";
+import { SUBDOMAIN_SCAN_CONFIG } from "../config/subdomain-scan";
 import {
   SUBDOMAIN_DISCOVERY_SOURCES,
   discoverSubdomains,
@@ -22,7 +23,6 @@ import "./network-scan.css";
 
 type DiscoveryState = "editing" | "running" | "stopping" | "stopped" | "complete" | "error";
 type ResultFilter = "all" | "resolved" | "wildcard" | "unresolved" | "error";
-type InputField = "domain" | "concurrency" | "timeout";
 type SourceId = SubdomainDiscoverySourceResult["source"];
 type DiscoveryJob = { controller: AbortController };
 const RESULTS_PER_PAGE = 100;
@@ -38,11 +38,12 @@ const resultLabels: Record<Exclude<ResultFilter, "all">, string> = {
 };
 
 function sourceLabel(source: SourceId) {
+  if (source === "manual") return "外部结果";
   return SUBDOMAIN_DISCOVERY_SOURCES.find((item) => item.id === source)?.label || source;
 }
 
 const shortSourceLabels: Record<SourceId, string> = {
-  crtsh: "crt.sh", certspotter: "CertSpotter", hackertarget: "HackerTarget", dns: "DNS", website: "网页", wayback: "Wayback"
+  subdomaincenter: "Subdomain Center", certspotter: "CertSpotter", hackertarget: "HackerTarget", dns: "DNS", website: "网页", anubis: "Anubis", common: "常用 DNS", pentesttools: "Pentest-Tools", certkit: "CertKit", manual: "外部结果"
 };
 
 function DiscoverySources({ result }: { result: DiscoveredSubdomainResult }) {
@@ -78,7 +79,7 @@ function DiscoveryResultTable({ results }: { results: DiscoveredSubdomainResult[
     <TableBody>{results.map((result) => {
       const group = resultGroup(result);
       return <TableRow data-scan-status={group === "wildcard" ? "suspected" : group === "resolved" ? "found" : group === "unresolved" ? "missing" : "error"} key={result.domain}>
-        <TableCell className="network-scan-result__target">{result.status === "resolved" ? <a className="network-scan-link" href={`https://${result.domain}`} rel="noopener noreferrer" target="_blank">{result.domain}</a> : <span className="network-scan-address">{result.domain}</span>}</TableCell>
+        <TableCell className="network-scan-result__target"><div className="network-scan-label">{result.status === "resolved" ? <a className="network-scan-link" href={`https://${result.domain}`} rel="noopener noreferrer" target="_blank">{result.domain}</a> : <span className="network-scan-address">{result.domain}</span>}{result.status === "resolved" && !result.wildcard ? <a aria-label={`扫描 ${result.domain} 的网址路径`} className="network-scan-link" href={`/network/paths/?target=${encodeURIComponent(`https://${result.domain}/`)}`}>扫描路径</a> : null}</div></TableCell>
         <TableCell className="network-scan-result__status"><Badge variant="outline">{resultLabels[group]}</Badge></TableCell>
         <TableCell className="network-scan-result__detail" data-label="发现来源"><DiscoverySources result={result} /></TableCell>
         <TableCell className="network-scan-result__detail" data-label="解析详情"><DiscoveryDetails result={result} /></TableCell>
@@ -89,10 +90,8 @@ function DiscoveryResultTable({ results }: { results: DiscoveredSubdomainResult[
 
 export function SubdomainDiscoveryWorkbench() {
   const [domain, setDomain] = useState("");
-  const [concurrency, setConcurrency] = useState("4");
-  const [timeout, setTimeoutValue] = useState("5");
   const [state, setState] = useState<DiscoveryState>("editing");
-  const [inputError, setInputError] = useState<{ field: InputField; message: string } | null>(null);
+  const [inputError, setInputError] = useState<string | null>(null);
   const [scanError, setScanError] = useState("");
   const [roundDomain, setRoundDomain] = useState("");
   const [sources, setSources] = useState<Partial<Record<SourceId, SubdomainDiscoverySourceResult>>>({});
@@ -103,7 +102,7 @@ export function SubdomainDiscoveryWorkbench() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const jobRef = useRef<DiscoveryJob | null>(null);
-  const inputRefs = useRef<Partial<Record<InputField, HTMLInputElement | null>>>({});
+  const domainRef = useRef<HTMLInputElement>(null);
   const busy = state === "running" || state === "stopping";
 
   useEffect(() => () => {
@@ -125,22 +124,24 @@ export function SubdomainDiscoveryWorkbench() {
   const currentPage = Math.min(page, pageCount - 1);
   const pageResults = visibleResults.slice(currentPage * RESULTS_PER_PAGE, (currentPage + 1) * RESULTS_PER_PAGE);
   const partialSources = summary?.sources.some((source) => source.status !== "success") || false;
-  const statusLabel = state === "running" ? progress.phase === "discovering" ? "发现中" : "DNS 验证中"
+  const unavailableSources = summary?.sources.some((source) => source.status === "error") || false;
+  const hasDiscoveryProgress = progress.discoveryCompleted !== undefined && progress.discoveryTotal !== undefined;
+  const statusLabel = state === "running" ? progress.phase === "discovering" ? hasDiscoveryProgress ? "发现并验证中" : "发现中" : "DNS 验证中"
     : state === "stopping" ? "停止中" : state === "stopped" ? "已停止" : state === "error" ? "扫描失败"
       : state === "complete" ? partialSources || summary?.truncated ? "扫描完成 · 数据不完整" : "扫描完成" : "编辑中";
   const pageStatus: WorkbenchStatus = busy ? "running" : state === "error" ? "error" : state === "complete" ? "success" : "editing";
 
-  function changeInput(field: InputField, value: string) {
+  function changeDomain(value: string) {
     if (busy) return;
-    ({ domain: setDomain, concurrency: setConcurrency, timeout: setTimeoutValue })[field](value);
-    if (inputError?.field === field) setInputError(null);
+    setDomain(value);
+    setInputError(null);
   }
 
   function formatDomain() {
     if (busy) return;
     try {
       setDomain(normalizeDomain(domain));
-      if (inputError?.field === "domain") setInputError(null);
+      setInputError(null);
     } catch { /* Keep incomplete input available for editing and validation. */ }
   }
 
@@ -149,30 +150,20 @@ export function SubdomainDiscoveryWorkbench() {
     try {
       const normalized = normalizeDomain(event.clipboardData.getData("text"));
       event.preventDefault();
-      changeInput("domain", normalized);
+      changeDomain(normalized);
     } catch { /* Let the browser paste incomplete input for editing. */ }
   }
 
   async function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (jobRef.current) return;
-    let field: InputField = "domain";
     let normalized: string;
-    let parallel: number;
-    let timeoutMs: number;
     try {
       normalized = normalizeDomain(domain);
       setDomain(normalized);
-      field = "concurrency";
-      parallel = Number(concurrency);
-      if (!Number.isInteger(parallel) || parallel < 1 || parallel > 8) throw new Error("并发数需要是 1–8 的整数");
-      field = "timeout";
-      const seconds = Number(timeout);
-      if (!Number.isInteger(seconds) || seconds < 1 || seconds > 10) throw new Error("DNS 超时需要是 1–10 秒的整数");
-      timeoutMs = seconds * 1000;
     } catch (error) {
-      setInputError({ field, message: error instanceof Error ? error.message : "请检查扫描配置" });
-      inputRefs.current[field]?.focus();
+      setInputError(error instanceof Error ? error.message : "请输入有效的主域名");
+      domainRef.current?.focus();
       return;
     }
     const job = { controller: new AbortController() };
@@ -191,7 +182,7 @@ export function SubdomainDiscoveryWorkbench() {
     const current = () => jobRef.current === job && !job.controller.signal.aborted;
     try {
       const completed = await discoverSubdomains({
-        domain: normalized, concurrency: parallel, timeoutMs, signal: job.controller.signal,
+        ...SUBDOMAIN_SCAN_CONFIG, domain: normalized, signal: job.controller.signal,
         onSource: (source) => {
           if (current()) setSources((previous) => ({ ...previous, [source.source]: source }));
         },
@@ -231,32 +222,30 @@ export function SubdomainDiscoveryWorkbench() {
     setState("stopping");
   }
 
-  const inputProps = (field: InputField) => ({
-    "aria-invalid": inputError?.field === field || undefined,
-    "aria-describedby": inputError?.field === field ? "subdomain-discovery-input-error" : undefined,
+  const inputProps = {
+    "aria-invalid": Boolean(inputError) || undefined,
+    "aria-describedby": inputError ? "subdomain-discovery-input-error" : undefined,
     disabled: busy
-  });
+  };
 
-  const progressLabel = progress.phase === "discovering" ? "公开来源发现进度" : "DNS 验证进度";
-  const progressText = progress.phase === "discovering" ? `已读取 ${progress.completed} / ${progress.total} 个来源` : `已验证 ${progress.completed} / ${progress.total} 项`;
+  const progressLabel = progress.phase === "discovering" && !hasDiscoveryProgress ? "公开来源发现进度" : "DNS 验证进度";
+  const progressText = hasDiscoveryProgress
+    ? `已处理 ${progress.discoveryCompleted} / ${progress.discoveryTotal} 个发现请求 · 已验证 ${progress.completed} / 当前候选 ${progress.total}`
+    : progress.phase === "discovering" ? `已读取 ${progress.completed} / ${progress.total} 个来源` : `已验证 ${progress.completed} / ${progress.total} 项`;
 
   return <ToolPageLayout className="network-scan-workbench" currentToolId="subdomain-scan" status={pageStatus} statusLabel={statusLabel} title="子域名扫描">
     <form noValidate onSubmit={(event) => { void start(event); }}>
-      <WorkbenchPanel title={<span className="network-scan-label">多源子域名发现<HelpTooltip label="多源子域名发现">自动汇总 crt.sh、Cert Spotter 的证书透明度记录、HackerTarget 被动 DNS、主域名的 NS / MX / TXT 记录、网站首页及 robots / sitemap、Wayback 历史记录，再去重并验证当前 DNS。来源请求最多等待 20 秒，DNS 验证每轮最多 5,000 项。公开来源可能有历史记录、遗漏或 API 限制，无法保证发现全部子域名。仅用于你有权测试的公网域名。</HelpTooltip></span>} summary="汇总公开记录，自动发现并验证子域名" footer={<div className="network-scan-actions">
-        <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? "正在汇总公开来源…" : `正在验证 ${roundDomain} 的子域名…` : "自动查询 6 个来源，无需提供字典"}</span>
+      <WorkbenchPanel title={<span className="network-scan-label">多源子域名发现<HelpTooltip label="多源子域名发现">自动汇总 Subdomain Center、Anubis、证书、被动 DNS、主域名 DNS 记录、网站及其明确引用的脚本 / 站点地图，并自动调用 Pentest-Tools 的 Light 扫描接口及 CertKit 的免费免登录 CT 证书接口，补充检查 32 个常用名称的 DNS。常用名称通过两个随机名称校验，未解析或疑似通配结果不计入发现；这一步只查询 DNS。Pentest-Tools 扫描最多等待 2 分钟并受免费额度限制，其他来源最多等待 20 秒；名称一经发现就去重并验证当前 DNS，结果实时显示，每轮最多 5,000 项。通配证书不能列出具体名称，公开来源也可能遗漏，无法保证发现全部子域名。仅用于你有权测试的公网域名。</HelpTooltip></span>} summary="汇总公开记录和扫描结果，并用常用名称 DNS 补充新站线索" footer={<div className="network-scan-actions">
+        <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证子域名，结果实时显示…" : "正在汇总公开记录和 DNS 线索…" : `正在验证 ${roundDomain} 的子域名…` : `自动查询 ${SUBDOMAIN_DISCOVERY_SOURCES.length} 个来源，无需提供字典`}</span>
         <div>{busy ? <Button disabled={state === "stopping"} onClick={stop} type="button" variant="outline">{state === "stopping" ? "停止中…" : "停止扫描"}</Button> : <Button type="submit">{roundDomain ? "重新扫描" : "开始扫描"}</Button>}</div>
       </div>}>
         <div className="network-scan-fields">
-          <div className="network-scan-field"><div className="network-scan-label"><Label htmlFor="subdomain-discovery-domain">主域名</Label><HelpTooltip label="域名输入">可粘贴完整网址或包含网址的文本，粘贴时自动提取域名；手动输入会在离开输入框或开始扫描时提取。多个网址取第一个。</HelpTooltip></div><Input {...inputProps("domain")} autoCapitalize="none" autoComplete="off" id="subdomain-discovery-domain" onBlur={formatDomain} onChange={(event) => changeInput("domain", event.target.value)} onPaste={pasteDomain} placeholder="域名或完整网址" ref={(element) => { inputRefs.current.domain = element; }} spellCheck={false} value={domain} /></div>
-          <div className="network-scan-options">
-            <div className="network-scan-field"><Label htmlFor="subdomain-discovery-concurrency">DNS 验证并发数</Label><Input {...inputProps("concurrency")} id="subdomain-discovery-concurrency" max={8} min={1} onChange={(event) => changeInput("concurrency", event.target.value)} ref={(element) => { inputRefs.current.concurrency = element; }} step={1} type="number" value={concurrency} /></div>
-            <div className="network-scan-field"><Label htmlFor="subdomain-discovery-timeout">单项 DNS 超时（秒）</Label><Input {...inputProps("timeout")} id="subdomain-discovery-timeout" max={10} min={1} onChange={(event) => changeInput("timeout", event.target.value)} ref={(element) => { inputRefs.current.timeout = element; }} step={1} type="number" value={timeout} /></div>
-          </div>
-          {inputError ? <p className="network-scan-error" id="subdomain-discovery-input-error" role="alert">{inputError.message}</p> : null}
+          <div className="network-scan-field"><div className="network-scan-label"><Label htmlFor="subdomain-discovery-domain">主域名</Label><HelpTooltip label="域名输入">可粘贴完整网址或包含网址的文本，粘贴时自动提取域名；手动输入会在离开输入框或开始扫描时提取。多个网址取第一个。</HelpTooltip></div><Input {...inputProps} autoCapitalize="none" autoComplete="off" id="subdomain-discovery-domain" onBlur={formatDomain} onChange={(event) => changeDomain(event.target.value)} onPaste={pasteDomain} placeholder="域名或完整网址" ref={domainRef} spellCheck={false} value={domain} /></div>
+          {inputError ? <p className="network-scan-error" id="subdomain-discovery-input-error" role="alert">{inputError}</p> : null}
         </div>
       </WorkbenchPanel>
     </form>
-    <WorkbenchPanel summary={roundDomain ? `本轮目标：${roundDomain}` : "各来源独立读取，自动合并重复记录"} title="发现来源">
+    <WorkbenchPanel summary={roundDomain ? `本轮目标：${roundDomain}` : "公开记录与常用名称 DNS 分别显示，自动合并重复结果"} title="发现来源">
       <div aria-label="公开发现来源" className="subdomain-discovery-sources" role="list">{SUBDOMAIN_DISCOVERY_SOURCES.map((source) => {
         const result = sources[source.id];
         return <div className="subdomain-discovery-source" data-source-status={result?.status} key={source.id} role="listitem">
@@ -265,10 +254,12 @@ export function SubdomainDiscoveryWorkbench() {
           {result?.message ? <p className="network-scan-note">{result.message}</p> : null}
         </div>;
       })}</div>
-      {roundDomain ? <div className="network-scan-progress"><ExecutionProgress current={progress.completed} label={progressLabel} total={progress.total} /><p aria-live="polite" className="network-scan-note" role="status">{statusLabel} · {progressText} · 发现 {progress.discovered.toLocaleString()} 个子域名</p></div> : null}
+      {roundDomain ? <div className="network-scan-progress"><ExecutionProgress current={progress.completed} label={progressLabel} total={progress.total} />{hasDiscoveryProgress ? <ExecutionProgress current={progress.discoveryCompleted!} label="公开来源发现进度" total={progress.discoveryTotal!} /> : null}<p aria-live="polite" className="network-scan-note" role="status">{statusLabel} · {progressText} · 发现 {progress.discovered.toLocaleString()} 个子域名</p></div> : null}
       {scanError ? <p className="network-scan-error" role="alert">{scanError}</p> : null}
       {summary?.truncated ? <p className="network-scan-note subdomain-discovery-partial">发现数量超过验证上限，本轮仅验证前 5,000 个子域名。</p> : null}
-      {state === "complete" && partialSources ? <p className="network-scan-note subdomain-discovery-partial">部分来源不可用或仅返回部分记录；本轮结果可能不完整，详情见各来源状态。</p> : null}
+      {state === "complete" && partialSources ? <p className="network-scan-note subdomain-discovery-partial">{unavailableSources
+        ? "部分来源暂不可用；已保留其他来源的有效结果，详情见各来源状态。"
+        : "部分来源提供的线索有限；已完成当前名单的 DNS 验证，详情见各来源说明。"}</p> : null}
     </WorkbenchPanel>
     <WorkbenchPanel actions={<Button disabled={!results.length} onClick={() => downloadScanCsv(`subdomain-discovery-${new Date().toISOString().slice(0, 10)}.csv`, exportDiscoveredSubdomainsCsv(results))} size="sm" type="button" variant="outline">导出 CSV</Button>} title="子域名结果">
       <div className="network-scan-results">
@@ -281,7 +272,7 @@ export function SubdomainDiscoveryWorkbench() {
         ]} />
         <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setPage(0); }} value={filter}><TabsList aria-label="筛选子域名发现结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="resolved">当前已解析</TabsTrigger><TabsTrigger value="wildcard">疑似通配</TabsTrigger><TabsTrigger value="unresolved">当前未解析</TabsTrigger><TabsTrigger value="error">验证错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索子域名发现结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索域名、IP、CNAME 或来源" type="search" value={query} /></div>
         <p className="network-scan-note">显示 {visibleResults.length.toLocaleString()} / {results.length.toLocaleString()} 条 · CSV 导出本轮全部已验证结果</p>
-        {visibleResults.length ? <DiscoveryResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? "正在发现子域名，随后验证当前 DNS…" : "等待 DNS 验证结果…" : state === "complete" ? partialSources ? "本轮未发现可验证子域名，公开来源未完整返回，请查看来源状态" : "公开来源本轮未发现子域名，不能据此确认没有子域名" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
+        {visibleResults.length ? <DiscoveryResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证子域名，等待首批 DNS 结果…" : "正在发现子域名，随后验证当前 DNS…" : "等待 DNS 验证结果…" : state === "complete" ? partialSources ? "本轮未发现可验证子域名，公开来源未完整返回，请查看来源状态" : "公开来源本轮未发现子域名，不能据此确认没有子域名" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
         {pageCount > 1 ? <nav aria-label="子域名结果分页" className="subdomain-discovery-pagination"><span className="network-scan-note">第 {currentPage + 1} / {pageCount} 页 · 每页 {RESULTS_PER_PAGE} 条</span><Button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} size="sm" type="button" variant="outline">上一页</Button><Button disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)} size="sm" type="button" variant="outline">下一页</Button></nav> : null}
       </div>
     </WorkbenchPanel>

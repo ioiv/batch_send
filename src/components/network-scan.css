@@ -283,6 +283,33 @@
   width: 6rem;
 }
 
+.network-scan-table [data-scan-status="exposure"] [data-slot="badge"] {
+  color: var(--destructive);
+  border-color: var(--destructive);
+}
+
+.network-scan-probe-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.network-scan-exposure-detail {
+  display: grid;
+  gap: var(--space-xs);
+  padding-left: var(--space-sm);
+  border-left: 3px solid var(--destructive);
+}
+
+.network-scan-exposure-detail[data-exposure-verdict="medium"] {
+  border-left-color: var(--warning);
+}
+
 @media (max-width: 48rem) {
   .subdomain-discovery-sources {
     grid-template-columns: repeat(2, minmax(0, 1fr));

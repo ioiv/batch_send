@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
-import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
+import { errorMonitor, EventEmitter } from "node:events";
+import { request as httpRequest, type ClientRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { RequestOptions } from "node:https";
-import { PassThrough } from "node:stream";
+import { Duplex, PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchPublicDocument, handleNetworkScanRequest, isPublicIp, MAX_RESPONSE_BYTES, scanSubdomain, scanWebsitePath,
@@ -26,12 +26,14 @@ function baseResolver() {
   };
 }
 
-function transport(onResponse: (response: IncomingMessage & PassThrough, options: RequestOptions) => void, resolver = mockResolver()) {
+function transport(onResponse: (response: IncomingMessage & PassThrough, options: RequestOptions) => void, resolver = mockResolver(), onConnect?: (request: ClientRequest, options: RequestOptions, attempt: number) => boolean) {
   const requests: ClientRequest[] = [];
   const responses: Array<IncomingMessage & PassThrough> = [];
   const request = vi.fn((_protocol: "http:" | "https:", options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+    const attempt = requests.length;
     const outgoing = Object.assign(new EventEmitter(), {
       end: vi.fn(() => queueMicrotask(() => {
+        if (onConnect?.(outgoing, options, attempt) === false) return;
         const incoming = Object.assign(new PassThrough(), { statusCode: 200, headers: {}, complete: false }) as unknown as IncomingMessage & PassThrough;
         responses.push(incoming);
         callback(incoming);
@@ -83,11 +85,23 @@ describe("public-target validation", () => {
   });
 
   it("validates known passive discovery sources with their separate 20-second timeout", () => {
-    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "Example.com", source: "crtsh" })).toEqual({ kind: "subdomain-discovery", domain: "example.com", source: "crtsh", timeoutMs: 20000 });
+    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "Example.com", source: "subdomaincenter" })).toEqual({ kind: "subdomain-discovery", domain: "example.com", source: "subdomaincenter", timeoutMs: 20000 });
     expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "dns", timeoutMs: 15000 })).toHaveProperty("timeoutMs", 15000);
+    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "common", timeoutMs: 15000 })).toHaveProperty("source", "common");
     expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "https://evil.com" })).toThrow();
-    expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "crtsh", timeoutMs: 20001 })).toThrow();
+    expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "certspotter", headers: { Authorization: "Bearer fixture-not-a-real-key" } })).toThrow();
+    expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "subdomaincenter", timeoutMs: 20001 })).toThrow();
     expect(() => validateScanPayload({ kind: "path", url: "https://example.com/", timeoutMs: 15000 })).toThrow();
+  });
+  it("allows the automatic Pentest-Tools source its polling deadline without exposing transport options", () => {
+    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "Example.com", source: "pentesttools" })).toEqual({
+      kind: "subdomain-discovery", domain: "example.com", source: "pentesttools", timeoutMs: 120000
+    });
+    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "pentesttools", timeoutMs: 30000 })).toHaveProperty("timeoutMs", 30000);
+    for (const override of [{ timeoutMs: 120001 }, { timeoutMs: 999 }, { method: "POST" }, { body: "domain=other.com" }, { headers: { Cookie: "session=client" } }]) {
+      expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "pentesttools", ...override })).toThrow();
+    }
+    expect(() => validateScanPayload({ kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/", source: "pentesttools", timeoutMs: 120000 })).toThrow();
   });
   it("validates same-origin discovery documents and script owner context", () => {
     expect(validateScanPayload({ kind: "path-discovery", baseUrl: "https://example.com/start?tracking=1", url: "https://example.com/assets/app.js?version=2", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 20000 })).toEqual({ kind: "path-discovery", baseUrl: "https://example.com/start", url: "https://example.com/assets/app.js", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 20000 });
@@ -168,6 +182,143 @@ describe("subdomain DNS checks", () => {
 });
 
 describe("website path probes", () => {
+  it.each(["timeout", "cancel"] as const)("handles the real asynchronous request error after %s without an HTTP response", async (interruption) => {
+    let notifySocket: () => void = () => undefined;
+    let notifyClose: () => void = () => undefined;
+    const socketReady = new Promise<void>((resolve) => { notifySocket = resolve; });
+    const requestClosed = new Promise<void>((resolve) => { notifyClose = resolve; });
+    // errorMonitor observes Node's error without handling it, so an absent production
+    // listener still causes an unhandled-error failure in the test runner.
+    const asynchronousError = vi.fn();
+    const request = vi.fn((_protocol: "http:" | "https:", options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+      const outgoing = httpRequest({
+        ...options, agent: undefined,
+        createConnection: () => new Duplex({ read() {}, write(_chunk, _encoding, done) { done(); } })
+      }, callback);
+      outgoing.on(errorMonitor, asynchronousError);
+      outgoing.once("socket", notifySocket);
+      outgoing.once("close", notifyClose);
+      return outgoing;
+    });
+    const dependencies: NetworkScanDependencies = { createResolver: () => mockResolver(), request };
+    const controller = new AbortController();
+    const pending = scanWebsitePath("http://example.com/", 1000, dependencies, controller.signal);
+    await socketReady;
+    if (interruption === "cancel") controller.abort();
+    expect(await pending).toMatchObject({ status: "error", message: interruption === "timeout" ? "请求超时" : "请求失败" });
+    await requestClosed;
+    expect(asynchronousError).toHaveBeenCalledOnce();
+    expect(asynchronousError.mock.calls[0][0]).toMatchObject({ code: "ECONNRESET", message: "socket hang up" });
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.results[0].value.destroyed).toBe(true);
+  });
+
+  it.each(["ENETUNREACH", "EHOSTUNREACH", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"])("switches to another vetted IP after connection failure %s", async (code) => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const pinned: string[] = [];
+    const adapter = transport((response) => endResponse(response, "<title>Recovered</title>"), resolver, (request, options, attempt) => {
+      expect(options.hostname).toBe("example.com");
+      expect(options.servername).toBe("example.com");
+      expect(options.rejectUnauthorized).not.toBe(false);
+      options.lookup!("example.com", {}, (error, address) => {
+        expect(error).toBeNull();
+        if (typeof address !== "string") throw new Error("Expected a single pinned address");
+        pinned.push(address);
+      });
+      if (attempt === 0) { request.emit("error", dnsError(code)); return false; }
+      return true;
+    });
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "responded", title: "Recovered" });
+    expect(pinned).toEqual(["93.184.216.34", "1.1.1.1"]);
+    expect(adapter.request).toHaveBeenCalledTimes(2);
+    expect(adapter.requests[0].destroy).toHaveBeenCalled();
+    expect(resolver.resolve4).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries the other IP family before further addresses and also recovers document discovery", async () => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]), resolve6: vi.fn(async () => ["2606:4700:4700::1111"]) });
+    const pinned: string[] = [];
+    const adapter = transport((response) => endResponse(response, "document"), resolver, (request, options, attempt) => {
+      options.lookup!("example.com", { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        if (!Array.isArray(addresses)) throw new Error("Expected a pinned address list");
+        expect(addresses).toHaveLength(1);
+        expect(options.family).toBe(addresses[0].family);
+        pinned.push(addresses[0].address);
+      });
+      if (attempt === 0) { request.emit("error", dnsError("ENETUNREACH")); return false; }
+      return true;
+    });
+    expect((await fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64 }, adapter.dependencies)).body.toString()).toBe("document");
+    expect(pinned).toEqual(["93.184.216.34", "2606:4700:4700::1111"]);
+  });
+
+  it("makes no more than three connection attempts", async () => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1", "8.8.8.8", "8.8.4.4"]) });
+    const adapter = transport(() => {}, resolver, (request) => { request.emit("error", dnsError("ECONNREFUSED")); return false; });
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "error", message: "请求失败" });
+    expect(adapter.request).toHaveBeenCalledTimes(3);
+    for (const request of adapter.requests) expect(request.destroy).toHaveBeenCalled();
+  });
+
+  it.each([403, 404, 429, 500])("does not retry an HTTP %s response", async (statusCode) => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const adapter = transport((response) => { response.statusCode = statusCode; endResponse(response, "blocked or missing"); }, resolver);
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "responded", statusCode });
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "EAI_AGAIN", "UNKNOWN"])("does not retry certificate or other errors %s", async (code) => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const adapter = transport(() => {}, resolver, (request) => { request.emit("error", dnsError(code)); return false; });
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "error", message: "请求失败" });
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a connection reset after HTTP headers arrive", async () => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const adapter = transport(() => { adapter.requests[0].emit("error", dnsError("ECONNRESET")); }, resolver);
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "error", message: "请求失败" });
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+    expect(adapter.responses[0].destroyed).toBe(true);
+  });
+
+  it("keeps DNS and every connection attempt within the original deadline", async () => {
+    vi.useFakeTimers();
+    const resolver = mockResolver({ resolve4: vi.fn(() => new Promise<string[]>((resolve) => setTimeout(() => resolve(["93.184.216.34", "1.1.1.1", "8.8.8.8"]), 200))) });
+    const adapter = transport(() => {}, resolver, (request, _options, attempt) => {
+      if (attempt === 0) setTimeout(() => request.emit("error", dnsError("ENETUNREACH")), 600);
+      return false;
+    });
+    const pending = scanWebsitePath("https://example.com/", 1000, adapter.dependencies);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(adapter.request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toMatchObject({ status: "error", message: "请求超时" });
+    expect(adapter.request).toHaveBeenCalledTimes(2);
+    for (const request of adapter.requests) expect(request.destroy).toHaveBeenCalled();
+  });
+
+  it("does not start another connection if cancellation arrives with its first failure", async () => {
+    const controller = new AbortController();
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const adapter = transport(() => {}, resolver, (request) => {
+      request.emit("error", dnsError("ENETUNREACH"));
+      controller.abort();
+      return false;
+    });
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies, controller.signal)).toMatchObject({ status: "error", message: "请求失败" });
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+    expect(adapter.requests[0].destroy).toHaveBeenCalled();
+  });
+
+  it("rejects private addresses even beyond the three-attempt limit before making a request", async () => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1", "8.8.8.8", "127.0.0.1"]) });
+    const adapter = transport(() => {}, resolver);
+    expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "error", message: "目标未通过公网地址检查" });
+    expect(adapter.request).not.toHaveBeenCalled();
+  });
+
   it("keeps shared discovery document requests public-only and bounds their raw bodies", async () => {
     const blocked = transport(() => {}, mockResolver({ resolve4: vi.fn(async () => ["10.0.0.1"]) }));
     await expect(fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 8 }, blocked.dependencies)).rejects.toThrow();
@@ -178,6 +329,142 @@ describe("website path probes", () => {
     expect(result.truncated).toBe(true);
     expect(bounded.responses[0].destroyed).toBe(true);
   });
+
+  it("keeps default document headers and isolates server-supplied authorization from ordinary probes", async () => {
+    const adapter = transport(response => endResponse(response, "document"));
+    await fetchPublicDocument("https://example.com/public", { timeoutMs: 1000, maxBytes: 64 }, adapter.dependencies);
+    expect(adapter.request.mock.calls[0][1].headers).toEqual({
+      "User-Agent": "ToolboxNetworkScanner/1.0", Accept: "text/html,application/xhtml+xml,*/*;q=0.5", "Accept-Encoding": "identity"
+    });
+    const headers = Object.freeze({ Authorization: "Bearer fixture-not-a-real-key", Accept: "application/json" });
+    await fetchPublicDocument("https://example.com/issuances", { timeoutMs: 1000, maxBytes: 64, headers }, adapter.dependencies);
+    expect(adapter.request.mock.calls[1][1].headers).toEqual({
+      "User-Agent": "ToolboxNetworkScanner/1.0", "Accept-Encoding": "identity", ...headers
+    });
+    expect(headers).toEqual({ Authorization: "Bearer fixture-not-a-real-key", Accept: "application/json" });
+    await scanWebsitePath("https://example.com/ordinary", 1000, adapter.dependencies);
+    expect(adapter.request.mock.calls[2][1].headers).not.toHaveProperty("Authorization");
+  });
+
+  it("retains server-supplied headers when retrying another vetted HTTPS address", async () => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const pinned: string[] = [];
+    const headers = { Authorization: "Bearer fixture-not-a-real-key", Accept: "application/json" };
+    const adapter = transport(response => endResponse(response, "[]"), resolver, (request, options, attempt) => {
+      expect(options.headers).toMatchObject(headers);
+      expect(options.protocol).toBe("https:");
+      expect(options.hostname).toBe("api.certspotter.com");
+      expect(options.servername).toBe("api.certspotter.com");
+      expect(options.agent).toBe(false);
+      expect(options.rejectUnauthorized).not.toBe(false);
+      options.lookup!("api.certspotter.com", {}, (error, address) => {
+        expect(error).toBeNull();
+        if (typeof address !== "string") throw new Error("Expected one pinned address");
+        pinned.push(address);
+      });
+      if (attempt === 0) { request.emit("error", dnsError("ECONNREFUSED")); return false; }
+      return true;
+    });
+    const result = await fetchPublicDocument("https://api.certspotter.com/v1/issuances?domain=example.com", { timeoutMs: 1000, maxBytes: 64, headers }, adapter.dependencies);
+    expect(result.body.toString()).toBe("[]");
+    expect(pinned).toEqual(["93.184.216.34", "1.1.1.1"]);
+    expect(adapter.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends a bounded POST body with its UTF-8 length while preserving public pinning and TLS", async () => {
+    const body = "domain=example.com&label=中文";
+    const headers = Object.freeze({ "Content-Type": "application/x-www-form-urlencoded", Cookie: "session=fixture", "content-length": "999" });
+    const adapter = transport((response, options) => {
+      expect(options).toMatchObject({ protocol: "https:", hostname: "pentest-tools.com", servername: "pentest-tools.com", path: "/scan/start", method: "POST", agent: false });
+      expect(options.rejectUnauthorized).not.toBe(false);
+      expect(options.headers).toMatchObject({ "Content-Type": headers["Content-Type"], Cookie: headers.Cookie, "Content-Length": String(Buffer.byteLength(body)) });
+      expect(options.headers).not.toHaveProperty("content-length");
+      options.lookup!("pentest-tools.com", {}, (error, address, family) => {
+        expect(error).toBeNull(); expect(address).toBe("93.184.216.34"); expect(family).toBe(4);
+      });
+      response.headers = { "set-cookie": ["session=updated; Secure; HttpOnly", "csrf=fixture; Path=/"] };
+      endResponse(response, '{"id":"fixture"}');
+    });
+    const result = await fetchPublicDocument("https://pentest-tools.com/scan/start", { timeoutMs: 1000, maxBytes: 64, method: "POST", body, headers }, adapter.dependencies);
+    expect(adapter.requests[0].end).toHaveBeenCalledWith(body);
+    expect(result).toMatchObject({ statusCode: 200, body: Buffer.from('{"id":"fixture"}'), setCookies: ["session=updated; Secure; HttpOnly", "csrf=fixture; Path=/"] });
+    expect(result.setCookies).not.toBe(adapter.responses[0].headers["set-cookie"]);
+    expect(headers["content-length"]).toBe("999");
+    const probe = transport(response => endResponse(response, "okay"));
+    await scanWebsitePath("https://example.com/ordinary", 1000, probe.dependencies);
+    expect(probe.request.mock.calls[0][1].headers).not.toHaveProperty("Cookie");
+  });
+
+  it("accepts an 8192-byte POST body and rejects oversized or GET bodies before DNS", async () => {
+    const adapter = transport(response => endResponse(response, "okay"));
+    await fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64, method: "POST", body: "x".repeat(8192) }, adapter.dependencies);
+    expect(adapter.request.mock.calls[0][1].headers).toHaveProperty("Content-Length", "8192");
+    for (const options of [{ method: "POST" as const, body: "x".repeat(8193) }, { method: "POST" as const, body: "中".repeat(2731) }, { method: "GET" as const, body: "" }, { body: "x" }]) {
+      await expect(fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64, ...options }, adapter.dependencies)).rejects.toThrow();
+    }
+    expect(adapter.resolver.resolve4).toHaveBeenCalledOnce();
+    expect(adapter.request).toHaveBeenCalledOnce();
+  });
+
+  it.each(["ECONNRESET", "ECONNREFUSED", "ENETUNREACH"])("never retries a POST connection failure (%s)", async code => {
+    const resolver = mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "1.1.1.1"]) });
+    const adapter = transport(() => {}, resolver, request => { request.emit("error", dnsError(code)); return false; });
+    await expect(fetchPublicDocument("https://example.com/create", { timeoutMs: 1000, maxBytes: 64, method: "POST", body: "domain=example.com" }, adapter.dependencies)).rejects.toThrow();
+    expect(adapter.request).toHaveBeenCalledOnce();
+    expect(adapter.requests[0].destroy).toHaveBeenCalled();
+  });
+
+  it("keeps POST requests within the response limit, never follows redirects or contacts private addresses", async () => {
+    const adapter = transport(response => {
+      response.statusCode = 302;
+      response.headers = { location: "http://127.0.0.1/private", "set-cookie": ["session=fixture"] };
+      response.write("0123456789");
+    });
+    const result = await fetchPublicDocument("https://example.com/create", { timeoutMs: 1000, maxBytes: 8, method: "POST", body: "domain=example.com" }, adapter.dependencies);
+    expect(result).toMatchObject({ statusCode: 302, body: Buffer.from("01234567"), truncated: true, location: "http://127.0.0.1/private" });
+    expect(adapter.request).toHaveBeenCalledOnce();
+    expect(adapter.responses[0].destroyed).toBe(true);
+    const blocked = transport(() => {}, mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "127.0.0.1"]) }));
+    await expect(fetchPublicDocument("https://example.com/create", { timeoutMs: 1000, maxBytes: 8, method: "POST", body: "domain=example.com" }, blocked.dependencies)).rejects.toThrow();
+    expect(blocked.request).not.toHaveBeenCalled();
+  });
+
+  it("cancels POST requests without retrying and does not return cookies through path probes", async () => {
+    const controller = new AbortController();
+    const adapter = transport(response => {
+      response.headers = { "set-cookie": ["session=fixture"] };
+      controller.abort();
+    });
+    await expect(fetchPublicDocument("https://example.com/create", { timeoutMs: 1000, maxBytes: 64, method: "POST", signal: controller.signal }, adapter.dependencies)).rejects.toThrow();
+    expect(adapter.request).toHaveBeenCalledOnce();
+    expect(adapter.requests[0].destroy).toHaveBeenCalled();
+    const probe = transport(response => { response.headers = { "set-cookie": ["session=fixture"] }; endResponse(response, "okay"); });
+    expect(await scanWebsitePath("https://example.com/", 1000, probe.dependencies)).not.toHaveProperty("setCookies");
+  });
+
+  it.each(["https://other.example.com/issuances", "http://127.0.0.1/private"])("never forwards authorization to a redirect destination (%s)", async location => {
+    const adapter = transport(response => {
+      response.statusCode = 302;
+      response.headers = { location };
+      endResponse(response, "redirect");
+    });
+    const result = await fetchPublicDocument("https://api.certspotter.com/v1/issuances", {
+      timeoutMs: 1000, maxBytes: 64, headers: { Authorization: "Bearer fixture-not-a-real-key" }
+    }, adapter.dependencies);
+    expect(result).toMatchObject({ statusCode: 302, location });
+    expect(adapter.request).toHaveBeenCalledOnce();
+    expect(adapter.request.mock.calls[0][1]).toMatchObject({ hostname: "api.certspotter.com", headers: { Authorization: "Bearer fixture-not-a-real-key" } });
+    expect(result).not.toHaveProperty("headers");
+  });
+
+  it("does not send authorized document requests when DNS includes a private address", async () => {
+    const adapter = transport(() => {}, mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "127.0.0.1"]) }));
+    await expect(fetchPublicDocument("https://api.certspotter.com/v1/issuances", {
+      timeoutMs: 1000, maxBytes: 64, headers: { Authorization: "Bearer fixture-not-a-real-key" }
+    }, adapter.dependencies)).rejects.toThrow();
+    expect(adapter.request).not.toHaveBeenCalled();
+  });
+
   it("pins the connection to the vetted address and retains TLS hostname and path", async () => {
     const adapter = transport((response, options) => {
       expect(options.hostname).toBe("example.com");
@@ -294,7 +581,58 @@ describe("Node HTTP handler", () => {
       await handleNetworkScanRequest(request, response.response);
       expect(response.state.statusCode).toBe(200);
       expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
-      expect(discover).toHaveBeenCalledWith("example.com", "dns", 15000, undefined, expect.any(AbortSignal));
+      expect(discover).toHaveBeenCalledWith("example.com", "dns", 15000, undefined, expect.any(AbortSignal), undefined);
+    } finally { discover.mockRestore(); }
+  });
+  it("dispatches the free anonymous CertKit source with its public-provider deadline", async () => {
+    const result = { source: "certkit" as const, status: "success" as const, domains: ["api.example.com"] };
+    const discover = vi.spyOn(discovery, "discoverSubdomains").mockResolvedValue(result);
+    try {
+      const request = mockHandlerRequest();
+      request.body = { kind: "subdomain-discovery", domain: "example.com", source: "certkit" };
+      const response = mockHandlerResponse();
+      await handleNetworkScanRequest(request, response.response);
+      expect(response.state.statusCode).toBe(200);
+      expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
+      expect(discover).toHaveBeenCalledWith("example.com", "certkit", 20000, undefined, expect.any(AbortSignal), undefined);
+      expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "certkit", timeoutMs: 20001 })).toThrow();
+    } finally { discover.mockRestore(); }
+  });
+  it("dispatches the automatic Pentest-Tools source with its polling deadline", async () => {
+    const result = { source: "pentesttools" as const, status: "success" as const, domains: ["api.example.com"] };
+    const discover = vi.spyOn(discovery, "discoverSubdomains").mockResolvedValue(result);
+    try {
+      const request = mockHandlerRequest();
+      request.body = { kind: "subdomain-discovery", domain: "example.com", source: "pentesttools" };
+      const response = mockHandlerResponse();
+      await handleNetworkScanRequest(request, response.response);
+      expect(response.state.statusCode).toBe(200);
+      expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
+      expect(discover).toHaveBeenCalledWith("example.com", "pentesttools", 120000, undefined, expect.any(AbortSignal), undefined);
+    } finally { discover.mockRestore(); }
+  });
+  it.each(["crtsh", "wayback"])("rejects retired or unavailable automatic source %s", source => {
+    expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source })).toThrow();
+  });
+  it("passes middleware credentials to discovery without returning them or accepting client credentials", async () => {
+    const result = { source: "certspotter" as const, status: "success" as const, domains: [] };
+    const discover = vi.spyOn(discovery, "discoverSubdomains").mockResolvedValue(result);
+    const options = { sslmateApiKey: "fake-server-only-token" };
+    try {
+      const request = mockHandlerRequest();
+      const payload = { kind: "subdomain-discovery", domain: "example.com", source: "certspotter", timeoutMs: 15000 };
+      request.body = payload;
+      const response = mockHandlerResponse();
+      await handleNetworkScanRequest(request, response.response, options);
+      expect(discover).toHaveBeenCalledWith("example.com", "certspotter", 15000, undefined, expect.any(AbortSignal), options);
+      expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
+      expect(response.state.end.mock.calls[0][0]).not.toContain(options.sslmateApiKey);
+      const injected = mockHandlerRequest();
+      injected.body = { ...payload, sslmateApiKey: "fake-client-token" };
+      const rejected = mockHandlerResponse();
+      await handleNetworkScanRequest(injected, rejected.response, options);
+      expect(rejected.state.statusCode).toBe(400);
+      expect(discover).toHaveBeenCalledTimes(1);
     } finally { discover.mockRestore(); }
   });
   it("rejects methods and unsupported content types with JSON", async () => {

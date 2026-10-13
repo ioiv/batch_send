@@ -8,6 +8,9 @@ import "./distribution-workbench.css";
 
 export type DistributionListEditorProps = {
   addressInputRef?: Ref<HTMLTextAreaElement>;
+  collapseAddressInput?: boolean;
+  addressEditorOpen?: boolean;
+  onAddressEditorOpenChange?: (open: boolean) => void;
   addressPlaceholder: string;
   addresses: string;
   disabled?: boolean;
@@ -29,6 +32,9 @@ export type DistributionListEditorProps = {
 
 export function DistributionListEditor({
   addressInputRef,
+  collapseAddressInput = false,
+  addressEditorOpen = false,
+  onAddressEditorOpenChange,
   addressPlaceholder,
   addresses,
   disabled = false,
@@ -51,6 +57,21 @@ export function DistributionListEditor({
   const fieldPrefix = idPrefix || generatedId;
   const amountSuffix = symbol ? `（${symbol}）` : "";
   const amountControlsDisabled = disabled || generationDisabled;
+  const addressField = (
+    <Field>
+      <FieldLabel htmlFor={`${fieldPrefix}-addresses`}>{mode === "per-row" ? "收款地址与金额" : "收款地址"}</FieldLabel>
+      <Textarea
+        className="address-only-input"
+        disabled={disabled}
+        id={`${fieldPrefix}-addresses`}
+        placeholder={mode === "per-row" ? addressPlaceholder.split("\n").map((address) => `${address},0.1`).join("\n") : addressPlaceholder}
+        ref={addressInputRef}
+        spellCheck={false}
+        value={addresses}
+        onChange={(event) => onAddressesChange(event.target.value)}
+      />
+    </Field>
+  );
 
   return (
     <section
@@ -59,19 +80,12 @@ export function DistributionListEditor({
       id="distribution-input"
       className="distribution-list-editor grid min-w-0 gap-4"
     >
-      <Field>
-        <FieldLabel htmlFor={`${fieldPrefix}-addresses`}>{mode === "per-row" ? "收款地址与金额" : "收款地址"}</FieldLabel>
-        <Textarea
-          className="address-only-input"
-          disabled={disabled}
-          id={`${fieldPrefix}-addresses`}
-          placeholder={mode === "per-row" ? addressPlaceholder.split("\n").map((address) => `${address},0.1`).join("\n") : addressPlaceholder}
-          ref={addressInputRef}
-          spellCheck={false}
-          value={addresses}
-          onChange={(event) => onAddressesChange(event.target.value)}
-        />
-      </Field>
+      {collapseAddressInput ? (
+        <details className="distribution-source-editor" open={addressEditorOpen} onToggle={event => onAddressEditorOpenChange?.(event.currentTarget.open)}>
+          <summary>编辑原始清单</summary>
+          {addressField}
+        </details>
+      ) : addressField}
 
       <Tabs
         className="generator-mode-row distribution-amount-row"

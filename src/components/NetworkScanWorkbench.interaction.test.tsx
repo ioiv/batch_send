@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebsitePathScanPage } from "../pages/WebsitePathScanPage";
 import { downloadScanCsv } from "../lib/network-scan";
+import { EXPOSURE_PATHS } from "../lib/exposure-path";
 import { PATH_DISCOVERY_SOURCES, discoverWebsitePaths, type PathDiscoverySourceResult, type WebsitePathDiscoverySummary } from "../lib/website-path-discovery";
 
 vi.mock("../lib/website-path-discovery", async (importOriginal) => ({
@@ -159,6 +160,60 @@ describe("Automatic website path discovery workbench", () => {
     expect(screen.getByRole("status", { name: "扫描完成 · 数据不完整" })).toBeVisible();
   });
 
+  it("shows and exports validation during discovery and removes paths later identified as static assets", async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    let options!: DiscoveryOptions;
+    vi.mocked(discoverWebsitePaths).mockImplementation(value => { options = value; return pending.promise; });
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await act(async () => {
+      options.onProgress?.({ phase: "discovering", completed: 0, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 8 });
+    });
+    expect(screen.getByRole("status", { name: "发现并验证中" })).toBeVisible();
+    expect(screen.getByText("正在发现并验证路径，等待首批响应结果…")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "路径响应验证进度" })).toHaveTextContent("0/2");
+    expect(screen.getByRole("progressbar", { name: "路径发现请求进度" })).toHaveTextContent("1/8");
+
+    const removedUrl = "https://example.com/bundle";
+    const keptUrl = "https://example.com/live";
+    await act(async () => {
+      options.onResult({ url: removedUrl, status: "responded", statusCode: 200, sources: ["links"] });
+      options.onResult({ url: keptUrl, status: "responded", statusCode: 200, sources: ["links"] });
+      options.onProgress?.({ phase: "discovering", completed: 2, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 8 });
+    });
+    expect(screen.getByText("发现并验证中 · 已处理 1 / 8 个发现请求 · 已验证 2 / 当前候选 2 · 发现 2 个路径")).toBeVisible();
+    expect(screen.getByRole("link", { name: "/bundle" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    expect(vi.mocked(downloadScanCsv).mock.calls.at(-1)![1]).toContain(removedUrl);
+
+    await act(async () => {
+      options.onResult({ url: keptUrl, status: "responded", statusCode: 200, soft404: true, clientRoute: true, sources: ["links", "scripts"] });
+      options.onRemoveResult?.(removedUrl);
+      options.onProgress?.({ phase: "discovering", completed: 1, total: 1, discovered: 1, discoveryCompleted: 2, discoveryTotal: 8 });
+    });
+    expect(screen.queryByRole("link", { name: "/bundle" })).not.toBeInTheDocument();
+    const table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    expect(table.getAllByRole("row")).toHaveLength(2);
+    expect(table.getByText("前端路由 · 200")).toBeVisible();
+    expect(table.getByText("页面 +1")).toBeVisible();
+    expect(screen.getByText("发现并验证中 · 已处理 2 / 8 个发现请求 · 已验证 1 / 当前候选 1 · 发现 1 个路径")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    const csv = vi.mocked(downloadScanCsv).mock.calls.at(-1)![1];
+    expect(csv).toContain(keptUrl);
+    expect(csv).not.toContain(removedUrl);
+
+    await user.click(screen.getByRole("button", { name: "停止扫描" }));
+    await act(async () => {
+      options.onRemoveResult?.(keptUrl);
+      pending.resolve(summary());
+      await pending.promise;
+    });
+    expect(screen.getByRole("link", { name: "/live" })).toBeVisible();
+    expect(screen.getByText("已停止 · 已处理 2 / 8 个发现请求 · 已验证 1 / 当前候选 1 · 发现 1 个路径")).toBeVisible();
+  });
+
   it("cancels without overlapping jobs or accepting late source/results updates and preserves configuration", async () => {
     const user = userEvent.setup();
     const pending = deferred();
@@ -248,6 +303,44 @@ describe("Automatic website path discovery workbench", () => {
     codes = within(screen.getByRole("group", { name: "HTTP状态码筛选" }));
     expect(codes.getByRole("button", { name: "全部状态 · 6" })).toHaveAttribute("aria-pressed", "true");
     expect(within(screen.getByRole("table", { name: "网站路径扫描结果" })).getAllByRole("row")).toHaveLength(7);
+  });
+
+  it("surfaces fixed exposure findings in a dedicated tab and exports their verdict", async () => {
+    const user = userEvent.setup();
+    const entry = EXPOSURE_PATHS.find(item => item.path === "/.env")!;
+    vi.mocked(discoverWebsitePaths).mockImplementation(async (options) => {
+      options.onExposureProgress?.(0, EXPOSURE_PATHS.length);
+      options.onResult({ url: "https://example.com/.env", status: "responded", statusCode: 200, fingerprint: "a".repeat(64), durationMs: 120,
+        exposure: { path: entry, verdict: "high" }, sources: [] });
+      options.onResult({ url: "https://example.com/.git/HEAD", status: "responded", statusCode: 404, durationMs: 40, sources: [] });
+      options.onExposureProgress?.(EXPOSURE_PATHS.length, EXPOSURE_PATHS.length);
+      return { discovered: 0, validated: 0, truncated: false, sources: completedSources() };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    // A confirmed finding also appears in the general list; an unconfirmed probe never does.
+    expect(screen.getByRole("link", { name: "/.env" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/.git/HEAD" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "暴露面 · 1" }));
+    const table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    expect(table.getByRole("link", { name: "/.env" })).toBeVisible();
+    expect(table.getByText("高置信暴露 · 200")).toBeVisible();
+    expect(table.getByText("暴露探测")).toBeVisible();
+    expect(table.queryByText("/.git/HEAD")).not.toBeInTheDocument();
+    await user.click(table.getByRole("button", { name: "说明：https://example.com/.env 的响应详情" }));
+    expect(await screen.findByText(entry.description)).toBeVisible();
+    expect(screen.getByText(/请人工确认是否为真实泄漏/)).toBeVisible();
+    await user.keyboard("{Escape}");
+    const confidence = within(screen.getByRole("group", { name: "暴露面置信度筛选" }));
+    expect(confidence.getByRole("button", { name: "全部暴露 · 1" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(confidence.getByRole("button", { name: "高置信 · 1" }));
+    expect(within(screen.getByRole("table", { name: "网站路径扫描结果" })).getByRole("link", { name: "/.env" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    const csv = vi.mocked(downloadScanCsv).mock.calls[0][1];
+    expect(csv).toContain('"high","secret-file","high"');
+    expect(csv).toContain("120");
   });
 
   it("aborts discovery and discards updates on unmount", async () => {
@@ -342,5 +435,88 @@ describe("Automatic website path discovery workbench", () => {
     expect(screen.getByRole("link", { name: "/docs/" })).toBeVisible();
     expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled();
     expect(screen.getByRole("textbox", { name: "网站地址" })).toBeEnabled();
+  });
+});
+
+describe("public entry guidance and client routes", () => {
+  it("prefills a linked public website without starting a scan", () => {
+    const previous = window.location.href;
+    window.history.replaceState({}, "", "/network/paths/?target=https%3A%2F%2Fdocs.example.com%2F%3Ftracking%3D1");
+    try {
+      render(<WebsitePathScanPage />);
+      expect(screen.getByRole("textbox", { name: "网站地址" })).toHaveValue("https://docs.example.com/");
+      expect(discoverWebsitePaths).not.toHaveBeenCalled();
+    } finally { window.history.replaceState({}, "", previous); }
+  });
+
+  it("shows an unavailable entry clearly and preserves its actual HTTP status", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      options.onResult({ url: "https://example.com/", status: "responded", statusCode: 404, sources: ["links"] });
+      return { ...summary(), discovered: 1, validated: 1 };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput("https://example.com/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    expect(await screen.findByText(/网站入口返回 HTTP 404/)).toBeVisible();
+    expect(screen.getByText("未找到 · 404")).toBeVisible();
+  });
+
+  it("keeps successfully responding declared routes separate from soft-404 shells but does not hide missing routes", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      options.onResult({ url: "https://example.com/docs/items", status: "responded", statusCode: 200, soft404: true, clientRoute: true, sources: ["scripts"] });
+      options.onResult({ url: "https://example.com/docs/missing", status: "responded", statusCode: 404, soft404: true, clientRoute: true, sources: ["scripts"] });
+      options.onResult({ url: "https://example.com/unknown", status: "responded", statusCode: 200, soft404: true, sources: ["scripts"] });
+      return { ...summary(), discovered: 3, validated: 3 };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput("https://example.com/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    expect(await screen.findByText("前端路由 · 200")).toBeVisible();
+    expect(screen.getByText("未找到 · 404")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "说明：https://example.com/docs/items 的响应详情" }));
+    expect(await screen.findByText(/脚本明确声明了此路由/)).toHaveTextContent("统一应用入口");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    expect(screen.getByRole("link", { name: "/docs/items" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/docs/missing" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "/unknown" })).not.toBeInTheDocument();
+  });
+
+  it("keeps published fixed-list routes visible and excludes unconfirmed probes from counts", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      options.onResult({ url: "https://example.com/console/", status: "responded", statusCode: 200, clientRoute: true, sources: ["scripts"] });
+      options.onResult({ url: "https://example.com/actuator/health", status: "responded", statusCode: 403, sources: ["links"] });
+      options.onResult({ url: "https://example.com/.git/HEAD", status: "responded", statusCode: 404, sources: [] });
+      options.onResult({ url: "https://example.com/.env", status: "error", sources: [] });
+      return { ...summary(), discovered: 2, validated: 2 };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput("https://example.com/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    expect(await screen.findByText("前端路由 · 200")).toBeVisible();
+    expect(screen.getByText("访问受限 · 403")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    expect(screen.getByRole("button", { name: "全部状态 · 2" })).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "未找到" }));
+    expect(screen.queryByRole("link", { name: "/.git/HEAD" })).not.toBeInTheDocument();
+    const metrics = document.querySelector<HTMLElement>(".workbench-inline-summary")!;
+    expect(within(metrics).getByText("未找到").nextElementSibling).toHaveTextContent("0");
+    expect(within(metrics).getByText("请求错误").nextElementSibling).toHaveTextContent("0");
+  });
+
+  it("updates the current entry when the website advertises an HTTPS upgrade", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      options.onTarget?.("https://example.com/docs/");
+      return { ...summary(), baseUrl: "https://example.com/docs/" };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput("http://example.com/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "网站地址" })).toHaveValue("https://example.com/docs/"));
+    expect(screen.getByText("本轮目标：https://example.com/docs/")).toBeVisible();
   });
 });

@@ -256,9 +256,14 @@ function splitSecretKeyLine(rawLine: string) {
   const trimmed = rawLine.trim();
   if (!trimmed) throw new SecretKeyParseError("empty-key", "密钥不能为空");
 
-  if (trimmed.startsWith("[")) return { key: trimmed, label: undefined };
-
   const separatorIndex = trimmed.indexOf(",");
+  const closingBracketIndex = trimmed.indexOf("]");
+  // An array's first comma belongs to its bytes. A bracketed note such as
+  // "[ops],key" closes before the separator and is an ordinary wallet label.
+  if (trimmed.startsWith("[") && (separatorIndex < 0 ||
+    (closingBracketIndex < 0 || separatorIndex < closingBracketIndex) && looksLikeJsonSecretArray(trimmed))) {
+    return { key: trimmed, label: undefined };
+  }
   if (separatorIndex < 0) return { key: trimmed, label: undefined };
 
   const label = trimmed.slice(0, separatorIndex).trim();
@@ -271,10 +276,20 @@ function splitSecretKeyLine(rawLine: string) {
   return { key, label: label.slice(0, 120) };
 }
 
+function looksLikeJsonSecretArray(value: string) {
+  return /^\[\s*(?:\d|["\[\]\-]|$)/u.test(value);
+}
+
 function looksLikeSolanaSecret(value: string) {
-  if (value.startsWith("[") || /^\d+(?:\s+\d+){15,}$/.test(value)) return true;
+  if (value.startsWith("[") && !value.includes("]") && looksLikeJsonSecretArray(value)) return true;
+  // Also reject secret material wrapped in brackets or quotes while allowing
+  // normal notes like "[ops]" and "[2026]" to survive import normalization.
+  const candidate = value.startsWith("[") && value.endsWith("]")
+    ? value.slice(1, -1).trim().replace(/^"|"$/gu, "")
+    : value;
+  if (/^\d+(?:\s+\d+){15,}$/.test(candidate)) return true;
   try {
-    const decoded = decodeBase58(value);
+    const decoded = decodeBase58(candidate);
     const isSecretLength = decoded.length === 32 || decoded.length === 64;
     decoded.fill(0);
     return isSecretLength;

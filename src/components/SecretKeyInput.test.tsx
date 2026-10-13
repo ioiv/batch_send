@@ -14,7 +14,7 @@ describe("SecretKeyInput", () => {
 
     expect(screen.queryByRole("textbox", { name: "来源钱包密钥" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入钱包" })).toBeEnabled();
-    expect(fileInput.accept).toBe(".txt,.csv,.json,text/plain,text/csv,application/json");
+    expect(fileInput.accept).toBe(".txt,.csv,.tsv,.json,.xlsx,text/plain,text/csv,text/tab-separated-values,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(secretStore).toHaveAttribute("aria-hidden", "true");
     expect(secretStore).toHaveAttribute("autocomplete", "off");
     expect(secretStore).toHaveAttribute("data-1p-ignore", "true");

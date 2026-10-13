@@ -1,8 +1,11 @@
 import { Resolver } from "node:dns/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import { fetchPublicDocument, normalizeDomain, type PublicDocumentResult } from "./network-scan.js";
+import { fetchPublicDocument, normalizeDomain, scanSubdomain, type PublicDocumentOptions, type PublicDocumentResult, type SubdomainScanResult } from "./network-scan.js";
+import { SubdomainSourceCache } from "./subdomain-source-cache.js";
+import { discoverPentestTools, PENTEST_TOOLS_TIMEOUT_MS } from "./pentest-tools-discovery.js";
 
-export type SubdomainDiscoverySource = "crtsh" | "certspotter" | "hackertarget" | "dns" | "website" | "wayback";
+export type SubdomainDiscoverySource = "subdomaincenter" | "certspotter" | "hackertarget" | "dns" | "website" | "anubis" | "common" | "pentesttools" | "certkit";
 export interface SubdomainDiscoveryResult {
   source: SubdomainDiscoverySource;
   status: "success" | "partial" | "error";
@@ -12,24 +15,50 @@ export interface SubdomainDiscoveryResult {
 
 type MetadataResolver = Pick<Resolver, "resolveNs" | "resolveMx" | "resolveTxt" | "resolveSoa" | "cancel">;
 export interface SubdomainDiscoveryDependencies {
-  fetchDocument(url: string, options: { timeoutMs: number; maxBytes: number; signal?: AbortSignal }): Promise<PublicDocumentResult>;
+  fetchDocument(url: string, options: PublicDocumentOptions): Promise<PublicDocumentResult>;
   createResolver(): MetadataResolver;
+  scanDomain?(domain: string, timeoutMs: number, signal: AbortSignal): Promise<SubdomainScanResult>;
 }
 
-const defaults: SubdomainDiscoveryDependencies = { fetchDocument: fetchPublicDocument, createResolver: () => new Resolver() };
+export interface SubdomainDiscoveryOptions {
+  /** Server-only credential; never accepted from a scan request or returned to the browser. */
+  sslmateApiKey?: string;
+}
+
+const defaults: SubdomainDiscoveryDependencies = {
+  fetchDocument: fetchPublicDocument, createResolver: () => new Resolver(),
+  scanDomain: (domain, timeoutMs, signal) => scanSubdomain(domain, timeoutMs, undefined, signal)
+};
 export const MAX_DISCOVERY_DOMAINS = 5000;
 export const MAX_DISCOVERY_BYTES = 4 * 1024 * 1024;
 const MAX_PAGES = 8;
+const MAX_FREE_HOSTSEARCH_RECORDS = 50;
+const MAX_FREE_CERTKIT_CERTIFICATES = 100;
+const sourceCache = new SubdomainSourceCache<SubdomainDiscoveryResult>();
 const ABSENT_DNS_CODES = new Set(["ENODATA", "ENOTFOUND"]);
+export const COMMON_SUBDOMAIN_LABELS = [
+  "www", "app", "api", "docs", "game", "play", "mint", "status", "dashboard", "portal", "auth", "login",
+  "account", "web", "static", "assets", "cdn", "media", "images", "blog", "news", "help", "support", "mail",
+  "shop", "store", "market", "explorer", "rpc", "dev", "test", "staging"
+] as const;
 
 class SourceFailure extends Error {}
 
 class DomainCollector {
   readonly domains = new Set<string>();
+  readonly wildcardPatterns = new Set<string>();
   capped = false;
   constructor(readonly root: string) {}
   add(input: unknown): void {
-    if (typeof input !== "string" || input.includes("*")) return;
+    if (typeof input !== "string") return;
+    if (input.includes("*")) {
+      if (!input.trim().startsWith("*.")) return;
+      try {
+        const wildcardRoot = normalizeDomain(input.trim().slice(2));
+        if (wildcardRoot === this.root || wildcardRoot.endsWith(`.${this.root}`)) this.wildcardPatterns.add(`*.${wildcardRoot}`);
+      } catch { /* A wildcard pattern is evidence, never a hostname to probe. */ }
+      return;
+    }
     let hostname: string;
     try { hostname = normalizeDomain(input.trim()); } catch { return; }
     if (hostname === this.root || !hostname.endsWith(`.${this.root}`) || this.domains.has(hostname)) return;
@@ -53,13 +82,27 @@ interface Context {
   deadline: number;
   dependencies: SubdomainDiscoveryDependencies;
   warnings: Set<string>;
+  notes: Set<string>;
+  sslmateApiKey?: string;
+  certspotterAuthenticated?: boolean;
 }
 
-async function readDocument(context: Context, url: URL | string, maxBytes = MAX_DISCOVERY_BYTES): Promise<PublicDocumentResult> {
+async function readDocument(context: Context, url: URL | string, maxBytes = MAX_DISCOVERY_BYTES, headers?: Readonly<Record<string, string>>, body?: string): Promise<PublicDocumentResult> {
   const remaining = context.deadline - Date.now();
   if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("来源查询超时或已取消");
-  const response = await context.dependencies.fetchDocument(url.toString(), { timeoutMs: remaining, maxBytes, signal: context.signal });
+  const response = await context.dependencies.fetchDocument(url.toString(), { timeoutMs: remaining, maxBytes, signal: context.signal, ...(headers ? { headers } : {}), ...(body !== undefined ? { method: "POST", body } : {}) });
   if (response.statusCode < 200 || response.statusCode >= 300) {
+    if (new URL(url).hostname === "api.certspotter.com") {
+      let code: unknown;
+      try { code = record(JSON.parse(response.body.toString("utf8")))?.code; } catch { /* Only known error codes are safe to expose. */ }
+      if (code === "disabled_credentials") throw new SourceFailure("SSLMate Key 已停用，请在账户中启用或更换");
+      if (code === "bad_credentials" || response.statusCode === 401) throw new SourceFailure("SSLMate Key 无效，请检查服务端配置");
+      if (code === "unauthorized") throw new SourceFailure("SSLMate Key 没有 CT Search 权限，请检查 Key 的 Usage");
+      if (code === "not_allowed_by_plan" || response.statusCode === 403) throw new SourceFailure("SSLMate 账户或 Key 无权进行此查询，请检查 CT Search 权限与套餐");
+      if (code === "payment_required" || response.statusCode === 402) throw new SourceFailure("SSLMate CT Search 订阅不可用，请检查账户状态");
+      if (code === "rate_limited" || response.statusCode === 429) throw new SourceFailure("SSLMate 查询限流：配额或速率已达上限，请稍后重试");
+      if (code === "timeout") throw new SourceFailure("SSLMate 查询超过套餐时限，已保留此前结果");
+    }
     if (response.statusCode === 429) throw new SourceFailure("来源暂时限流，请稍后重试");
     throw new SourceFailure(`来源返回 HTTP ${response.statusCode}`);
   }
@@ -75,34 +118,33 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-async function discoverCrtsh(context: Context): Promise<void> {
-  const url = new URL("https://crt.sh/");
-  url.searchParams.set("q", `%.${context.domain}`);
-  url.searchParams.set("output", "json");
+async function discoverIndexedNames(context: Context, source: "subdomaincenter" | "anubis"): Promise<void> {
+  const url = source === "subdomaincenter" ? new URL("https://api.subdomain.center/")
+    : new URL(`https://anubisdb.com/anubis/subdomains/${encodeURIComponent(context.domain)}`);
+  if (source === "subdomaincenter") url.searchParams.set("domain", context.domain);
   const response = await readDocument(context, url);
   if (response.truncated) {
-    // Recover only complete JSON string fields from a bounded, cut-off response.
-    for (const match of response.body.toString("utf8").matchAll(/"name_value"\s*:\s*("(?:\\.|[^"\\])*")/g)) {
-      try { for (const name of (JSON.parse(match[1]) as string).split(/\r?\n/)) context.collector.add(name); } catch { /* Skip an incomplete field. */ }
+    // Recover only complete JSON strings from the bounded array sample.
+    for (const match of response.body.toString("utf8").matchAll(/"(?:\\.|[^"\\])*"/g)) {
+      try { context.collector.add(JSON.parse(match[0])); } catch { /* Ignore incomplete entries. */ }
     }
     return;
   }
-  const rows = parseJson(response);
-  if (!Array.isArray(rows) || rows.some((row) => typeof record(row)?.name_value !== "string")) throw new SourceFailure("crt.sh 返回的数据格式无效");
-  let rawCount = 0;
-  let unknownCount = false;
-  for (const row of rows) {
-    const entry = record(row)!;
-    for (const name of (entry.name_value as string).split(/\r?\n/)) context.collector.add(name);
-    if (typeof entry.result_count === "number" && Number.isFinite(entry.result_count) && entry.result_count >= 0) rawCount += entry.result_count;
-    else unknownCount = true;
-  }
-  // crt.sh applies its 10,000-row limit before grouping; it has no stable pagination API.
-  if (rawCount >= 10000 || rows.length >= 10000) context.warnings.add("crt.sh 达到来源记录上限，结果可能不完整");
-  if (unknownCount) context.warnings.add("crt.sh 未提供完整性计数，无法确认是否截断");
+  const names = parseJson(response);
+  const label = source === "subdomaincenter" ? "Subdomain Center" : "Anubis";
+  if (!Array.isArray(names) || names.some(name => typeof name !== "string")) throw new SourceFailure(`${label} 返回的数据格式无效`);
+  names.forEach(name => context.collector.add(name));
+  if (source === "subdomaincenter") {
+    context.notes.add("使用免费匿名查询，最多返回 500 个随机样本");
+    if (names.length >= 500) context.warnings.add("Subdomain Center 达到免费抽样上限，结果可能不完整");
+  } else if (names.length >= 10000) context.warnings.add("Anubis 达到来源记录上限，结果可能不完整");
+  if (!names.length) context.notes.add("免费数据库暂无此域名的收录");
 }
 
 async function discoverCertspotter(context: Context): Promise<void> {
+  const key = context.sslmateApiKey?.trim();
+  if (key && (key.length > 2048 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(key))) throw new SourceFailure("SSLMate Key 格式无效，请检查服务端配置");
+  const headers = key ? { Authorization: `Bearer ${key}` } : undefined;
   let cursor: string | undefined;
   const seenCursors = new Set<string>();
   for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -111,7 +153,9 @@ async function discoverCertspotter(context: Context): Promise<void> {
     url.searchParams.set("include_subdomains", "true");
     url.searchParams.set("expand", "dns_names");
     if (cursor) url.searchParams.set("after", cursor);
-    const response = await readDocument(context, url);
+    // Credentials are sent only to this fixed HTTPS endpoint, including subsequent pages.
+    const response = await readDocument(context, url, MAX_DISCOVERY_BYTES, headers);
+    if (key) context.certspotterAuthenticated = true;
     if (response.truncated) {
       for (const match of response.body.toString("utf8").matchAll(/"dns_names"\s*:\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])/g)) {
         try { for (const name of JSON.parse(match[1]) as unknown[]) context.collector.add(name); } catch { /* Skip an incomplete array. */ }
@@ -134,6 +178,45 @@ async function discoverCertspotter(context: Context): Promise<void> {
   context.warnings.add("CertSpotter 达到分页上限，结果可能不完整");
 }
 
+async function discoverCertkit(context: Context): Promise<void> {
+  // The public tool queries this endpoint directly, without a session or API key.
+  // Keep the request within its advertised free 100-certificate limit.
+  const response = await readDocument(context, "https://ct.certkit.io/search", MAX_DISCOVERY_BYTES,
+    { Accept: "application/json", "Content-Type": "application/json" },
+    JSON.stringify({ domain: context.domain, limit: MAX_FREE_CERTKIT_CERTIFICATES, sort: "" }));
+  context.notes.add("使用免费免登录 CT 查询，最多返回 100 张证书，包含历史记录");
+  if (response.truncated) {
+    const text = response.body.toString("utf8");
+    for (const match of text.matchAll(/"commonName"\s*:\s*("(?:\\.|[^"\\])*")/g)) {
+      try { context.collector.add(JSON.parse(match[1])); } catch { /* Ignore an incomplete field. */ }
+    }
+    for (const match of text.matchAll(/"dnsNames"\s*:\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])/g)) {
+      try { for (const name of JSON.parse(match[1]) as unknown[]) context.collector.add(name); } catch { /* Ignore an incomplete array. */ }
+    }
+    return;
+  }
+  const data = record(parseJson(response));
+  const rows = data?.results;
+  const totalCount = data?.totalCount;
+  if (!Array.isArray(rows) || typeof totalCount !== "number" || !Number.isSafeInteger(totalCount)
+    || totalCount < rows.length || totalCount < 0) throw new SourceFailure("CertKit 返回的数据格式无效");
+  let malformed = 0;
+  for (const value of rows) {
+    const row = record(value);
+    if (!row || !Array.isArray(row.dnsNames) || row.dnsNames.some(name => typeof name !== "string")
+      || row.commonName !== undefined && row.commonName !== null && typeof row.commonName !== "string") {
+      malformed++;
+      continue;
+    }
+    context.collector.add(row.commonName);
+    row.dnsNames.forEach(name => context.collector.add(name));
+  }
+  if (malformed && malformed === rows.length) throw new SourceFailure("CertKit 返回的数据格式无效");
+  if (malformed) context.warnings.add("CertKit 部分证书记录格式无效，已保留有效名称");
+  if (totalCount > rows.length) context.warnings.add(`CertKit 共收录 ${totalCount} 张证书，免费查询仅返回 ${rows.length} 张（最多 100 张），结果可能不完整`);
+  if (!rows.length && !totalCount) context.notes.add("CT 记录暂无此域名的收录");
+}
+
 async function discoverHackerTarget(context: Context): Promise<void> {
   const url = new URL("https://api.hackertarget.com/hostsearch/");
   url.searchParams.set("q", context.domain);
@@ -153,79 +236,95 @@ async function discoverHackerTarget(context: Context): Promise<void> {
   }
   if (malformed === lines.length) throw new SourceFailure("HackerTarget 暂无可用数据或已达到调用配额");
   if (malformed) context.warnings.add("HackerTarget 部分记录格式无效，已保留有效线索");
-  if (lines.length >= 500) context.warnings.add("HackerTarget 达到免费来源记录上限，结果可能不完整");
+  if (lines.length >= MAX_FREE_HOSTSEARCH_RECORDS) context.warnings.add("HackerTarget 达到免费来源记录上限，结果可能不完整");
 }
 
-async function discoverWayback(context: Context): Promise<void> {
-  let cursor: string | undefined;
-  const seenCursors = new Set<string>();
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const url = new URL("https://web.archive.org/cdx/search/cdx");
-    url.searchParams.set("url", context.domain);
-    url.searchParams.set("matchType", "domain");
-    url.searchParams.set("output", "json");
-    url.searchParams.set("fl", "original");
-    url.searchParams.set("collapse", "urlkey");
-    url.searchParams.set("limit", "1000");
-    url.searchParams.set("showResumeKey", "true");
-    if (cursor) url.searchParams.set("resumeKey", cursor);
-    const response = await readDocument(context, url);
-    if (response.truncated) {
-      for (const match of response.body.toString("utf8").matchAll(/\[\s*("(?:\\.|[^"\\])*")\s*\]/g)) {
-        try { context.collector.addUrl(JSON.parse(match[1])); } catch { /* Skip an incomplete URL. */ }
-      }
-      return;
-    }
-    const rows = parseJson(response);
-    if (!Array.isArray(rows) || rows.some((row) => !Array.isArray(row)) || (rows.length && (rows[0].length !== 1 || rows[0][0] !== "original"))) throw new SourceFailure("Wayback 返回的数据格式无效");
-    let nextCursor: string | undefined;
-    let hasResumeMarker = false;
-    for (let index = 1; index < rows.length; index += 1) {
-      const row: unknown[] = rows[index];
-      if (!row.length && index === rows.length - 2 && rows[index + 1].length === 1 && typeof rows[index + 1][0] === "string") {
-        nextCursor = rows[index + 1][0];
-        hasResumeMarker = true;
-        break;
-      }
-      if (row.length !== 1 || typeof row[0] !== "string") throw new SourceFailure("Wayback 返回的数据格式无效");
-      context.collector.addUrl(row[0]);
-    }
-    if (context.collector.capped) return;
-    if (hasResumeMarker && !nextCursor) { context.warnings.add("Wayback 无法继续分页，已保留当前结果"); return; }
-    if (!nextCursor) return;
-    if (nextCursor.length > 1024 || seenCursors.has(nextCursor)) {
-      context.warnings.add("Wayback 无法继续分页，已保留当前结果");
-      return;
-    }
-    cursor = nextCursor;
-    seenCursors.add(cursor);
-  }
-  context.warnings.add("Wayback 达到分页上限，结果可能不完整");
+function documentText(text: string): string {
+  return text.replace(/\\\//g, "/").replace(/\\u002f/gi, "/").replace(/\\u003a/gi, ":").replace(/&amp;/gi, "&");
 }
 
-function extractDocumentUrls(context: Context, text: string): void {
-  for (const match of text.matchAll(/(?:https?:\/\/|\/\/)[^\s"'<>]+/gi)) context.collector.addUrl(match[0].replace(/&amp;/gi, "&"));
+function extractDocumentUrls(context: Context, rawText: string): void {
+  const text = documentText(rawText);
+  for (const match of text.matchAll(/(?:https?:\/\/|\/\/)[^\s"'<>]+/gi)) context.collector.addUrl(match[0]);
+  // Bundled application configuration can publish bare hostnames as well as URLs.
+  for (const match of text.matchAll(/(?<![a-z0-9_.\\-])[a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,63}(?![a-z0-9_.\\-])/gi)) context.collector.add(match[0]);
 }
+
+type WebsiteDocument = { url: string; kind: "page" | "robots" | "sitemap" | "script"; depth: number };
+const MAX_WEBSITE_DOCUMENTS = 12;
+const MAX_WEBSITE_DOCUMENT_BYTES = 512 * 1024;
 
 async function discoverWebsite(context: Context): Promise<void> {
+  const queue: WebsiteDocument[] = [];
+  const seen = new Set<string>();
   let readable = 0;
-  await Promise.all(["/", "/robots.txt", "/sitemap.xml"].map(async (path) => {
-    const url = `https://${context.domain}${path}`;
+  let bytesRead = 0;
+  const enqueue = (value: string, base: string, kind: WebsiteDocument["kind"], depth: number) => {
     try {
-      const remaining = context.deadline - Date.now();
-      if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("来源查询超时或已取消");
-      const response = await context.dependencies.fetchDocument(url, { timeoutMs: remaining, maxBytes: 1024 * 1024, signal: context.signal });
-      if (response.statusCode >= 200 && response.statusCode < 400) {
-        readable += 1;
-        if (response.location) {
-          try { context.collector.addUrl(new URL(response.location, url).href); } catch { /* Do not follow malformed redirects. */ }
-        }
-        extractDocumentUrls(context, response.body.toString("utf8"));
-        if (response.truncated) context.warnings.add("网站文档达到读取上限，结果可能不完整");
-      } else if (response.statusCode === 404 || response.statusCode === 410) readable += 1;
-      else context.warnings.add("部分网站文档不可读取，已保留可用线索");
-    } catch { context.warnings.add("部分网站文档请求失败，已保留可用线索"); }
-  }));
+      const url = new URL(documentText(value), base);
+      context.collector.addUrl(url.href);
+      const hostname = normalizeDomain(url.hostname);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port
+        || (hostname !== context.domain && !hostname.endsWith(`.${context.domain}`))) return;
+      url.hash = "";
+      if (seen.has(url.href)) return;
+      if (depth > 3 || queue.length >= MAX_WEBSITE_DOCUMENTS) {
+        context.warnings.add("网站公开资源达到读取上限，结果可能不完整"); return;
+      }
+      seen.add(url.href);
+      queue.push({ url: url.href, kind, depth });
+    } catch { /* Ignore malformed or out-of-scope resource references. */ }
+  };
+  const root = `https://${context.domain}/`;
+  enqueue(root, root, "page", 0);
+  enqueue("/robots.txt", root, "robots", 0);
+  enqueue("/sitemap.xml", root, "sitemap", 0);
+  const attribute = (tag: string, name: string) => tag.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"))?.slice(1).find(value => value !== undefined);
+  for (let offset = 0; offset < queue.length; offset += 3) {
+    if (context.signal.aborted) throw new SourceFailure("网站文档查询已取消");
+    // Reserve each document's sample before parallel reads to enforce an aggregate bound.
+    await Promise.all(queue.slice(offset, offset + 3).map(async doc => {
+      const budget = Math.min(MAX_WEBSITE_DOCUMENT_BYTES, MAX_DISCOVERY_BYTES - bytesRead);
+      if (budget <= 0) { context.warnings.add("网站公开资源达到读取上限，结果可能不完整"); return; }
+      bytesRead += budget;
+      try {
+        const remaining = context.deadline - Date.now();
+        if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("来源查询超时或已取消");
+        const response = await context.dependencies.fetchDocument(doc.url, { timeoutMs: remaining, maxBytes: budget, signal: context.signal });
+        bytesRead -= budget - Math.min(budget, response.body.length);
+        if (context.signal.aborted) return;
+        if (response.statusCode >= 200 && response.statusCode < 400) {
+          readable += 1;
+          if (response.location) enqueue(response.location, doc.url, doc.kind, doc.depth + 1);
+          const text = documentText(response.body.toString("utf8"));
+          extractDocumentUrls(context, text);
+          if (response.truncated) context.warnings.add("网站文档达到读取上限，结果可能不完整");
+          if (doc.kind === "page") {
+            const baseValue = text.match(/<base\b[^>]*>/i)?.[0];
+            let base = doc.url;
+            try { if (baseValue && attribute(baseValue, "href")) base = new URL(attribute(baseValue, "href")!, doc.url).href; } catch { /* Use the document URL. */ }
+            for (const match of text.matchAll(/<(?:script|link)\b[^>]*>/gi)) {
+              const tag = match[0];
+              const script = /^<script\b/i.test(tag);
+              const rel = attribute(tag, "rel")?.toLowerCase().split(/\s+/) ?? [];
+              if (!script && !rel.includes("modulepreload") && !(rel.includes("preload") && attribute(tag, "as")?.toLowerCase() === "script")) continue;
+              const reference = attribute(tag, script ? "src" : "href");
+              if (reference) enqueue(reference, base, "script", doc.depth + 1);
+            }
+          } else if (doc.kind === "script") {
+            for (const match of text.matchAll(/["']((?:\.{0,2}\/|https?:\/\/)[^"'\s]+\.m?js(?:\?[^"'\s]*)?)["']/gi)) enqueue(match[1], doc.url, "script", doc.depth + 1);
+          } else if (doc.kind === "robots") {
+            for (const match of text.matchAll(/^\s*Sitemap:\s*(\S+)\s*$/gim)) enqueue(match[1], doc.url, "sitemap", doc.depth + 1);
+          } else if (/<sitemapindex\b/i.test(text)) {
+            for (const match of text.matchAll(/<loc\b[^>]*>\s*([^<]+?)\s*<\/loc\s*>/gi)) enqueue(match[1], doc.url, "sitemap", doc.depth + 1);
+          }
+        } else if (response.statusCode === 404 || response.statusCode === 410) {
+          readable += 1;
+          if (doc.kind === "page") context.warnings.add(`网站首页返回 HTTP ${response.statusCode}，未能读取页面和脚本线索`);
+        } else context.warnings.add("部分网站文档不可读取，已保留可用线索");
+      } catch { context.warnings.add("部分网站文档请求失败，已保留可用线索"); }
+    }));
+  }
   if (!readable) throw new SourceFailure("网站文档暂时无法读取");
 }
 
@@ -235,8 +334,14 @@ function dnsCode(error: unknown): string | undefined {
 
 async function discoverDnsMetadata(context: Context): Promise<void> {
   const resolver = context.dependencies.createResolver();
-  const onAbort = () => resolver.cancel();
-  if (context.signal.aborted) { resolver.cancel(); throw new SourceFailure("来源查询已取消"); }
+  let cancelled = false;
+  const cancelResolver = () => {
+    if (cancelled) return;
+    cancelled = true;
+    try { resolver.cancel(); } catch { /* Cancelling an already finished resolver is not a source failure. */ }
+  };
+  const onAbort = () => cancelResolver();
+  if (context.signal.aborted) { cancelResolver(); throw new SourceFailure("来源查询已取消"); }
   context.signal.addEventListener("abort", onAbort, { once: true });
   try {
     const answers = await Promise.allSettled([resolver.resolveNs(context.domain), resolver.resolveMx(context.domain), resolver.resolveTxt(context.domain), resolver.resolveSoa(context.domain)]);
@@ -261,19 +366,80 @@ async function discoverDnsMetadata(context: Context): Promise<void> {
     if (soa.status === "fulfilled") context.collector.add((soa.value as { nsname: string }).nsname);
   } finally {
     context.signal.removeEventListener("abort", onAbort);
-    resolver.cancel();
+    cancelResolver();
   }
 }
 
-/** Gather observed names from one source. No guesses, wordlists or target-domain brute force. */
-export async function discoverSubdomains(domainInput: string, source: SubdomainDiscoverySource, timeoutMs = 20000, dependencies = defaults, signal?: AbortSignal): Promise<SubdomainDiscoveryResult> {
+function sameDnsAnswer(candidate: SubdomainScanResult, control: SubdomainScanResult): boolean {
+  if (candidate.cname && control.cname) return candidate.cname.toLowerCase() === control.cname.toLowerCase();
+  return Boolean(candidate.addresses.length && candidate.addresses.some(address => control.addresses.includes(address)));
+}
+
+async function discoverCommonNames(context: Context): Promise<void> {
+  const scan = context.dependencies.scanDomain ?? defaults.scanDomain!;
+  const query = async (hostname: string) => {
+    const remaining = context.deadline - Date.now();
+    if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("常用名称 DNS 查询超时或已取消");
+    // The shared DNS probe accepts at least one second; the source-wide signal still
+    // ends every in-flight probe at this source's tighter deadline.
+    const result = await scan(hostname, Math.max(1000, Math.min(2000, remaining)), context.signal);
+    if (context.signal.aborted) throw new SourceFailure("常用名称 DNS 查询已取消");
+    return result;
+  };
+  // Two independent controls avoid counting catch-all DNS responses as published names.
+  const controls = await Promise.all(Array.from({ length: 2 }, () => query(`chainkit-check-${randomUUID().replaceAll("-", "")}.${context.domain}`)));
+  if (controls.some(control => control.status === "error")) throw new SourceFailure("通配 DNS 校验未完成，未把常用名称计入发现");
+  const resolvingControls = controls.filter(control => control.status === "resolved");
+  const stableControls = controls[0].cname || controls[1].cname
+    ? Boolean(controls[0].cname && controls[0].cname === controls[1].cname)
+    : Boolean(controls[0].addresses.length && JSON.stringify([...controls[0].addresses].sort()) === JSON.stringify([...controls[1].addresses].sort()));
+  if (resolvingControls.length && (resolvingControls.length !== 2 || !stableControls)) {
+    context.warnings.add("随机名称的 DNS 响应不稳定，未把常用名称计入发现，以免通配解析产生误报");
+    return;
+  }
+  let next = 0;
+  let failed = 0;
+  let wildcardMatches = 0;
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (!context.signal.aborted && next < COMMON_SUBDOMAIN_LABELS.length) {
+      const label = COMMON_SUBDOMAIN_LABELS[next++];
+      const hostname = `${label}.${context.domain}`;
+      const result = await query(hostname);
+      if (result.status === "error") { failed += 1; continue; }
+      if (result.status !== "resolved") continue;
+      if (resolvingControls.some(control => sameDnsAnswer(result, control))) { wildcardMatches += 1; continue; }
+      // An unstable wildcard may use rotating answers. Without distinct CNAME evidence,
+      // an address-only guess cannot establish that a real named record exists.
+      if (resolvingControls.length && !result.cname) { wildcardMatches += 1; continue; }
+      context.collector.add(hostname);
+    }
+  }));
+  if (failed) context.warnings.add(`${failed} 个常用名称 DNS 查询失败，已保留成功结果`);
+  if (wildcardMatches) context.warnings.add(`${wildcardMatches} 个名称可能来自通配 DNS，未计入发现`);
+}
+
+/** Combine published evidence, remote Light scans and fixed common-name DNS checks. */
+export async function discoverSubdomains(domainInput: string, source: SubdomainDiscoverySource, timeoutMs = source === "pentesttools" ? PENTEST_TOOLS_TIMEOUT_MS : 20000, dependencies = defaults, signal?: AbortSignal, options: SubdomainDiscoveryOptions = { sslmateApiKey: process.env.SSLMATE_API_KEY }): Promise<SubdomainDiscoveryResult> {
   const domain = normalizeDomain(domainInput);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 20000) throw new Error("发现来源超时必须在 1000–20000 毫秒之间");
+  const maxTimeoutMs = source === "pentesttools" ? PENTEST_TOOLS_TIMEOUT_MS : 20000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > maxTimeoutMs) throw new Error(`发现来源超时必须在 1000–${maxTimeoutMs} 毫秒之间`);
   if (signal?.aborted) return { source, status: "error", domains: [], message: "来源查询已取消" };
+  const cachedSource = dependencies === defaults && ["subdomaincenter", "anubis", "certspotter", "hackertarget", "pentesttools", "certkit"].includes(source);
+  // Different credentials must never share authenticated data or cached permission failures.
+  const cacheKey = cachedSource ? `${source}:${domain}:${source === "certspotter" ? createHash("sha256").update(options.sslmateApiKey ?? "").digest("hex") : "anonymous"}` : undefined;
+  if (cacheKey) {
+    const cached = sourceCache.read(cacheKey);
+    if (cached) return cached;
+  }
+  const completedResult = (result: SubdomainDiscoveryResult) => {
+    // A disconnected caller must not turn cancellation into a cached provider outage.
+    if (cacheKey && !signal?.aborted && !controller.signal.aborted) sourceCache.write(cacheKey, result);
+    return result;
+  };
   const collector = new DomainCollector(domain);
   const controller = new AbortController();
   const warnings = new Set<string>();
-  const context: Context = { domain, collector, signal: controller.signal, deadline: Date.now() + timeoutMs, dependencies, warnings };
+  const context: Context = { domain, collector, signal: controller.signal, deadline: Date.now() + timeoutMs, dependencies, warnings, notes: new Set(), sslmateApiKey: options.sslmateApiKey };
   let onAbort: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const interruption = new Promise<never>((_, reject) => {
@@ -283,14 +449,24 @@ export async function discoverSubdomains(domainInput: string, source: SubdomainD
     else signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    const operation = source === "crtsh" ? discoverCrtsh(context) : source === "certspotter" ? discoverCertspotter(context) : source === "hackertarget" ? discoverHackerTarget(context)
-      : source === "wayback" ? discoverWayback(context) : source === "website" ? discoverWebsite(context) : source === "dns" ? discoverDnsMetadata(context) : Promise.reject(new SourceFailure("不支持的发现来源"));
+    const operation = source === "pentesttools" ? (async () => {
+      const result = await discoverPentestTools({ domain, timeoutMs, signal: controller.signal, fetchDocument: dependencies.fetchDocument }, dependencies === defaults);
+      result.domains.forEach(name => collector.add(name));
+      if (result.status === "error") throw new SourceFailure(result.message || "Pentest-Tools 来源查询失败");
+      if (result.status === "partial") warnings.add(result.message || "Pentest-Tools 仅返回部分结果");
+      else if (result.message) context.notes.add(result.message);
+    })() : source === "subdomaincenter" || source === "anubis" ? discoverIndexedNames(context, source) : source === "certspotter" ? discoverCertspotter(context) : source === "certkit" ? discoverCertkit(context) : source === "hackertarget" ? discoverHackerTarget(context)
+      : source === "website" ? discoverWebsite(context) : source === "dns" ? discoverDnsMetadata(context) : source === "common" ? discoverCommonNames(context) : Promise.reject(new SourceFailure("不支持的发现来源"));
     await Promise.race([operation, interruption]);
+    if (collector.wildcardPatterns.size) warnings.add(source === "certspotter" || source === "certkit"
+      ? collector.domains.size ? "证书包含通配名称，具体子域名仍需其他来源或 DNS 验证补充" : "证书仅公开通配名称，无法从证书列出具体子域名"
+      : "来源包含通配名称，无法据此列出具体子域名");
     if (collector.capped) warnings.add("达到每个来源 5000 个域名上限，结果可能不完整");
-    return { source, status: warnings.size ? "partial" : "success", domains: [...collector.domains].sort(), ...(warnings.size ? { message: [...warnings].join("；") } : {}) };
+    const messages = [...(context.certspotterAuthenticated ? ["已通过 SSLMate 认证查询"] : []), ...context.notes, ...warnings];
+    return completedResult({ source, status: warnings.size ? "partial" : "success", domains: [...collector.domains].sort(), ...(messages.length ? { message: messages.join("；") } : {}) });
   } catch (error) {
     const message = error instanceof SourceFailure ? error.message : controller.signal.aborted ? "来源查询超时或已取消" : "来源查询失败，请稍后重试";
-    return { source, status: collector.domains.size ? "partial" : "error", domains: [...collector.domains].sort(), message };
+    return completedResult({ source, status: collector.domains.size ? "partial" : "error", domains: [...collector.domains].sort(), message });
   } finally {
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);

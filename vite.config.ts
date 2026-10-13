@@ -5,14 +5,16 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import type { Plugin, ViteDevServer } from "vite";
 import { handleNetworkScanRequest } from "./server/network-scan";
+import { loadNetworkScanConfig } from "./server/network-scan-config";
+import type { SubdomainDiscoveryOptions } from "./server/subdomain-discovery";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
-function networkScanApi(): Plugin {
+function networkScanApi(options: SubdomainDiscoveryOptions): Plugin {
   const configure = (server: Pick<ViteDevServer, "middlewares">) => {
     server.middlewares.use((request, response, next) => {
       if (request.url?.split("?")[0] !== "/api/network-scan") return next();
-      void handleNetworkScanRequest(request, response).catch(() => {
+      void handleNetworkScanRequest(request, response, options).catch(() => {
         if (response.headersSent) { response.destroy(); return; }
         response.statusCode = 500;
         response.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -23,8 +25,9 @@ function networkScanApi(): Plugin {
   return { name: "network-scan-api", configureServer: configure, configurePreviewServer: configure };
 }
 
-export default defineConfig({
-  plugins: [networkScanApi(), react(), tailwindcss()],
+export default defineConfig(({ mode }) => ({
+  // Keep credentials in the middleware closure; never place them in define or client env.
+  plugins: [networkScanApi(loadNetworkScanConfig(mode, projectRoot)), react(), tailwindcss()],
   resolve: {
     alias: {
       "@": resolve(projectRoot, "src"),
@@ -50,4 +53,4 @@ export default defineConfig({
     environment: "node",
     setupFiles: [resolve(projectRoot, "src/test/setup.ts")]
   }
-});
+}));

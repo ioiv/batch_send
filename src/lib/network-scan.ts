@@ -19,6 +19,8 @@ export interface WebsitePathScanResult {
   fingerprint?: string;
   message?: string;
   soft404?: boolean;
+  missingPathBaseline?: { statusCode: number; fingerprint: string };
+  durationMs?: number;
 }
 
 function domainFromHostname(hostname: string) {
@@ -210,50 +212,68 @@ function dnsSignature(result: SubdomainScanResult) {
   return result.addresses.length ? [...new Set(result.addresses)].sort().join(",") : undefined;
 }
 
-export async function scanSubdomains(options: ScanOptions<SubdomainScanResult> & { domain: string }): Promise<void> {
-  validateOptions(options);
+export async function createSubdomainValidator(options: { domain: string; timeoutMs: number; signal: AbortSignal }) {
   const root = normalizeDomain(options.domain);
-  if (options.candidates.some(candidate => normalizeDomain(candidate) !== candidate || !candidate.endsWith(`.${root}`))) {
-    throw new Error("扫描范围必须是当前域名的子域名。");
-  }
-  options.onProgress?.(0, options.candidates.length);
   const first = await subdomainRequest(`${probeToken()}.${root}`, options.timeoutMs, options.signal);
   let wildcardSignature: string | undefined;
   if (dnsSignature(first)) {
     const second = await subdomainRequest(`${probeToken()}.${root}`, options.timeoutMs, options.signal);
     if (dnsSignature(first) === dnsSignature(second)) wildcardSignature = dnsSignature(first);
   }
-  await runQueue(options, options.signal, async (candidate, signal) => {
+  return async (candidate: string, signal: AbortSignal): Promise<SubdomainScanResult> => {
+    if (normalizeDomain(candidate) !== candidate || !candidate.endsWith(`.${root}`)) throw new Error("扫描范围必须是当前域名的子域名。");
     const result = await subdomainRequest(candidate, options.timeoutMs, signal);
     return { ...result, wildcard: Boolean(wildcardSignature && dnsSignature(result) === wildcardSignature) };
-  });
+  };
 }
 
-export async function scanWebsitePaths(options: ScanOptions<WebsitePathScanResult> & { baseUrl: string }): Promise<void> {
-  validateOptions(options);
+function validPathCandidate(candidate: string, base: URL) {
+  try {
+    const url = new URL(candidate);
+    return !/[\s\\]/.test(candidate) && candidate.length <= 2048 && url.href === candidate
+      && url.origin === base.origin && !url.username && !url.password && !url.hash;
+  } catch { return false; }
+}
+
+export async function createWebsitePathValidator(options: { baseUrl: string; timeoutMs: number; signal: AbortSignal }) {
   const base = new URL(normalizeWebsiteUrl(options.baseUrl));
-  if (options.candidates.some(candidate => {
-    try {
-      const url = new URL(candidate);
-      return /[\s\\]/.test(candidate) || candidate.length > 2048 || url.href !== candidate
-        || url.origin !== base.origin || Boolean(url.username || url.password || url.hash);
-    } catch { return true; }
-  })) throw new Error("扫描范围必须是当前网站的路径。");
-  options.onProgress?.(0, options.candidates.length);
   const missing = await pathRequest(new URL(probeToken(), base).href, options.timeoutMs, options.signal);
   const redirectKey = (result: WebsitePathScanResult) => {
     if (!result.location) return "";
     try { return new URL(result.location, result.url).href; }
     catch { return result.location; }
   };
-  await runQueue(options, options.signal, async (candidate, signal) => {
+  return async (candidate: string, signal: AbortSignal): Promise<WebsitePathScanResult> => {
+    if (!validPathCandidate(candidate, base)) throw new Error("扫描范围必须是当前网站的路径。");
+    const startedAt = Date.now();
     const result = await pathRequest(candidate, options.timeoutMs, signal);
-    return { ...result, soft404: Boolean(result.status === "responded" && missing.status === "responded"
+    return { ...result, durationMs: Date.now() - startedAt,
+      ...(missing.status === "responded" && missing.fingerprint ? {
+        missingPathBaseline: { statusCode: missing.statusCode!, fingerprint: missing.fingerprint }
+      } : {}), soft404: Boolean(result.status === "responded" && missing.status === "responded"
       && result.statusCode === missing.statusCode && result.statusCode !== 404 && result.statusCode !== 410
       && result.fingerprint && result.fingerprint === missing.fingerprint
       && (result.contentLength === undefined || missing.contentLength === undefined || result.contentLength === missing.contentLength)
       && (!(result.statusCode! >= 300 && result.statusCode! < 400) || redirectKey(result) === redirectKey(missing))) };
-  });
+  };
+}
+
+export async function scanSubdomains(options: ScanOptions<SubdomainScanResult> & { domain: string }): Promise<void> {
+  validateOptions(options);
+  const root = normalizeDomain(options.domain);
+  if (options.candidates.some(candidate => normalizeDomain(candidate) !== candidate || !candidate.endsWith(`.${root}`))) throw new Error("扫描范围必须是当前域名的子域名。");
+  options.onProgress?.(0, options.candidates.length);
+  const validate = await createSubdomainValidator(options);
+  await runQueue(options, options.signal, validate);
+}
+
+export async function scanWebsitePaths(options: ScanOptions<WebsitePathScanResult> & { baseUrl: string }): Promise<void> {
+  validateOptions(options);
+  const base = new URL(normalizeWebsiteUrl(options.baseUrl));
+  if (options.candidates.some(candidate => !validPathCandidate(candidate, base))) throw new Error("扫描范围必须是当前网站的路径。");
+  options.onProgress?.(0, options.candidates.length);
+  const validate = await createWebsitePathValidator(options);
+  await runQueue(options, options.signal, validate);
 }
 
 function csvCell(value: unknown) {

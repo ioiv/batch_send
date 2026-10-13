@@ -11,3 +11,6 @@ dist/
 redesign-screenshots/
 wallet-ui-check.png
 .vercel
+
+# Local API research captures may contain session cookies and proxy credentials.
+pt_subdomain_recon/

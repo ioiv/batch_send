@@ -3,6 +3,111 @@
   min-width: 0;
 }
 
+.distribution-generator {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.recipient-import-dialog {
+  width: min(38rem, calc(100vw - 2rem));
+  max-width: min(38rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+}
+
+.recipient-import-draft-heading,
+.recipient-import-file-row,
+.recipient-wallet-search,
+.recipient-wallet-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recipient-import-draft-heading {
+  justify-content: space-between;
+}
+
+.recipient-import-textarea {
+  min-height: 8rem;
+  max-height: 14rem;
+  font-family: var(--font-mono);
+}
+
+.recipient-import-error {
+  color: var(--destructive);
+  font-size: var(--text-caption);
+}
+
+.recipient-import-preview {
+  margin: 0;
+}
+
+.recipient-import-dialog .import-preview-addresses {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.recipient-import-dialog .import-preview-addresses code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.recipient-wallet-browser {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+}
+
+.recipient-wallet-search input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.recipient-wallet-list {
+  display: grid;
+  max-height: 25rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.recipient-wallet-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+}
+
+.recipient-wallet-row + .recipient-wallet-row {
+  border-top: 1px solid var(--border);
+}
+
+.recipient-wallet-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-caption);
+}
+
+.recipient-wallet-amount {
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.distribution-source-editor summary {
+  cursor: pointer;
+  font-size: var(--text-caption);
+  color: var(--muted-foreground);
+}
+
+.distribution-source-editor[open] summary {
+  margin-bottom: 0.75rem;
+}
+
 .distribution-generator__heading {
   display: flex;
   flex-wrap: wrap;
@@ -188,6 +293,26 @@
 }
 
 @media (max-width: 36rem) {
+  .recipient-wallet-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.4rem 0.6rem;
+  }
+
+  .recipient-wallet-row code {
+    grid-column: 2;
+  }
+
+  .recipient-wallet-amount {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: left;
+  }
+
+  .recipient-wallet-row > button:last-child {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
   .distribution-list-editor .distribution-amount-row {
     grid-template-columns: minmax(0, 1fr);
   }

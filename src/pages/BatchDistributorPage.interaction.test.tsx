@@ -121,6 +121,13 @@ beforeEach(() => {
   solanaMocks.signTransaction.mockReset();
 });
 
+function getRecipientEditor(name = "收款地址") {
+  const input = screen.queryByRole("textbox", { name });
+  const details = input?.closest("details") || screen.getByText("编辑原始清单", { selector: "summary" }).closest("details");
+  if (details && !details.open) fireEvent.click(details.querySelector("summary")!);
+  return screen.getByRole("textbox", { name });
+}
+
 async function waitForInitialBalanceLookup() {
   await waitFor(() => {
     expect(solanaMocks.assertNetwork).toHaveBeenCalledTimes(1);
@@ -156,7 +163,7 @@ describe("BatchDistributorPage network safety", () => {
     });
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.type(getRecipientEditor(), recipient);
     await openAndConfirm(user);
     expect(await screen.findByText("已完成 1 笔交易确认")).toBeVisible();
   });
@@ -164,7 +171,7 @@ describe("BatchDistributorPage network safety", () => {
   it("checks the latest storage before signing if another tab adds an unknown task", async () => {
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.type(getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" });
     saveTaskRecord(makeSavedTask("external-unknown"));
@@ -176,7 +183,7 @@ describe("BatchDistributorPage network safety", () => {
   it("checks storage again before broadcasting after the signing-time balance check", async () => {
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.type(getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     solanaMocks.estimateFees.mockImplementationOnce(async () => {
       saveTaskRecord(makeSavedTask("external-during-preflight"));
@@ -193,7 +200,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.confirmTransaction.mockRejectedValueOnce(new Error("RPC timeout"));
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.type(getRecipientEditor(), recipient);
     await openAndConfirm(user);
     await screen.findByRole("button", { name: "说明：禁止直接重试" });
     const currentId = readTaskHistory("sol-distribution").find((record) => record.id !== "older-complete")!.id;
@@ -214,8 +221,8 @@ describe("BatchDistributorPage network safety", () => {
     const file = new File([exact], "sol-unsent-distribution.csv", { type: "text/csv" });
     Object.defineProperty(file, "text", { value: vi.fn().mockResolvedValue(exact) });
     await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, file);
-    await user.click(within(await screen.findByRole("dialog", { name: "确认导入收款清单" })).getByRole("button", { name: "确认导入清单" }));
-    expect(screen.getByRole("textbox", { name: "收款地址与金额" })).toHaveValue(exact);
+    await user.click(within(await screen.findByRole("dialog", { name: "导入收款钱包" })).getByRole("button", { name: "确认导入清单" }));
+    expect(getRecipientEditor("收款地址与金额")).toHaveValue(exact);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" });
     expect(within(dialog).getByText("1.11111111 SOL")).toBeVisible();
@@ -234,7 +241,7 @@ describe("BatchDistributorPage network safety", () => {
     });
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), "11111111111111111111111111111111");
+    await user.type(getRecipientEditor(), "11111111111111111111111111111111");
     expect(screen.getByRole("button", { name: "开始分发" })).toBeDisabled();
     expect(screen.getByText("请先在可恢复任务记录中核对之前提交的交易")).toBeVisible();
     const historyToggle = screen.queryByRole("button", { name: "展开可恢复任务记录" });
@@ -274,7 +281,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitForInitialBalanceLookup();
 
     await user.type(
-      screen.getByRole("textbox", { name: "收款地址" }),
+      getRecipientEditor(),
       "11111111111111111111111111111111"
     );
     expandSettings("修改 RPC");
@@ -338,7 +345,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitForInitialBalanceLookup();
     let finishFees!: (fee: bigint) => void;
     solanaMocks.estimateFees.mockImplementationOnce(() => new Promise<bigint>((resolve) => { finishFees = resolve; }));
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), recipient);
+    await user.type(getRecipientEditor(), recipient);
     expect(screen.queryByRole("button", { name: /预检|复检/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     await waitFor(() => expect(solanaMocks.estimateFees).toHaveBeenCalledOnce());
@@ -361,7 +368,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(document.querySelector(".workbench-grid")).toBeInTheDocument();
 
     await user.type(
-      screen.getByRole("textbox", { name: "收款地址" }),
+      getRecipientEditor(),
       "11111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "开始分发" }));
@@ -381,7 +388,7 @@ describe("BatchDistributorPage network safety", () => {
       .mockRejectedValueOnce(new Error("RPC 网络不匹配：请选择 Mainnet 的 RPC"));
 
     await user.type(
-      screen.getByRole("textbox", { name: "收款地址" }),
+      getRecipientEditor(),
       "11111111111111111111111111111111"
     );
 
@@ -410,7 +417,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.assertNetwork.mockClear();
 
     await user.type(
-      screen.getByRole("textbox", { name: "收款地址" }),
+      getRecipientEditor(),
       "11111111111111111111111111111111"
     );
     const preflightButton = screen.getByRole("button", { name: "开始分发" });
@@ -426,7 +433,7 @@ describe("BatchDistributorPage network safety", () => {
     expect(solanaMocks.assertNetwork).toHaveBeenCalledTimes(1);
     expect(solanaMocks.signTransaction).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "开始分发" })).toBeEnabled();
-    expect(screen.getByRole("textbox", { name: "收款地址" })).toBeEnabled();
+    expect(getRecipientEditor()).toBeEnabled();
     await waitFor(() => expect(screen.getByRole("button", { name: "开始分发" })).toHaveFocus());
     await user.keyboard("{Enter}");
     await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" });
@@ -441,7 +448,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitForInitialBalanceLookup();
     solanaMocks.assertNetwork.mockClear();
 
-    const editor = screen.getByRole("textbox", { name: "收款地址" });
+    const editor = getRecipientEditor();
     await user.type(editor, "11111111111111111111111111111111");
     const preflightButton = screen.getByRole("button", { name: "开始分发" });
     await waitFor(() => expect(preflightButton).toBeEnabled());
@@ -464,7 +471,7 @@ describe("BatchDistributorPage network safety", () => {
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
 
-    const editor = screen.getByRole("textbox", { name: "收款地址" });
+    const editor = getRecipientEditor();
     await user.type(editor, "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     await screen.findByRole("button", { name: "确认并签名" });
@@ -486,7 +493,7 @@ describe("BatchDistributorPage network safety", () => {
     await user.click(screen.getByRole("button", { name: "清空" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "清空收款清单？" }))
       .getByRole("button", { name: "确认清空" }));
-    expect(screen.getByRole("textbox", { name: "收款地址" })).toHaveValue("");
+    expect(getRecipientEditor()).toHaveValue("");
   });
 
   it("separates confirmed addresses from cancelled unsent addresses", async () => {
@@ -500,7 +507,7 @@ describe("BatchDistributorPage network safety", () => {
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
 
-    const editor = screen.getByRole("textbox", { name: "收款地址" });
+    const editor = getRecipientEditor();
     await user.type(
       editor,
       "11111111111111111111111111111111\nBPFLoader1111111111111111111111111111111111"
@@ -545,7 +552,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.sendWalletTransaction.mockRejectedValueOnce(new Error("RPC timeout after broadcast"));
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), "11111111111111111111111111111111");
+    await user.type(getRecipientEditor(), "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" })).getByRole("button", { name: "确认并签名" }));
     expect(await screen.findByRole("button", { name: "说明：禁止直接重试" })).toBeVisible();
@@ -558,7 +565,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.confirmTransaction.mockImplementationOnce(() => new Promise((resolve) => { completeConfirmation = resolve; }));
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), "11111111111111111111111111111111");
+    await user.type(getRecipientEditor(), "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" })).getByRole("button", { name: "确认并签名" }));
     expandTaskDetails();
@@ -572,7 +579,7 @@ describe("BatchDistributorPage network safety", () => {
     solanaMocks.confirmTransaction.mockResolvedValueOnce({ value: { err: { InstructionError: [0, "InvalidArgument"] } } });
     const user = userEvent.setup();
     render(<BatchDistributorPage />);
-    await user.type(screen.getByRole("textbox", { name: "收款地址" }), "11111111111111111111111111111111");
+    await user.type(getRecipientEditor(), "11111111111111111111111111111111");
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "确认 SOL 批量分发" })).getByRole("button", { name: "确认并签名" }));
     expect(await screen.findByRole("button", { name: "导出未发送清单（原金额）" })).toBeVisible();
@@ -588,7 +595,7 @@ describe("BatchDistributorPage network safety", () => {
     await waitForInitialBalanceLookup();
 
     await user.type(
-      screen.getByRole("textbox", { name: "收款地址" }),
+      getRecipientEditor(),
       "11111111111111111111111111111111"
     );
     await user.click(screen.getByRole("button", { name: "开始分发" }));

@@ -88,6 +88,14 @@ describe("Solana source key parsing", () => {
     });
   });
 
+  it.each(["[ops]", "[cold wallet]", "[运营 01]", "[2026] 备用", "[ops"])("preserves a bracketed note %s with either secret-key format", (label) => {
+    const keypair = makeKeypair(11);
+    for (const key of [encodeBase58ForTest(keypair.secretKey), JSON.stringify(Array.from(keypair.secretKey))]) {
+      const source = parseSolanaSecretKeyLine(`${label},${key}`);
+      expect(source).toMatchObject({ address: keypair.publicKey.toBase58(), label });
+    }
+  });
+
   it("accepts a 32-byte seed and derives its public key", () => {
     const seed = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
     const source = parseSolanaSecretKeyLine(encodeBase58ForTest(seed), 1);
@@ -127,6 +135,19 @@ describe("Solana source key parsing", () => {
       code: "invalid-label",
       message: "第 1 行：标签疑似包含密钥，已拒绝解析"
     }]);
+    expect(JSON.stringify(result.errors)).not.toContain(firstSecret);
+    expect(JSON.stringify(result.errors)).not.toContain(secondSecret);
+  });
+
+  it.each(["brackets", "quoted brackets", "numeric bytes"])("keeps rejecting private material in %s labels", (wrapper) => {
+    const firstSecret = encodeBase58ForTest(makeKeypair(21).secretKey);
+    const secondSecret = encodeBase58ForTest(makeKeypair(22).secretKey);
+    const label = wrapper === "brackets" ? `[${firstSecret}]`
+      : wrapper === "quoted brackets" ? `["${firstSecret}"]`
+      : `[${Array.from(makeKeypair(21).secretKey).join(" ")}]`;
+    const result = parseSolanaSourceKeys(`${label},${secondSecret}`);
+    expect(result.sources).toEqual([]);
+    expect(result.errors).toMatchObject([{ code: "invalid-label" }]);
     expect(JSON.stringify(result.errors)).not.toContain(firstSecret);
     expect(JSON.stringify(result.errors)).not.toContain(secondSecret);
   });

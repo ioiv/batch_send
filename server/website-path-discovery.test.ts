@@ -237,3 +237,106 @@ describe("archive evidence and interruption", () => {
     expect(provider.fetchDocument).not.toHaveBeenCalled();
   });
 });
+
+describe("published client route manifests", () => {
+  const manifest = (navigation = "pages.map(page=>({to:route(page.slug)}))", extras = "") => `
+    const prefix='/docs';
+    const pages=[{slug:'introduction', analytics:{slug:'not-a-page'}},{slug:'pulling'},{slug:'items'}];
+    function route(value){return \`\${prefix}/\${value}\`}
+    const routes=[{path:\`\${prefix}/:slug\`}];
+    const links=${navigation};${extras}`;
+
+  it("recovers only literal values from the navigation collection without running nested templates", async () => {
+    const provider = dependencies(() => document("const className=`outer ${ok?`inner ${size}`:'plain'}`; const pattern=/[\"'`]/g;" + manifest(undefined, "const unrelated={slug:'analytics-event'};")));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(result.candidates.filter(value => value.clientRoute).map(value => value.url)).toEqual([
+      "https://example.com/docs/introduction", "https://example.com/docs/pulling", "https://example.com/docs/items"
+    ]);
+    expect(result.candidates.find(value => value.url === "https://example.com/docs")?.clientRoute).toBeUndefined();
+    expect(urls(result)).not.toContain("https://example.com/docs/not-a-page");
+    expect(urls(result)).not.toContain("https://example.com/docs/analytics-event");
+  });
+
+  it.each([
+    "pages.map(page=>({to:route(analytics.slug)}))",
+    "pages.map(page=>({...page,slug:'changed'})).map(page=>({to:route(page.slug)}))"
+  ])("does not treat an unrelated callback or rewritten collection as declared routes", async navigation => {
+    const provider = dependencies(() => document(manifest(navigation)));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(result.candidates.some(value => value.clientRoute)).toBe(false);
+  });
+
+  it("does not resolve a prefix reassigned to a dynamic value", async () => {
+    const provider = dependencies(() => document(manifest().replace("const prefix='/docs';", "let prefix='/docs';prefix=getBase();")));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(result.candidates.some(value => value.clientRoute)).toBe(false);
+  });
+
+  it("recovers the observed docs structure with nested templates, grouped original pages and distinct callback names", async () => {
+    const script = "const className=`outer ${ok?`inner ${size}`:'plain'}`; const pattern=/[\"'`]/g;" + manifest().replace(
+      "const links=pages.map(page=>({to:route(page.slug)}));",
+      "const groups=pages.reduce((acc,item)=>{const group=acc.at(-1);return group?.name===item.group?[...acc.slice(0,-1),{...group,pages:[...group.pages,item]}]:[...acc,{name:item.group,pages:[item]}]},[]);const links=groups.map(group=>group.pages.map(item=>({to:route(item.slug)})));"
+    );
+    const provider = dependencies(() => document(script));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(result.candidates.filter(value => value.clientRoute).map(value => value.url)).toEqual([
+      "https://example.com/docs/introduction", "https://example.com/docs/pulling", "https://example.com/docs/items"
+    ]);
+  });
+
+  it("keeps provenance when a declared route was already seen as an HTML link", async () => {
+    const provider = dependencies(() => document(`<a href='/docs/items'>Items</a><script>${manifest()}</script>`));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/", "links", 1000, provider.adapter);
+    expect(result.candidates.find(value => value.url.endsWith("/docs/items"))).toMatchObject({ source: "links", sources: ["links", "scripts"], clientRoute: true });
+  });
+
+  it("clears route metadata when an explicit import establishes the same URL as a script", async () => {
+    const provider = dependencies(() => document(manifest() + "import('/docs/items');"));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    const resource = result.candidates.find(value => value.url.endsWith("/docs/items"));
+    expect(resource?.kind).toBe("script");
+    expect(resource?.clientRoute).toBeUndefined();
+  });
+
+  it("marks limited static analysis partial and retains ordinary observed paths", async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock += 50);
+    try {
+      const provider = dependencies(() => document(manifest()));
+      const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+      expect(result.status).toBe("partial");
+      expect(result.message).toContain("静态前端路由解析时间上限");
+      expect(urls(result)).toContain("https://example.com/docs");
+    } finally { now.mockRestore(); }
+  });
+
+  it("ignores incomplete router markers while preserving ordinary encoded paths and dollar names", async () => {
+    const provider = dependencies(() => document("const values=['/:','/$','/&','/my%20file','/$price','/index.html'];"));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(urls(result)).toEqual(["https://example.com/my%20file", "https://example.com/$price", "https://example.com/index.html"]);
+  });
+
+  it("reports a bounded set of route templates without unbounded static analysis", async () => {
+    const provider = dependencies(() => document(manifest() + Array.from({ length: 30 }, (_, index) => "const extra={path:`${prefix}/:parameter" + index + "`};").join("")));
+    const result = await discoverWebsitePaths("https://example.com/", "https://example.com/app.js", "scripts", 1000, provider.adapter);
+    expect(result.status).toBe("partial");
+    expect(result.message).toContain("静态前端路由清单读取上限");
+    expect(result.candidates.filter(value => value.clientRoute)).toHaveLength(3);
+  });
+});
+
+describe("observed HTTPS entry upgrades", () => {
+  it("exposes the actual same-host HTTPS redirect without following it or retaining tracking parameters", async () => {
+    const provider = dependencies(() => document("", { statusCode: 301, location: "https://example.com/docs/?tracking=1#section" }));
+    const result = await discoverWebsitePaths("http://example.com/", "http://example.com/", "links", 1000, provider.adapter);
+    expect(result).toMatchObject({ status: "success", url: "http://example.com/", canonicalUrl: "https://example.com/docs/", candidates: [] });
+    expect(provider.fetchDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["https://other.com/", "https://user:pass@example.com/", "https://example.com:8443/", "http://example.com/another", "https://example.com/:id"])("does not expose an unsafe or unsupported scope migration (%s)", async location => {
+    const provider = dependencies(() => document("", { statusCode: 301, location }));
+    const result = await discoverWebsitePaths("http://example.com/", "http://example.com/", "links", 1000, provider.adapter);
+    expect(result.canonicalUrl).toBeUndefined();
+    expect(provider.fetchDocument).toHaveBeenCalledTimes(1);
+  });
+});

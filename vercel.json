@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/network-scan.ts": {
-      "maxDuration": 30
+      "maxDuration": 150
     }
   },
   "headers": [

@@ -4,6 +4,7 @@ import {
   type AddressKind
 } from "./address";
 import { MAX_SOLANA_LAMPORTS } from "./amount";
+import { parseRecipientImport, type RecipientImportOptions } from "./recipient-import-parser";
 
 export type DistributionAmountMode = "fixed" | "random" | "per-row";
 
@@ -191,58 +192,12 @@ export type ImportedDistributionFile = ImportedDistributionInput & {
   invalidRows: number;
   sourceRows: number;
   truncated: boolean;
+  issues: { line: number; message: string }[];
+  format: string;
+  detectedColumns: string[];
+  duplicateRows: number;
+  conflictingRows: number;
 };
-
-function parseDistributionFileFields(line: string) {
-  const normalizedLine = line.includes("\t") && !line.includes(",")
-    ? line.replace(/\t/g, ",")
-    : line;
-  if (!normalizedLine.includes(",")) return [normalizedLine.trim()];
-
-  const fields: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let index = 0; index < normalizedLine.length; index += 1) {
-    const character = normalizedLine[index];
-    if (character === '"') {
-      if (quoted && normalizedLine[index + 1] === '"') {
-        current += '"';
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-      continue;
-    }
-    if (character === "," && !quoted) {
-      fields.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  if (quoted) return null;
-  fields.push(current.trim());
-  return fields;
-}
-
-function isDistributionFileHeader(fields: readonly string[]) {
-  const normalize = (value: string) => value.toLowerCase().replace(/[\s_-]/g, "");
-  const addressHeader = normalize(fields[0] || "");
-  const amountHeader = normalize(fields[1] || "");
-  const isAddressHeader = [
-    "address",
-    "recipient",
-    "recipientaddress",
-    "to",
-    "toaddress",
-    "wallet",
-    "walletaddress",
-    "地址",
-    "收款地址",
-    "钱包地址"
-  ].includes(addressHeader);
-  return isAddressHeader && (fields.length === 1 || ["amount", "value", "数量", "金额"].includes(amountHeader));
-}
 
 export function importDistributionInput(input: string): ImportedDistributionInput {
   const rows = input.split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -272,43 +227,23 @@ export function importDistributionInput(input: string): ImportedDistributionInpu
   };
 }
 
-export function importDistributionFileText(input: string, maxRows = MAX_DISTRIBUTION_ROWS): ImportedDistributionFile {
+export function importDistributionFileText(
+  input: string,
+  optionsOrMaxRows: number | RecipientImportOptions = MAX_DISTRIBUTION_ROWS
+): ImportedDistributionFile {
+  const options = typeof optionsOrMaxRows === "number" ? {} : optionsOrMaxRows;
+  const maxRows = typeof optionsOrMaxRows === "number" ? optionsOrMaxRows : optionsOrMaxRows.maxRows ?? MAX_DISTRIBUTION_ROWS;
   if (!Number.isInteger(maxRows) || maxRows <= 0 || maxRows > 10_000) {
     throw new RangeError("maxRows must be an integer between 1 and 10000");
   }
   if (input.length > MAX_DISTRIBUTION_INPUT_CHARACTERS) {
     throw new RangeError("distribution file text must not exceed 512 KB");
   }
-
-  const sourceRows = input
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const firstFields = sourceRows.length ? parseDistributionFileFields(sourceRows[0]) : null;
-  if (firstFields && isDistributionFileHeader(firstFields)) {
-    sourceRows.shift();
-  }
-
-  const truncated = sourceRows.length > maxRows;
-  const normalizedRows: string[] = [];
-  let invalidRows = 0;
-  for (const sourceRow of sourceRows.slice(0, maxRows)) {
-    const fields = parseDistributionFileFields(sourceRow);
-    if (!fields || fields.length < 1 || fields.length > 2 || !fields[0]
-      || (fields.length === 2 && !fields[1])) {
-      invalidRows += 1;
-      continue;
-    }
-    normalizedRows.push(fields.length === 2 ? `${fields[0]},${fields[1]}` : fields[0]);
-  }
-  const imported = importDistributionInput(normalizedRows.join("\n"));
+  const { normalizedRows, ...metadata } = parseRecipientImport(input, options, maxRows);
   return {
-    ...imported,
-    rows: normalizedRows.join("\n"),
-    invalidRows,
-    sourceRows: sourceRows.length,
-    truncated
+    ...importDistributionInput(normalizedRows),
+    rows: normalizedRows,
+    ...metadata
   };
 }
 

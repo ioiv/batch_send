@@ -9,6 +9,7 @@ import { Label } from "./ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 import { downloadScanCsv, normalizeWebsiteUrl } from "../lib/network-scan";
+import { exposurePathFor, exposureProbeUrls, type ExposurePath, type ExposureVerdict } from "../lib/exposure-path";
 import {
   PATH_DISCOVERY_SOURCES,
   discoverWebsitePaths,
@@ -21,25 +22,53 @@ import {
 import "./network-scan.css";
 
 type ScanState = "editing" | "running" | "stopping" | "stopped" | "complete" | "error";
-type ResultFilter = "all" | "found" | "suspected" | "missing" | "error";
+type ResultFilter = "all" | "found" | "exposure" | "suspected" | "missing" | "error";
 type InputField = "target" | "concurrency" | "timeout";
 type SourceId = PathDiscoverySourceResult["source"];
 type ScanJob = { controller: AbortController };
 const RESULTS_PER_PAGE = 100;
 const shortSourceLabels: Record<SourceId, string> = { links: "页面", scripts: "脚本", robots: "robots", sitemap: "Sitemap", wayback: "Wayback" };
+const exposureVerdictLabels: Record<ExposureVerdict, string> = { high: "高置信暴露", medium: "疑似暴露", informational: "公开信息" };
+const exposureConfidenceLabels: Record<ExposurePath["confidence"], string> = { high: "高", medium: "中", low: "低" };
+const exposureKindLabels: Record<ExposurePath["kind"], string> = {
+  "secret-file": "凭据文件", "vcs-metadata": "版本库元数据", backup: "备份文件", database: "数据库导出", "ci-config": "CI 配置",
+  "cloud-credential": "云凭据", "auth-artifact": "认证文件", index: "目录索引", "api-doc": "API 描述", "well-known": "标准声明",
+  "php-info": "PHP 信息", log: "日志文件", "server-status": "服务状态", actuator: "管理端点", graphql: "GraphQL", console: "数据库控制台"
+};
 
 function resultGroup(result: DiscoveredWebsitePathResult): Exclude<ResultFilter, "all"> {
   if (result.status === "error") return "error";
+  if (result.statusCode === 404 || result.statusCode === 410) return "missing";
+  if (isDeclaredClientRoute(result)) return "found";
+  if (result.exposure) return "exposure";
   if (result.soft404) return "suspected";
-  return result.statusCode === 404 || result.statusCode === 410 ? "missing" : "found";
+  return "found";
+}
+
+function isExposureFinding(result: DiscoveredWebsitePathResult) {
+  return Boolean(result.exposure && result.status === "responded" && result.statusCode !== undefined && result.statusCode >= 200 && result.statusCode < 300);
+}
+
+function isExposurePath(result: DiscoveredWebsitePathResult) {
+  return Boolean(exposurePathFor(result.url));
+}
+
+function isDisplayedResult(result: DiscoveredWebsitePathResult) {
+  return !isExposurePath(result) || result.sources.length > 0 || result.clientRoute || isExposureFinding(result);
+}
+
+function isDeclaredClientRoute(result: DiscoveredWebsitePathResult) {
+  return result.clientRoute && result.status === "responded" && result.statusCode !== undefined && result.statusCode >= 200 && result.statusCode < 300;
 }
 
 function resultLabel(result: DiscoveredWebsitePathResult) {
   const group = resultGroup(result);
   if (group === "error") return "请求错误";
   const code = result.statusCode === undefined ? "" : ` · ${result.statusCode}`;
+  if (group === "exposure") return `${exposureVerdictLabels[result.exposure!.verdict]}${code}`;
   if (group === "suspected") return `疑似软 404${code}`;
   if (group === "missing") return `未找到${code}`;
+  if (isDeclaredClientRoute(result)) return `前端路由${code}`;
   if (result.statusCode && result.statusCode >= 300 && result.statusCode < 400) return `重定向${code}`;
   if (result.statusCode === 401 || result.statusCode === 403) return `访问受限${code}`;
   return `有响应${code}`;
@@ -66,16 +95,24 @@ function safeHttpUrl(value: string, base?: string) {
 }
 
 function ResultSources({ result }: { result: DiscoveredWebsitePathResult }) {
-  if (!result.sources.length) return <>—</>;
+  if (!result.sources.length) return isExposurePath(result) ? <span className="network-scan-probe-tag">暴露探测</span> : <>—</>;
   return <span className="website-path-discovery-compact-cell"><span>{shortSourceLabels[result.sources[0]]}{result.sources.length > 1 ? ` +${result.sources.length - 1}` : ""}</span><HelpTooltip label={`${result.url} 的发现来源`}><ul>{result.sources.map((source) => <li key={source}>{sourceLabel(source)}</li>)}</ul></HelpTooltip></span>;
 }
 
 function ResultDetails({ result }: { result: DiscoveredWebsitePathResult }) {
   const location = result.location ? safeHttpUrl(result.location, result.url) : undefined;
+  const exposure = result.exposure;
   return <span className="website-path-discovery-compact-cell"><span>查看</span><HelpTooltip label={`${result.url} 的响应详情`}>
     <div><strong>完整地址</strong><p className="network-scan-address">{result.url}</p></div>
+    {exposure ? <div className="network-scan-exposure-detail" data-exposure-verdict={exposure.verdict}>
+      <strong>固定探测项 · {exposureKindLabels[exposure.path.kind]} · {exposureVerdictLabels[exposure.verdict]}（置信度{exposureConfidenceLabels[exposure.path.confidence]}）</strong>
+      <p>{exposure.path.description}</p>
+      <p>该地址返回 {result.statusCode} 且与随机不存在路径的响应不同。请人工确认是否为真实泄漏；确认后应立即下线该文件、轮换其中可能包含的凭据，并检查访问日志。</p>
+    </div> : null}
     {result.contentLength === undefined ? null : <div><strong>响应声明大小</strong><p>{result.contentLength.toLocaleString()} B</p></div>}
+    {result.durationMs === undefined ? null : <div><strong>本次响应耗时</strong><p>{(result.durationMs / 1000).toFixed(2)} 秒</p></div>}
     {result.location ? <div><strong>跳转地址</strong><p>{location ? <a className="network-scan-link" href={location} rel="noopener noreferrer" target="_blank">{result.location}</a> : result.location}</p></div> : null}
+    {result.clientRoute ? <p>网站脚本明确声明了此路由。{result.soft404 ? "服务器返回统一应用入口，与不存在路径响应相似；已按声明的前端路由保留，页面内容未执行验证。" : "页面内容未执行验证。"}</p> : null}
     {result.message ? <p>{result.message}</p> : result.soft404 ? <p>与随机不存在路径的响应相似，请进一步核对</p> : null}
   </HelpTooltip></span>;
 }
@@ -98,7 +135,12 @@ function ScanResultTable({ results }: { results: DiscoveredWebsitePathResult[] }
 
 export function NetworkScanWorkbench() {
   const toolId = "website-path-scan";
-  const [target, setTarget] = useState("");
+  const [target, setTarget] = useState(() => {
+    try {
+      const value = new URLSearchParams(window.location.search).get("target");
+      return value && value.length <= 2048 ? normalizeWebsiteUrl(value) : "";
+    } catch { return ""; }
+  });
   const [concurrency, setConcurrency] = useState("4");
   const [timeout, setTimeoutValue] = useState("5");
   const [state, setState] = useState<ScanState>("editing");
@@ -109,7 +151,9 @@ export function NetworkScanWorkbench() {
   const [sources, setSources] = useState<Partial<Record<SourceId, PathDiscoverySourceResult>>>({});
   const [summary, setSummary] = useState<WebsitePathDiscoverySummary | null>(null);
   const [progress, setProgress] = useState<WebsitePathDiscoveryProgress>({ phase: "discovering", completed: 0, total: 0, discovered: 0 });
+  const [exposureProgress, setExposureProgress] = useState({ completed: 0, total: 0 });
   const [filter, setFilter] = useState<ResultFilter>("all");
+  const [exposureVerdict, setExposureVerdict] = useState<ExposureVerdict | "all">("all");
   const [httpStatus, setHttpStatus] = useState<number | "all">("all");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -123,14 +167,19 @@ export function NetworkScanWorkbench() {
   }, []);
 
   const counts = useMemo(() => {
-    const value = { found: 0, suspected: 0, missing: 0, error: 0 };
-    results.forEach((result) => { value[resultGroup(result)] += 1; });
+    const value: Record<Exclude<ResultFilter, "all">, number> = { found: 0, exposure: 0, suspected: 0, missing: 0, error: 0 };
+    results.forEach((result) => { if (isDisplayedResult(result)) value[resultGroup(result)] += 1; });
+    return value;
+  }, [results]);
+  const exposureCounts = useMemo(() => {
+    const value: Record<ExposureVerdict, number> = { high: 0, medium: 0, informational: 0 };
+    results.forEach((result) => { if (result.exposure) value[result.exposure.verdict] += 1; });
     return value;
   }, [results]);
   const httpStatusCounts = useMemo(() => {
     const codes = new Map<number, number>();
     results.forEach((result) => {
-      if (resultGroup(result) === "found" && result.statusCode !== undefined) {
+      if (isDisplayedResult(result) && resultGroup(result) === "found" && result.statusCode !== undefined) {
         codes.set(result.statusCode, (codes.get(result.statusCode) ?? 0) + 1);
       }
     });
@@ -140,16 +189,27 @@ export function NetworkScanWorkbench() {
   }, [httpStatus, results]);
   const visibleResults = useMemo(() => {
     const search = query.trim().toLowerCase();
-    return results.filter((result) => (filter === "all" || resultGroup(result) === filter)
-      && (filter !== "found" || httpStatus === "all" || result.statusCode === httpStatus)
-      && (!search || [result.url, resultLabel(result), result.message, result.title, result.location, result.statusCode, result.sources.map(sourceLabel).join(" ")].join(" ").toLowerCase().includes(search)));
-  }, [filter, httpStatus, query, results]);
+    return results.filter((result) => {
+      // Published routes remain visible even when they also occur in the fixed list.
+      if (!isDisplayedResult(result)) return false;
+      return (filter === "all" || resultGroup(result) === filter)
+        && (filter !== "found" || httpStatus === "all" || result.statusCode === httpStatus)
+        && (filter !== "exposure" || exposureVerdict === "all" || result.exposure?.verdict === exposureVerdict)
+        && (!search || [result.url, resultLabel(result), result.exposure?.path.description, result.message, result.title, result.location, result.statusCode, result.sources.map(sourceLabel).join(" ")].join(" ").toLowerCase().includes(search));
+    });
+  }, [exposureVerdict, filter, httpStatus, query, results]);
   const pageCount = Math.max(1, Math.ceil(visibleResults.length / RESULTS_PER_PAGE));
   const currentPage = Math.min(page, pageCount - 1);
   const pageResults = visibleResults.slice(currentPage * RESULTS_PER_PAGE, (currentPage + 1) * RESULTS_PER_PAGE);
   const partialSources = summary?.sources.some((source) => source.status !== "success") || false;
   const incomplete = partialSources || summary?.truncated;
-  const statusLabel = state === "running" ? progress.phase === "discovering" ? "发现中" : "响应验证中"
+  const entryResult = results.find(result => result.url === (summary?.baseUrl ?? roundTarget));
+  const entryNotice = entryResult?.statusCode === 404 || entryResult?.statusCode === 410
+    ? `网站入口返回 HTTP ${entryResult.statusCode}，当前入口没有提供网页内容，页面和脚本线索会受限。可从子域名结果中的公开入口继续扫描。`
+    : entryResult?.statusCode === 401 || entryResult?.statusCode === 403
+      ? `网站入口返回 HTTP ${entryResult.statusCode}，页面访问受限，本轮无法完整读取网页与脚本线索。` : "";
+  const hasDiscoveryProgress = progress.discoveryCompleted !== undefined && progress.discoveryTotal !== undefined;
+  const statusLabel = state === "running" ? progress.phase === "discovering" ? hasDiscoveryProgress ? "发现并验证中" : "发现中" : "响应验证中"
     : state === "stopping" ? "停止中" : state === "stopped" ? "已停止" : state === "error" ? "扫描失败"
       : state === "complete" ? incomplete ? "扫描完成 · 数据不完整" : "扫描完成" : "编辑中";
 
@@ -207,7 +267,9 @@ export function NetworkScanWorkbench() {
     setSummary(null);
     setRoundTarget(normalized);
     setProgress({ phase: "discovering", completed: 0, total: 0, discovered: 0 });
+    setExposureProgress({ completed: 0, total: 0 });
     setFilter("all");
+    setExposureVerdict("all");
     setHttpStatus("all");
     setQuery("");
     setPage(0);
@@ -216,6 +278,7 @@ export function NetworkScanWorkbench() {
     try {
       const completed = await discoverWebsitePaths({
         baseUrl: normalized, concurrency: parallel, timeoutMs, signal: job.controller.signal,
+        onTarget: (next) => { if (current()) { setRoundTarget(next); setTarget(next); } },
         onSource: (source) => { if (current()) setSources((previous) => ({ ...previous, [source.source]: source })); },
         onResult: (result) => {
           if (!current()) return;
@@ -224,10 +287,13 @@ export function NetworkScanWorkbench() {
             return index < 0 ? [...previous, result] : previous.map((item, row) => row === index ? result : item);
           });
         },
-        onProgress: (next) => { if (current()) setProgress({ ...next, completed: Math.min(next.total, Math.max(0, next.completed)) }); }
+        onRemoveResult: (url: string) => { if (current()) setResults(previous => previous.filter(result => result.url !== url)); },
+        onProgress: (next) => { if (current()) setProgress({ ...next, completed: Math.min(next.total, Math.max(0, next.completed)) }); },
+        onExposureProgress: (completed, total) => { if (current()) setExposureProgress({ completed, total }); }
       });
       if (current()) {
         setSummary(completed);
+        if (completed.baseUrl) { setRoundTarget(completed.baseUrl); setTarget(completed.baseUrl); }
         setSources(Object.fromEntries(completed.sources.map((source) => [source.source, source])));
         setProgress({ phase: "validating", completed: completed.validated, total: completed.validated, discovered: completed.discovered });
         setState("complete");
@@ -257,13 +323,15 @@ export function NetworkScanWorkbench() {
     "aria-describedby": inputError?.field === field ? `${toolId}-input-error` : undefined,
     disabled: busy
   });
-  const progressLabel = progress.phase === "discovering" ? "路径发现进度" : "路径响应验证进度";
-  const progressText = progress.phase === "discovering" ? `已处理 ${progress.completed} / ${progress.total} 个发现请求` : `已验证 ${progress.completed} / ${progress.total} 项`;
+  const progressLabel = progress.phase === "discovering" && !hasDiscoveryProgress ? "路径发现进度" : "路径响应验证进度";
+  const progressText = hasDiscoveryProgress
+    ? `已处理 ${progress.discoveryCompleted} / ${progress.discoveryTotal} 个发现请求 · 已验证 ${progress.completed} / 当前候选 ${progress.total}`
+    : progress.phase === "discovering" ? `已处理 ${progress.completed} / ${progress.total} 个发现请求` : `已验证 ${progress.completed} / ${progress.total} 项`;
 
   return <ToolPageLayout className="network-scan-workbench" currentToolId={toolId} status={pageStatus} statusLabel={statusLabel} title="网站路径扫描">
     <form noValidate onSubmit={(event) => { void start(event); }}>
-      <WorkbenchPanel title={<span className="network-scan-label">自动路径发现<HelpTooltip label="自动路径发现">从同源页面链接、脚本中的路径线索、robots.txt、Sitemap 和 Wayback 历史记录自动发现路径，去重后验证 HTTP 响应。CSS、JavaScript、图片等静态文件不进入结果或导出，脚本和 Sitemap 仍用于提取路径线索。发现阶段最多 90 秒，每轮最多验证 2,000 个路径，最多读取 100 个页面、40 个脚本、20 个 Sitemap，抓取深度最多 3 层；范围为当前网站，包含入口目录之外的同源路径。站点请求使用下方所设的超时，历史记录查询最长 20 秒。去除查询参数与片段，不执行 JavaScript、不登录，可能遗漏动态路由和未公开引用的路径。只扫描你有权测试的公网网站。请求使用 GET，单次请求不自动跟随跳转；同源跳转地址作为线索单独读取和验证，跨源跳转不跟随。响应验证最多分析前 64 KiB，响应大小为 Content-Length 声明值。</HelpTooltip></span>} footer={<div className="network-scan-actions">
-        <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? "正在自动发现网站路径…" : "正在验证已发现路径…" : "自动发现同源路径，无需提供字典"}</span>
+      <WorkbenchPanel title={<span className="network-scan-label">自动路径发现<HelpTooltip label="自动路径发现">从同源页面链接、脚本中的路径线索、robots.txt、Sitemap 和 Wayback 历史记录自动发现路径，发现后立即去重并验证 HTTP 响应，结果实时显示。CSS、JavaScript、图片等静态文件不进入结果或导出，脚本和 Sitemap 仍用于提取路径线索。此外固定探测 44 个常见暴露路径（.env、.git/HEAD、备份与数据库导出、Swagger / Actuator、phpinfo、日志、Adminer 等），这不是字典爆破：清单固定、只发 GET、每个路径最多请求一次。只有返回 2xx、且与随机不存在路径的响应不同、又不是脚本声明的前端路由时才标记为暴露面。发现阶段最多 90 秒，每轮最多验证 2,000 个路径，最多读取 100 个页面、40 个脚本、20 个 Sitemap，页面抓取深度最多 3 层，脚本依赖受独立文档数量上限控制；范围为当前网站，包含入口目录之外的同源路径。站点请求使用下方所设的超时，历史记录查询最长 20 秒。去除查询参数与片段，不执行 JavaScript、不登录，静态路由清单结合明确的导航代码可恢复前端路由；不明确的动态值和未公开引用的路径可能遗漏。只扫描你有权测试的公网网站。请求使用 GET，单次请求不自动跟随跳转；同源跳转地址作为线索单独读取和验证，入口明确跳转到同主机 HTTPS 时自动升级扫描地址；其余跨源跳转不跟随。响应验证最多分析前 64 KiB，响应大小为 Content-Length 声明值。</HelpTooltip></span>} footer={<div className="network-scan-actions">
+        <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证网站路径，结果实时显示…" : "正在自动发现网站路径…" : "正在验证已发现路径…" : `自动发现同源路径，并固定探测 ${exposureProbeUrls(roundTarget || "https://example.com").length} 个暴露路径`}</span>
         <div>{busy ? <Button disabled={state === "stopping"} onClick={stop} type="button" variant="outline">{state === "stopping" ? "停止中…" : "停止扫描"}</Button> : <Button type="submit">{roundTarget ? "重新扫描" : "开始扫描"}</Button>}</div>
       </div>}>
         <div className="network-scan-fields">
@@ -283,18 +351,25 @@ export function NetworkScanWorkbench() {
           const status = sourceStatusLabel(result, state);
           return <span className="website-path-discovery-source" data-source-status={result?.status} key={source.id} role="listitem"><Badge variant="outline">{source.label} · {result && result.status !== "error" ? `${new Set(result.urls).size.toLocaleString()}${result.status === "partial" ? "（部分）" : ""}` : status}</Badge><HelpTooltip label={`${source.label} 的发现状态`}><strong>{source.label} · {status}</strong>{result?.message ? <p>{result.message}</p> : null}{result && result.status !== "error" ? <p>发现 {new Set(result.urls).size.toLocaleString()} 个同源路径</p> : null}</HelpTooltip></span>;
         })}</div>
-        {roundTarget ? <div className="network-scan-progress"><ExecutionProgress current={progress.completed} label={progressLabel} total={progress.total} /><p aria-live="polite" className="network-scan-note" role="status">{statusLabel} · {progressText} · 发现 {progress.discovered.toLocaleString()} 个路径</p></div> : null}
+        {roundTarget ? <div className="network-scan-progress"><ExecutionProgress current={progress.completed} label={progressLabel} total={progress.total} />{hasDiscoveryProgress ? <ExecutionProgress current={progress.discoveryCompleted!} label="路径发现请求进度" total={progress.discoveryTotal!} /> : null}<p aria-live="polite" className="network-scan-note" role="status">{statusLabel} · {progressText} · 发现 {progress.discovered.toLocaleString()} 个路径</p>{exposureProgress.total ? <p aria-live="polite" className="network-scan-note" role="status">固定暴露路径探测 {exposureProgress.completed.toLocaleString()} / {exposureProgress.total.toLocaleString()} 项</p> : null}</div> : null}
         {scanError ? <p className="network-scan-error" role="alert">{scanError}</p> : null}
+        {entryNotice ? <p className="network-scan-note website-path-discovery-partial" role="status">{entryNotice}</p> : null}
         {state === "complete" && incomplete ? <p className="network-scan-note website-path-discovery-partial">{summary?.truncated ? "已达到本轮发现上限，仅验证已保留的路径。" : ""}{partialSources ? "部分来源受限或未完整返回，详情见来源说明。" : ""}本轮结果可能不完整。</p> : null}
-        <WorkbenchSummary items={[{ label: "已发现", value: progress.discovered.toLocaleString() }, { label: "有响应", value: counts.found }, { label: <span className="network-scan-label">疑似软 404<HelpTooltip label="疑似软 404">与随机不存在路径的响应相似，可能是统一页面，不能据此确认该路径仍存在。随机对比请求不计入结果进度及导出。</HelpTooltip></span>, value: counts.suspected }, { label: "未找到", value: counts.missing }, { label: "请求错误", value: counts.error }]} />
-        <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setHttpStatus("all"); setPage(0); }} value={filter}><TabsList aria-label="筛选扫描结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="found">有响应</TabsTrigger><TabsTrigger value="suspected">疑似软 404</TabsTrigger><TabsTrigger value="missing">未找到</TabsTrigger><TabsTrigger value="error">请求错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索扫描结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索路径、标题、状态码或来源" type="search" value={query} /></div>
+        <WorkbenchSummary items={[{ label: "已发现", value: progress.discovered.toLocaleString() }, { label: "有响应", value: counts.found }, { label: <span className="network-scan-label">暴露面<HelpTooltip label="暴露面">固定探测清单中返回 2xx、且与随机不存在路径响应不同的路径。这是需要人工确认的线索，不代表已确认可被利用；请核对内容后再决定是否下线文件与轮换凭据。</HelpTooltip></span>, value: counts.exposure.toLocaleString() }, { label: <span className="network-scan-label">疑似软 404<HelpTooltip label="疑似软 404">与随机不存在路径的响应相似，可能是统一页面。脚本明确声明且返回成功响应的前端路由会单独保留；仅凭统一响应不能确认其他路径存在。随机对比请求不计入结果进度及导出。</HelpTooltip></span>, value: counts.suspected }, { label: "未找到", value: counts.missing }, { label: "请求错误", value: counts.error }]} />
+        <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setHttpStatus("all"); setExposureVerdict("all"); setPage(0); }} value={filter}><TabsList aria-label="筛选扫描结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="found">有响应</TabsTrigger><TabsTrigger value="exposure">暴露面{counts.exposure ? ` · ${counts.exposure}` : ""}</TabsTrigger><TabsTrigger value="suspected">疑似软 404</TabsTrigger><TabsTrigger value="missing">未找到</TabsTrigger><TabsTrigger value="error">请求错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索扫描结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索路径、标题、状态码或来源" type="search" value={query} /></div>
+        {filter === "exposure" ? <div aria-label="暴露面置信度筛选" className="website-path-status-filter" role="group">
+          <span className="network-scan-note">置信度</span>
+          <Button aria-pressed={exposureVerdict === "all"} onClick={() => { setExposureVerdict("all"); setPage(0); }} size="sm" type="button" variant={exposureVerdict === "all" ? "default" : "outline"}>全部暴露 · {counts.exposure.toLocaleString()}</Button>
+          <Button aria-pressed={exposureVerdict === "high"} onClick={() => { setExposureVerdict("high"); setPage(0); }} size="sm" type="button" variant={exposureVerdict === "high" ? "default" : "outline"}>高置信 · {exposureCounts.high.toLocaleString()}</Button>
+          <Button aria-pressed={exposureVerdict === "medium"} onClick={() => { setExposureVerdict("medium"); setPage(0); }} size="sm" type="button" variant={exposureVerdict === "medium" ? "default" : "outline"}>疑似 · {exposureCounts.medium.toLocaleString()}</Button>
+        </div> : null}
         {filter === "found" ? <div aria-label="HTTP状态码筛选" className="website-path-status-filter" role="group">
           <span className="network-scan-note">状态码</span>
           <Button aria-pressed={httpStatus === "all"} onClick={() => { setHttpStatus("all"); setPage(0); }} size="sm" type="button" variant={httpStatus === "all" ? "default" : "outline"}>全部状态 · {counts.found.toLocaleString()}</Button>
           {httpStatusCounts.map(([code, count]) => <Button aria-pressed={httpStatus === code} key={code} onClick={() => { setHttpStatus(code); setPage(0); }} size="sm" type="button" variant={httpStatus === code ? "default" : "outline"}>{code} · {count.toLocaleString()}</Button>)}
         </div> : null}
         <p className="network-scan-note">匹配 {visibleResults.length.toLocaleString()} / {results.length.toLocaleString()} 条 · CSV 导出本轮全部已验证结果</p>
-        {visibleResults.length ? <ScanResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? "正在自动发现路径，随后验证响应…" : "等待响应验证结果…" : state === "complete" ? incomplete ? "本轮未返回验证结果，部分来源未完整读取，请查看来源说明" : "本轮未发现可验证路径，不能据此确认网站没有其他路径" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
+        {visibleResults.length ? <ScanResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证路径，等待首批响应结果…" : "正在自动发现路径，随后验证响应…" : "等待响应验证结果…" : state === "complete" ? incomplete ? "本轮未返回验证结果，部分来源未完整读取，请查看来源说明" : "本轮未发现可验证路径，不能据此确认网站没有其他路径" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
         {pageCount > 1 ? <nav aria-label="路径结果分页" className="website-path-discovery-pagination"><span className="network-scan-note">第 {currentPage + 1} / {pageCount} 页 · 每页 {RESULTS_PER_PAGE} 条</span><Button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} size="sm" type="button" variant="outline">上一页</Button><Button disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)} size="sm" type="button" variant="outline">下一页</Button></nav> : null}
       </div>
     </WorkbenchPanel>
