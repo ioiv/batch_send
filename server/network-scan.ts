@@ -191,7 +191,7 @@ export function validateScanPayload(payload: unknown): NetworkScanPayload {
     url.search = "";
     return { kind: "path-discovery", baseUrl: baseUrl.href, url: url.href, ...(documentUrl ? { documentUrl: documentUrl.href } : {}), source: input.source as WebsitePathDiscoverySource, timeoutMs };
   }
-  if (input.kind === "subdomain-discovery" && typeof input.domain === "string" && typeof input.source === "string" && ["subdomaincenter", "certspotter", "hackertarget", "dns", "common", "website", "anubis", "pentesttools", "certkit"].includes(input.source)) {
+  if (input.kind === "subdomain-discovery" && typeof input.domain === "string" && typeof input.source === "string" && ["subdomaincenter", "certspotter", "hackertarget", "common", "pentesttools", "certkit"].includes(input.source)) {
     return { kind: "subdomain-discovery", domain: normalizeDomain(input.domain), source: input.source as SubdomainDiscoverySource, timeoutMs };
   }
   if (input.kind === "subdomain" && typeof input.domain === "string") return { kind: "subdomain", domain: normalizeDomain(input.domain), timeoutMs };

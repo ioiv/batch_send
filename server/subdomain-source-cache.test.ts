@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SubdomainSourceCache, type CacheableSubdomainSourceResult } from "./subdomain-source-cache";
 
 function result(status: CacheableSubdomainSourceResult["status"] = "success"): CacheableSubdomainSourceResult {
-  return { source: "anubis", status, domains: status === "error" ? [] : ["app.example.com"], message: "来源说明" };
+  return { source: "subdomaincenter", status, domains: status === "error" ? [] : ["app.example.com"], message: "来源说明" };
 }
 
 function cacheWithClock() {
@@ -15,21 +15,21 @@ describe("completed subdomain source response cache", () => {
   it.each(["success", "partial"] as const)("expires %s responses after exactly ten minutes", status => {
     const { cache, setTime } = cacheWithClock();
     const value = result(status);
-    cache.write("anubis:example.com:anonymous", value);
+    cache.write("subdomaincenter:example.com:anonymous", value);
     setTime(10 * 60 * 1000 - 1);
-    expect(cache.read("anubis:example.com:anonymous")).toEqual(value);
+    expect(cache.read("subdomaincenter:example.com:anonymous")).toEqual(value);
     setTime(10 * 60 * 1000);
-    expect(cache.read("anubis:example.com:anonymous")).toBeUndefined();
+    expect(cache.read("subdomaincenter:example.com:anonymous")).toBeUndefined();
   });
 
   it("keeps errors for only thirty seconds without shortening successful responses", () => {
     const { cache, setTime } = cacheWithClock();
-    cache.write("anubis:example.com:anonymous", result("error"));
+    cache.write("subdomaincenter:example.com:anonymous", result("error"));
     cache.write("center:example.com:anonymous", result());
     setTime(29_999);
-    expect(cache.read("anubis:example.com:anonymous")?.status).toBe("error");
+    expect(cache.read("subdomaincenter:example.com:anonymous")?.status).toBe("error");
     setTime(30_000);
-    expect(cache.read("anubis:example.com:anonymous")).toBeUndefined();
+    expect(cache.read("subdomaincenter:example.com:anonymous")).toBeUndefined();
     expect(cache.read("center:example.com:anonymous")?.status).toBe("success");
   });
 

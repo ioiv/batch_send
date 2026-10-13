@@ -165,7 +165,7 @@ describe("discovery and verification over the API", () => {
     releaseSource();
     expect(await pending).toMatchObject({ discovered: 18, validated: 18 });
     expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "site-0.example.com", sources: ["common", "subdomaincenter"] }));
-    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "cname.example.com", sources: ["dns"] }));
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "cname.example.com", sources: ["cname"] }));
     const domains = requests.filter(request => request.kind === "subdomain").map(request => String(request.domain));
     expect(domains.filter(domain => domain.startsWith("chainkit-"))).toHaveLength(1);
     expect(new Set(domains).size).toBe(domains.length);

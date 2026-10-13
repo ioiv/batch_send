@@ -39,11 +39,12 @@ const resultLabels: Record<Exclude<ResultFilter, "all">, string> = {
 
 function sourceLabel(source: SourceId) {
   if (source === "manual") return "外部结果";
+  if (source === "cname") return "CNAME 线索";
   return SUBDOMAIN_DISCOVERY_SOURCES.find((item) => item.id === source)?.label || source;
 }
 
 const shortSourceLabels: Record<SourceId, string> = {
-  subdomaincenter: "Subdomain Center", certspotter: "CertSpotter", hackertarget: "HackerTarget", dns: "DNS", website: "网页", anubis: "Anubis", common: "常用 DNS", pentesttools: "Pentest-Tools", certkit: "CertKit", manual: "外部结果"
+  subdomaincenter: "Subdomain Center", certspotter: "CertSpotter", hackertarget: "HackerTarget", common: "常用 DNS", pentesttools: "Pentest-Tools", certkit: "CertKit", cname: "CNAME 线索", manual: "外部结果"
 };
 
 function DiscoverySources({ result }: { result: DiscoveredSubdomainResult }) {
@@ -98,7 +99,7 @@ export function SubdomainDiscoveryWorkbench() {
   const [results, setResults] = useState<DiscoveredSubdomainResult[]>([]);
   const [summary, setSummary] = useState<SubdomainDiscoverySummary | null>(null);
   const [progress, setProgress] = useState<SubdomainDiscoveryProgress>({ phase: "discovering", completed: 0, total: SUBDOMAIN_DISCOVERY_SOURCES.length, discovered: 0 });
-  const [filter, setFilter] = useState<ResultFilter>("all");
+  const [filter, setFilter] = useState<ResultFilter>("resolved");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const jobRef = useRef<DiscoveryJob | null>(null);
@@ -175,7 +176,7 @@ export function SubdomainDiscoveryWorkbench() {
     setSummary(null);
     setRoundDomain(normalized);
     setProgress({ phase: "discovering", completed: 0, total: SUBDOMAIN_DISCOVERY_SOURCES.length, discovered: 0 });
-    setFilter("all");
+    setFilter("resolved");
     setQuery("");
     setPage(0);
     setState("running");
@@ -235,7 +236,7 @@ export function SubdomainDiscoveryWorkbench() {
 
   return <ToolPageLayout className="network-scan-workbench" currentToolId="subdomain-scan" status={pageStatus} statusLabel={statusLabel} title="子域名扫描">
     <form noValidate onSubmit={(event) => { void start(event); }}>
-      <WorkbenchPanel title={<span className="network-scan-label">多源子域名发现<HelpTooltip label="多源子域名发现">自动汇总 Subdomain Center、Anubis、证书、被动 DNS、主域名 DNS 记录、网站及其明确引用的脚本 / 站点地图，并自动调用 Pentest-Tools 的 Light 扫描接口及 CertKit 的免费免登录 CT 证书接口，补充检查 32 个常用名称的 DNS。常用名称通过两个随机名称校验，未解析或疑似通配结果不计入发现；这一步只查询 DNS。Pentest-Tools 扫描最多等待 2 分钟并受免费额度限制，其他来源最多等待 20 秒；名称一经发现就去重并验证当前 DNS，结果实时显示，每轮最多 5,000 项。通配证书不能列出具体名称，公开来源也可能遗漏，无法保证发现全部子域名。仅用于你有权测试的公网域名。</HelpTooltip></span>} summary="汇总公开记录和扫描结果，并用常用名称 DNS 补充新站线索" footer={<div className="network-scan-actions">
+      <WorkbenchPanel title={<span className="network-scan-label">多源子域名发现<HelpTooltip label="多源子域名发现">自动汇总 Subdomain Center、CertSpotter 证书记录、HackerTarget 被动 DNS，并自动调用 Pentest-Tools 的 Light 扫描接口及 CertKit 的免费免登录 CT 证书接口，补充检查 32 个常用名称的 DNS。常用名称通过两个随机名称校验，未解析或疑似通配结果不计入发现；这一步只查询 DNS。Pentest-Tools 扫描最多等待 2 分钟并受免费额度限制，其他来源最多等待 20 秒；名称一经发现就去重并验证当前 DNS，同域 CNAME 线索继续加入验证，结果实时显示，每轮最多 5,000 项。结果默认显示当前已解析名称，可切换分类查看其他结果。通配证书不能列出具体名称，公开来源也可能遗漏，无法保证发现全部子域名。仅用于你有权测试的公网域名。</HelpTooltip></span>} summary="汇总公开记录和扫描结果，并用常用名称 DNS 补充新站线索" footer={<div className="network-scan-actions">
         <span className="network-scan-note">{busy ? state === "stopping" ? "正在结束本轮请求…" : progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证子域名，结果实时显示…" : "正在汇总公开记录和 DNS 线索…" : `正在验证 ${roundDomain} 的子域名…` : `自动查询 ${SUBDOMAIN_DISCOVERY_SOURCES.length} 个来源，无需提供字典`}</span>
         <div>{busy ? <Button disabled={state === "stopping"} onClick={stop} type="button" variant="outline">{state === "stopping" ? "停止中…" : "停止扫描"}</Button> : <Button type="submit">{roundDomain ? "重新扫描" : "开始扫描"}</Button>}</div>
       </div>}>
@@ -272,7 +273,7 @@ export function SubdomainDiscoveryWorkbench() {
         ]} />
         <div className="network-scan-result-controls"><Tabs onValueChange={(value) => { setFilter(value as ResultFilter); setPage(0); }} value={filter}><TabsList aria-label="筛选子域名发现结果"><TabsTrigger value="all">全部</TabsTrigger><TabsTrigger value="resolved">当前已解析</TabsTrigger><TabsTrigger value="wildcard">疑似通配</TabsTrigger><TabsTrigger value="unresolved">当前未解析</TabsTrigger><TabsTrigger value="error">验证错误</TabsTrigger></TabsList></Tabs><Input aria-label="搜索子域名发现结果" onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索域名、IP、CNAME 或来源" type="search" value={query} /></div>
         <p className="network-scan-note">显示 {visibleResults.length.toLocaleString()} / {results.length.toLocaleString()} 条 · CSV 导出本轮全部已验证结果</p>
-        {visibleResults.length ? <DiscoveryResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? "暂无匹配结果" : busy ? progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证子域名，等待首批 DNS 结果…" : "正在发现子域名，随后验证当前 DNS…" : "等待 DNS 验证结果…" : state === "complete" ? partialSources ? "本轮未发现可验证子域名，公开来源未完整返回，请查看来源状态" : "公开来源本轮未发现子域名，不能据此确认没有子域名" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
+        {visibleResults.length ? <DiscoveryResultTable results={pageResults} /> : <div className="network-scan-empty">{results.length ? filter === "resolved" && !query.trim() ? "当前暂无已解析的子域名，可切换分类查看其他结果" : "暂无匹配结果" : busy ? progress.phase === "discovering" ? hasDiscoveryProgress ? "正在发现并验证子域名，等待首批 DNS 结果…" : "正在发现子域名，随后验证当前 DNS…" : "等待 DNS 验证结果…" : state === "complete" ? partialSources ? "本轮未发现可验证子域名，公开来源未完整返回，请查看来源状态" : "公开来源本轮未发现子域名，不能据此确认没有子域名" : state === "stopped" ? "扫描已停止，暂无验证结果" : "开始扫描后在这里查看发现结果"}</div>}
         {pageCount > 1 ? <nav aria-label="子域名结果分页" className="subdomain-discovery-pagination"><span className="network-scan-note">第 {currentPage + 1} / {pageCount} 页 · 每页 {RESULTS_PER_PAGE} 条</span><Button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} size="sm" type="button" variant="outline">上一页</Button><Button disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)} size="sm" type="button" variant="outline">下一页</Button></nav> : null}
       </div>
     </WorkbenchPanel>

@@ -32,11 +32,16 @@ function sourcesWithDomains(domains: string[] = []) {
 }
 
 describe("multisource subdomain discovery", () => {
-  it("includes Pentest-Tools and CertKit alongside the public automatic providers", () => {
-    expect(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id)).not.toContain("crtsh");
-    expect(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id)).not.toContain("wayback");
-    expect(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id)).toEqual(expect.arrayContaining(["subdomaincenter", "anubis", "pentesttools", "certkit"]));
-    expect(SUBDOMAIN_DISCOVERY_SOURCES).toHaveLength(9);
+  it("keeps six automatic providers and omits the retired sources", async () => {
+    const expectedSources = ["common", "subdomaincenter", "certspotter", "hackertarget", "pentesttools", "certkit"];
+    expect(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id)).toEqual(expectedSources);
+    sourcesWithDomains();
+    const options = settings();
+    const summary = await discoverSubdomains(options);
+    expect(vi.mocked(requestNetworkScan).mock.calls.map(([payload]) => payload.source)).toEqual(expectedSources);
+    expect(options.onSource).toHaveBeenCalledTimes(6);
+    expect(summary.sources).toHaveLength(6);
+    expect(options.onProgress).toHaveBeenLastCalledWith(expect.objectContaining({ discoveryCompleted: 6, discoveryTotal: 6 }));
   });
 
   it("automatically requests Pentest-Tools and merges its names into DNS validation and provenance", async () => {
@@ -120,14 +125,14 @@ describe("multisource subdomain discovery", () => {
     sourcesWithDomains();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ source: payload.source, status: "success",
       domains: payload.source === "subdomaincenter" ? ["unusual-prod-17.api.example.com", "shared.example.com"]
-        : payload.source === "website" ? ["shared.example.com", "portal.apac.example.com"] : [] }));
+        : payload.source === "certspotter" ? ["shared.example.com", "portal.apac.example.com"] : [] }));
     const options = settings();
     const summary = await discoverSubdomains(options);
     expect(requestNetworkScan).toHaveBeenCalledTimes(SUBDOMAIN_DISCOVERY_SOURCES.length);
     expect(validateCandidate.mock.calls.map(([domain]) => domain).sort())
       .toEqual(["portal.apac.example.com", "shared.example.com", "unusual-prod-17.api.example.com"]);
     expect(createSubdomainValidator).toHaveBeenCalledTimes(1);
-    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "shared.example.com", sources: ["subdomaincenter", "website"] }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "shared.example.com", sources: ["subdomaincenter", "certspotter"] }));
     expect(summary).toMatchObject({ discovered: 3, validated: 3, truncated: false });
     expect(summary.sources.map(source => source.source)).toEqual(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id));
     expect(options.onProgress).toHaveBeenLastCalledWith({ phase: "validating", completed: 3, total: 3, discovered: 3, discoveryCompleted: SUBDOMAIN_DISCOVERY_SOURCES.length, discoveryTotal: SUBDOMAIN_DISCOVERY_SOURCES.length });
@@ -135,19 +140,19 @@ describe("multisource subdomain discovery", () => {
 
   it("emits DNS results while a later provider is pending and updates provenance without querying twice", async () => {
     sourcesWithDomains();
-    const website = deferred<string[]>();
+    const certificates = deferred<string[]>();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ source: payload.source, status: "success",
-      domains: payload.source === "subdomaincenter" ? ["api.example.com"] : payload.source === "website" ? await website.promise : [] }));
+      domains: payload.source === "subdomaincenter" ? ["api.example.com"] : payload.source === "certspotter" ? await certificates.promise : [] }));
     const options = settings();
     const job = discoverSubdomains(options);
 
     await vi.waitFor(() => expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter"] })));
     expect(options.onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "discovering", completed: 1, total: 1, discovered: 1 }));
-    expect(options.onSource).not.toHaveBeenCalledWith(expect.objectContaining({ source: "website" }));
-    website.resolve(["api.example.com", "portal.example.com"]);
+    expect(options.onSource).not.toHaveBeenCalledWith(expect.objectContaining({ source: "certspotter" }));
+    certificates.resolve(["api.example.com", "portal.example.com"]);
 
     expect(await job).toMatchObject({ discovered: 2, validated: 2 });
-    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter", "website"] }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter", "certspotter"] }));
     expect(validateCandidate.mock.calls.map(([domain]) => domain)).toEqual(["api.example.com", "portal.example.com"]);
     expect(createSubdomainValidator).toHaveBeenCalledTimes(1);
     expect(options.onProgress.mock.calls.every(([progress]) => progress.completed <= progress.total)).toBe(true);
@@ -188,7 +193,7 @@ describe("multisource subdomain discovery", () => {
     validateCandidate.mockImplementation(async domain => ({ domain, status: "not-found", addresses: [] }));
     const options = settings();
     await discoverSubdomains(options);
-    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "not-found", sources: expect.arrayContaining(["subdomaincenter", "anubis"]) }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "not-found", sources: expect.arrayContaining(["subdomaincenter", "certkit"]) }));
   });
 
   it("follows observed in-scope CNAME names without guessing and stops cycles", async () => {
@@ -198,19 +203,23 @@ describe("multisource subdomain discovery", () => {
     validateCandidate.mockImplementation(async domain => ({ domain, status: "resolved", addresses: ["1.1.1.1"],
       cname: domain === "api.example.com" ? "edge.internal.example.com" : "api.example.com" }));
     const options = settings();
-    expect(await discoverSubdomains(options)).toMatchObject({ discovered: 2, validated: 2 });
+    const summary = await discoverSubdomains(options);
+    expect(summary).toMatchObject({ discovered: 2, validated: 2 });
     expect(validateCandidate).toHaveBeenCalledTimes(2);
-    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "edge.internal.example.com", sources: ["dns"] }));
-    expect(options.onSource).toHaveBeenCalledWith(expect.objectContaining({ source: "dns", domains: ["edge.internal.example.com"] }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "edge.internal.example.com", sources: ["cname"] }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter", "cname"] }));
+    expect(summary.sources.map(source => source.source)).toEqual(SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id));
+    expect(options.onSource).not.toHaveBeenCalledWith(expect.objectContaining({ source: "cname" }));
+    expect(requestNetworkScan).not.toHaveBeenCalledWith(expect.objectContaining({ source: "cname" }), expect.anything());
   });
 
-  it("verifies CNAME discoveries before DNS metadata arrives and merges its eventual failure", async () => {
+  it("verifies CNAME discoveries while a provider is pending and merges its later corroboration without counting CNAME as a provider", async () => {
     sourcesWithDomains();
-    const dnsMetadata = deferred<void>();
+    const certificates = deferred<void>();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => {
-      if (payload.source === "dns") {
-        await dnsMetadata.promise;
-        return { source: payload.source, status: "error", domains: [], message: "根域名 DNS 不可用" };
+      if (payload.source === "certkit") {
+        await certificates.promise;
+        return { source: payload.source, status: "success", domains: ["edge.internal.example.com"] };
       }
       return { source: payload.source, status: "success", domains: payload.source === "subdomaincenter" ? ["api.example.com"] : [] };
     });
@@ -218,16 +227,19 @@ describe("multisource subdomain discovery", () => {
       cname: domain === "api.example.com" ? "edge.internal.example.com" : "api.example.com" }));
     const options = settings();
     const job = discoverSubdomains(options);
-    await vi.waitFor(() => expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "edge.internal.example.com", sources: ["dns"] })));
-    expect(options.onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "discovering", completed: 2, total: 2 }));
-    dnsMetadata.resolve();
+    await vi.waitFor(() => expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "edge.internal.example.com", sources: ["cname"] })));
+    expect(options.onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "discovering", completed: 2, total: 2, discoveryTotal: 6 }));
+    certificates.resolve();
     const summary = await job;
 
     expect(summary).toMatchObject({ discovered: 2, validated: 2 });
     expect(validateCandidate).toHaveBeenCalledTimes(2);
-    expect(summary.sources.find(source => source.source === "dns")).toMatchObject({ status: "partial",
-      domains: expect.arrayContaining(["api.example.com", "edge.internal.example.com"]), message: expect.stringContaining("CNAME") });
-    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter", "dns"] }));
+    expect(summary.sources).toHaveLength(6);
+    expect(summary.sources.find(source => source.source === "certkit")).toMatchObject({ status: "success", domains: ["edge.internal.example.com"] });
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "api.example.com", sources: ["subdomaincenter", "cname"] }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ domain: "edge.internal.example.com", sources: ["certkit", "cname"] }));
+    expect(options.onSource).toHaveBeenCalledTimes(6);
+    expect(options.onProgress).toHaveBeenLastCalledWith(expect.objectContaining({ discoveryCompleted: 6, discoveryTotal: 6 }));
   });
 
   it.each(["api.example.com", "external.example.org", "https://edge.example.com", "root..example.com"])("does not expand self, external or invalid CNAME %s", async cname => {
@@ -263,7 +275,7 @@ describe("multisource subdomain discovery", () => {
   it("rejects out-of-scope or malformed provider data without querying their DNS", async () => {
     sourcesWithDomains();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ source: payload.source, status: "success",
-      domains: payload.source === "subdomaincenter" ? ["evil-example.com"] : payload.source === "website" ? ["https://api.example.com/"] : [] }));
+      domains: payload.source === "subdomaincenter" ? ["evil-example.com"] : payload.source === "certspotter" ? ["https://api.example.com/"] : [] }));
     const summary = await discoverSubdomains(settings());
     expect(summary.sources.filter(source => source.status === "error")).toHaveLength(2);
     expect(createSubdomainValidator).not.toHaveBeenCalled();
@@ -273,7 +285,7 @@ describe("multisource subdomain discovery", () => {
     sourcesWithDomains();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ source: payload.source, status: "success",
       domains: payload.source === "subdomaincenter" ? Array.from({ length: 5000 }, (_, i) => `node${i}.example.com`)
-        : payload.source === "website" ? ["overflow.example.com"] : [] }));
+        : payload.source === "certspotter" ? ["overflow.example.com"] : [] }));
     const summary = await discoverSubdomains(settings());
     expect(summary).toMatchObject({ discovered: 5000, validated: 5000, truncated: true });
     expect(validateCandidate).toHaveBeenCalledTimes(5000);
@@ -324,10 +336,10 @@ describe("multisource subdomain discovery", () => {
   it("keeps emitted results and suppresses pending provider and DNS callbacks after cancellation", async () => {
     sourcesWithDomains();
     const controller = new AbortController();
-    const website = deferred<string[]>();
+    const certificates = deferred<string[]>();
     const secondDns = deferred<SubdomainScanResult>();
     vi.mocked(requestNetworkScan).mockImplementation(async payload => ({ source: payload.source, status: "success",
-      domains: payload.source === "subdomaincenter" ? ["api.example.com", "pending.example.com"] : payload.source === "website" ? await website.promise : [] }));
+      domains: payload.source === "subdomaincenter" ? ["api.example.com", "pending.example.com"] : payload.source === "certspotter" ? await certificates.promise : [] }));
     validateCandidate.mockImplementation(async domain => domain === "pending.example.com" ? await secondDns.promise
       : { domain, status: "resolved", addresses: [] });
     const options = { ...settings(), signal: controller.signal };
@@ -336,7 +348,7 @@ describe("multisource subdomain discovery", () => {
     await vi.waitFor(() => expect(options.onResult).toHaveBeenCalledTimes(1));
     const callbacks = [options.onSource.mock.calls.length, options.onResult.mock.calls.length, options.onProgress.mock.calls.length];
     controller.abort();
-    website.resolve(["late.example.com"]);
+    certificates.resolve(["late.example.com"]);
     secondDns.resolve({ domain: "pending.example.com", status: "resolved", addresses: [], cname: "late-cname.example.com" });
     await rejection;
 
@@ -348,7 +360,7 @@ describe("multisource subdomain discovery", () => {
   it("stops pending discovery when validator initialization fails", async () => {
     sourcesWithDomains();
     vi.mocked(requestNetworkScan).mockImplementation(async (payload, signal) => {
-      if (payload.source === "website") await new Promise<void>((_, reject) => {
+      if (payload.source === "certspotter") await new Promise<void>((_, reject) => {
         if (signal.aborted) reject(signal.reason);
         else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
@@ -363,8 +375,8 @@ describe("multisource subdomain discovery", () => {
   });
 
   it("exports discovery provenance with safe CSV fields", () => {
-    const result: DiscoveredSubdomainResult = { domain: "api.example.com", sources: ["subdomaincenter", "dns"], status: "resolved", addresses: ["1.1.1.1"], message: "=formula", wildcard: true };
-    expect(exportDiscoveredSubdomainsCsv([result])).toContain('"subdomaincenter; dns"');
+    const result: DiscoveredSubdomainResult = { domain: "api.example.com", sources: ["subdomaincenter", "cname"], status: "resolved", addresses: ["1.1.1.1"], message: "=formula", wildcard: true };
+    expect(exportDiscoveredSubdomainsCsv([result])).toContain('"subdomaincenter; cname"');
     expect(exportDiscoveredSubdomainsCsv([result])).toContain('"\'=formula"');
     expect(exportDiscoveredSubdomainsCsv([result])).toContain("discovery_sources");
   });

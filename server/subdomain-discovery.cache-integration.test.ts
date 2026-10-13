@@ -44,7 +44,7 @@ describe("default discovery dependency cache integration", () => {
     expect(fetchDocument.mock.calls.filter(([url]) => url.endsWith("/scans"))).toHaveLength(1);
   });
 
-  it.each(["subdomaincenter", "anubis", "hackertarget", "certspotter", "certkit"] as const)("caches completed %s results by normalized domain and source", async source => {
+  it.each(["subdomaincenter", "hackertarget", "certspotter", "certkit"] as const)("caches completed %s results by normalized domain and source", async source => {
     const domain = `cached-${source}.example.com`;
     const hostname = `api.${domain}`;
     fetchDocument.mockImplementation(async url => {
@@ -68,11 +68,10 @@ describe("default discovery dependency cache integration", () => {
 
   it("does not share cached results between public providers for the same domain", async () => {
     const domain = "provider-isolation.example.com";
-    fetchDocument.mockImplementation(async url => document([
-      `${new URL(url).hostname === "api.subdomain.center" ? "center" : "anubis"}.${domain}`
-    ]));
+    fetchDocument.mockImplementation(async url => new URL(url).hostname === "api.subdomain.center"
+      ? document([`center.${domain}`]) : document(`passive.${domain},1.1.1.1\n`));
     expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ domains: [`center.${domain}`] });
-    expect(await discoverSubdomains(domain, "anubis", 1000)).toMatchObject({ domains: [`anubis.${domain}`] });
+    expect(await discoverSubdomains(domain, "hackertarget", 1000)).toMatchObject({ domains: [`passive.${domain}`] });
     expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ domains: [`center.${domain}`] });
     expect(fetchDocument).toHaveBeenCalledTimes(2);
   });
@@ -125,12 +124,12 @@ describe("default discovery dependency cache integration", () => {
     fetchDocument.mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {
       options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
     }));
-    const pending = discoverSubdomains(domain, "anubis", 1000);
+    const pending = discoverSubdomains(domain, "subdomaincenter", 1000);
     await vi.advanceTimersByTimeAsync(1000);
     expect(await pending).toMatchObject({ status: "error", domains: [], message: expect.stringContaining("超时") });
     expect(fetchDocument.mock.calls[0][1].signal?.aborted).toBe(true);
     fetchDocument.mockResolvedValue(document([`api.${domain}`]));
-    expect(await discoverSubdomains(domain, "anubis", 1000)).toMatchObject({ status: "success", domains: [`api.${domain}`] });
+    expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ status: "success", domains: [`api.${domain}`] });
     expect(fetchDocument).toHaveBeenCalledTimes(2);
   });
 
@@ -139,39 +138,26 @@ describe("default discovery dependency cache integration", () => {
     let release!: (result: PublicDocumentResult) => void;
     fetchDocument.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     const controller = new AbortController();
-    const pending = discoverSubdomains(domain, "anubis", 1000, undefined, controller.signal);
+    const pending = discoverSubdomains(domain, "subdomaincenter", 1000, undefined, controller.signal);
     controller.abort();
     expect(await pending).toMatchObject({ status: "error", domains: [], message: expect.stringContaining("取消") });
     expect(fetchDocument.mock.calls[0][1].signal?.aborted).toBe(true);
     fetchDocument.mockResolvedValue(document([`fresh.${domain}`]));
-    expect(await discoverSubdomains(domain, "anubis", 1000)).toMatchObject({ status: "success", domains: [`fresh.${domain}`] });
+    expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ status: "success", domains: [`fresh.${domain}`] });
     release(document([`late.${domain}`]));
     await Promise.resolve();
-    expect(await discoverSubdomains(domain, "anubis", 1000)).toMatchObject({ status: "success", domains: [`fresh.${domain}`] });
+    expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ status: "success", domains: [`fresh.${domain}`] });
     expect(fetchDocument).toHaveBeenCalledTimes(2);
-  });
-
-  it("reads live website evidence again instead of using the public-provider cache", async () => {
-    const domain = "uncached-website.example.com";
-    let label = "first";
-    fetchDocument.mockImplementation(async url => new URL(url).pathname === "/"
-      ? document(`<a href="https://${label}.${domain}/">Public page</a>`)
-      : document("", { statusCode: 404 }));
-    expect(await discoverSubdomains(domain, "website", 1000)).toMatchObject({ status: "success", domains: [`first.${domain}`] });
-    expect(fetchDocument).toHaveBeenCalledTimes(3);
-    label = "second";
-    expect(await discoverSubdomains(domain, "website", 1000)).toMatchObject({ status: "success", domains: [`second.${domain}`] });
-    expect(fetchDocument).toHaveBeenCalledTimes(6);
   });
 
   it("honors an already aborted caller before returning a warm cache entry", async () => {
     const domain = "warm-cache-cancellation.example.com";
     fetchDocument.mockResolvedValue(document([`api.${domain}`]));
-    expect(await discoverSubdomains(domain, "anubis", 1000)).toMatchObject({ status: "success", domains: [`api.${domain}`] });
+    expect(await discoverSubdomains(domain, "subdomaincenter", 1000)).toMatchObject({ status: "success", domains: [`api.${domain}`] });
     const controller = new AbortController();
     controller.abort();
-    expect(await discoverSubdomains(domain, "anubis", 1000, undefined, controller.signal)).toEqual({
-      source: "anubis", status: "error", domains: [], message: "来源查询已取消"
+    expect(await discoverSubdomains(domain, "subdomaincenter", 1000, undefined, controller.signal)).toEqual({
+      source: "subdomaincenter", status: "error", domains: [], message: "来源查询已取消"
     });
     expect(fetchDocument).toHaveBeenCalledOnce();
   });

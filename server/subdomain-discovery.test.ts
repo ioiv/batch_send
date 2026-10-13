@@ -2,22 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMON_SUBDOMAIN_LABELS, discoverSubdomains, MAX_DISCOVERY_DOMAINS, type SubdomainDiscoveryDependencies } from "./subdomain-discovery";
 import type { PublicDocumentResult, SubdomainScanResult } from "./network-scan";
 
-const absent = () => Object.assign(new Error("upstream details"), { code: "ENODATA" });
-function metadataResolver() {
-  return {
-    resolveNs: vi.fn(async (_domain: string): Promise<string[]> => { throw absent(); }),
-    resolveMx: vi.fn(async (_domain: string): Promise<Array<{ exchange: string; priority: number }>> => { throw absent(); }),
-    resolveTxt: vi.fn(async (_domain: string): Promise<string[][]> => { throw absent(); }),
-    resolveSoa: vi.fn(async (_domain: string): Promise<{ nsname: string; hostmaster: string; serial: number; refresh: number; retry: number; expire: number; minttl: number }> => { throw absent(); }),
-    cancel: vi.fn()
-  };
-}
-
 function document(body: unknown, overrides: Partial<PublicDocumentResult> = {}): PublicDocumentResult {
   return { url: "https://provider.invalid/", statusCode: 200, body: Buffer.from(typeof body === "string" ? body : JSON.stringify(body)), truncated: false, ...overrides };
 }
 
-function dependencies(fetcher: (url: URL, call: number, signal?: AbortSignal) => PublicDocumentResult | Promise<PublicDocumentResult>, resolver = metadataResolver()) {
+function dependencies(fetcher: (url: URL, call: number, signal?: AbortSignal) => PublicDocumentResult | Promise<PublicDocumentResult>) {
   let count = 0;
   const fetchDocument = vi.fn((url: string, options: Parameters<SubdomainDiscoveryDependencies["fetchDocument"]>[1]) => {
     count += 1;
@@ -25,8 +14,8 @@ function dependencies(fetcher: (url: URL, call: number, signal?: AbortSignal) =>
     expect(options.timeoutMs).toBeLessThanOrEqual(20000);
     return Promise.resolve(fetcher(new URL(url), count, options.signal));
   });
-  const adapter: SubdomainDiscoveryDependencies = { fetchDocument, createResolver: () => resolver };
-  return { adapter, fetchDocument, resolver };
+  const adapter: SubdomainDiscoveryDependencies = { fetchDocument };
+  return { adapter, fetchDocument };
 }
 
 beforeEach(() => { vi.stubEnv("SSLMATE_API_KEY", ""); });
@@ -58,8 +47,8 @@ describe("certificate transparency discovery", () => {
     expect(anonymous.fetchDocument.mock.calls[0][1].headers).toBeUndefined();
   });
 
-  it("never sends the credential to other providers or target website documents", async () => {
-    for (const source of ["subdomaincenter", "hackertarget", "anubis", "website", "certkit"] as const) {
+  it("never sends the credential to other providers", async () => {
+    for (const source of ["subdomaincenter", "hackertarget", "certkit"] as const) {
       const provider = dependencies(() => document([]));
       await discoverSubdomains("example.com", source, 1000, provider.adapter, undefined, { sslmateApiKey: "fake-sslmate-token" });
       expect(provider.fetchDocument).toHaveBeenCalled();
@@ -96,13 +85,11 @@ describe("certificate transparency discovery", () => {
     expect(provider.fetchDocument).not.toHaveBeenCalled();
   });
 
-  it.each(["subdomaincenter", "anubis"] as const)("reads %s concrete names without credentials, deduplicates and scopes results", async source => {
+  it.each(["subdomaincenter"] as const)("reads %s concrete names without credentials, deduplicates and scopes results", async source => {
     const provider = dependencies(url => {
-      if (source === "subdomaincenter") {
-        expect(url.origin + url.pathname).toBe("https://api.subdomain.center/");
-        expect(url.searchParams.get("domain")).toBe("example.com");
-        expect(url.searchParams.has("crawl")).toBe(false);
-      } else expect(url.href).toBe("https://anubisdb.com/anubis/subdomains/example.com");
+      expect(url.origin + url.pathname).toBe("https://api.subdomain.center/");
+      expect(url.searchParams.get("domain")).toBe("example.com");
+      expect(url.searchParams.has("crawl")).toBe(false);
       return document(["api.example.com", "API.Example.COM.", "*.example.com", "example.com", "cdn.example.com", "api.example.com.evil.com"]);
     });
     const result = await discoverSubdomains("Example.COM", source, 1000, provider.adapter);
@@ -111,14 +98,14 @@ describe("certificate transparency discovery", () => {
     expect(provider.fetchDocument.mock.calls[0][1].headers).toBeUndefined();
   });
 
-  it.each(["subdomaincenter", "anubis"] as const)("reports an empty %s index as successfully read, rather than unavailable", async source => {
+  it.each(["subdomaincenter"] as const)("reports an empty %s index as successfully read, rather than unavailable", async source => {
     const provider = dependencies(() => document([]));
     const result = await discoverSubdomains("stonkrobbers.io", source, 1000, provider.adapter);
     expect(result).toMatchObject({ source, status: "success", domains: [] });
     expect(result.message).toContain("暂无此域名的收录");
   });
 
-  it.each(["subdomaincenter", "anubis"] as const)("rejects %s malformed JSON structures", async source => {
+  it.each(["subdomaincenter"] as const)("rejects %s malformed JSON structures", async source => {
     for (const body of [{ domains: ["api.example.com"] }, [42], "<html>blocked</html>"]) {
       const provider = dependencies(() => document(body));
       expect((await discoverSubdomains("example.com", source, 1000, provider.adapter)).status).toBe("error");
@@ -134,14 +121,14 @@ describe("certificate transparency discovery", () => {
     expect(provider.fetchDocument).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["subdomaincenter", "anubis"] as const)("recovers only complete names from a bounded %s response", async source => {
+  it.each(["subdomaincenter"] as const)("recovers only complete names from a bounded %s response", async source => {
     const provider = dependencies(() => document('["api.example.com","cdn.example.com","incomplete', { truncated: true }));
     expect(await discoverSubdomains("example.com", source, 1000, provider.adapter)).toMatchObject({ status: "partial", domains: ["api.example.com", "cdn.example.com"] });
   });
 
   it("caps indexed candidates at 5000 unique scoped names and reports partial", async () => {
     const provider = dependencies(() => document(Array.from({ length: MAX_DISCOVERY_DOMAINS + 10 }, (_, index) => `observed-${index}.example.com`)));
-    const result = await discoverSubdomains("example.com", "anubis", 1000, provider.adapter);
+    const result = await discoverSubdomains("example.com", "subdomaincenter", 1000, provider.adapter);
     expect(result.status).toBe("partial");
     expect(result.domains).toHaveLength(MAX_DISCOVERY_DOMAINS);
     expect(result.message).toContain("5000");
@@ -209,98 +196,13 @@ describe("passive host and indexed sources", () => {
   });
 
   it("rejects malformed provider responses and redirects without following them", async () => {
-    for (const source of ["subdomaincenter", "certspotter", "anubis", "certkit"] as const) {
+    for (const source of ["subdomaincenter", "certspotter", "certkit"] as const) {
       const malformed = dependencies(() => document("<html>provider blocked</html>"));
       expect((await discoverSubdomains("example.com", source, 1000, malformed.adapter)).status).toBe("error");
       const redirect = dependencies(() => document("", { statusCode: 302, location: "http://127.0.0.1/" }));
       expect((await discoverSubdomains("example.com", source, 1000, redirect.adapter)).status).toBe("error");
       expect(redirect.fetchDocument).toHaveBeenCalledTimes(1);
     }
-  });
-});
-
-describe("observed target metadata", () => {
-  it("queries only root NS/MX/TXT/SOA and extracts scoped hostnames from actual values", async () => {
-    const resolver = metadataResolver();
-    resolver.resolveNs.mockResolvedValue(["ns1.example.com", "ns.provider.com"]);
-    resolver.resolveMx.mockResolvedValue([{ priority: 10, exchange: "mail.example.com" }]);
-    resolver.resolveTxt.mockResolvedValue([["v=spf1 include:", "relay.example.com -all"], ["domain=example.com.evil.com"], ["url=https://txt.example.com/"]]);
-    resolver.resolveSoa.mockResolvedValue({ nsname: "ns2.example.com", hostmaster: "admin.example.com", serial: 1, refresh: 1, retry: 1, expire: 1, minttl: 1 });
-    const provider = dependencies(() => { throw new Error("no HTTP expected"); }, resolver);
-    expect(await discoverSubdomains("example.com", "dns", 1000, provider.adapter)).toEqual({ source: "dns", status: "success", domains: ["mail.example.com", "ns1.example.com", "ns2.example.com", "relay.example.com", "txt.example.com"] });
-    for (const query of [resolver.resolveNs, resolver.resolveMx, resolver.resolveTxt, resolver.resolveSoa]) expect(query).toHaveBeenCalledExactlyOnceWith("example.com");
-    expect(provider.fetchDocument).not.toHaveBeenCalled();
-    expect(resolver.cancel).toHaveBeenCalled();
-  });
-
-  it("distinguishes absent DNS metadata from an upstream DNS failure", async () => {
-    const absentProvider = dependencies(() => { throw new Error("no HTTP expected"); });
-    expect(await discoverSubdomains("example.com", "dns", 1000, absentProvider.adapter)).toEqual({ source: "dns", status: "success", domains: [] });
-    const resolver = metadataResolver();
-    resolver.resolveNs.mockRejectedValue(new Error("nameserver secrets"));
-    const partial = dependencies(() => document(""), resolver);
-    expect((await discoverSubdomains("example.com", "dns", 1000, partial.adapter)).status).toBe("partial");
-  });
-
-  it("does not invent hostnames by matching inside underscored or malformed TXT DNS tokens", async () => {
-    const resolver = metadataResolver();
-    resolver.resolveTxt.mockResolvedValue([["include:_spf.mail.example.com selector._domainkey.example.com bad..api.example.com -api.example.com valid=relay.example.com"]]);
-    const provider = dependencies(() => document(""), resolver);
-    expect((await discoverSubdomains("example.com", "dns", 1000, provider.adapter)).domains).toEqual(["relay.example.com"]);
-  });
-
-  it("reads root HTML, robots and sitemap, then only follows observed in-scope redirects and resources", async () => {
-    const seenPaths: string[] = [];
-    const provider = dependencies((url) => {
-      expect(url.hostname === "example.com" || url.hostname.endsWith(".example.com")).toBe(true);
-      seenPaths.push(url.pathname);
-      if (url.pathname === "/") return document('<a href="https://api.example.com/dashboard">api</a><script src="//cdn.example.com/x.js"></script><a href="https://example.com.evil.com/">evil</a>', { statusCode: 302, location: "https://redirect.example.com/" });
-      if (url.pathname === "/robots.txt") return document("Sitemap: https://map.example.com/sitemap.xml\n");
-      return document("<url><loc>https://shop.example.com/</loc></url>");
-    });
-    expect(await discoverSubdomains("example.com", "website", 1000, provider.adapter)).toEqual({ source: "website", status: "success", domains: ["api.example.com", "cdn.example.com", "map.example.com", "redirect.example.com", "shop.example.com"] });
-    expect(seenPaths.sort()).toEqual(["/", "/", "/robots.txt", "/sitemap.xml", "/sitemap.xml", "/x.js"]);
-    expect(provider.fetchDocument).toHaveBeenCalledTimes(6);
-  });
-
-  it("reports partial website evidence when one document fails or is truncated", async () => {
-    const provider = dependencies((url) => url.pathname === "/" ? document('<a href="https://api.example.com/">', { truncated: true }) : document("", { statusCode: 403 }));
-    expect(await discoverSubdomains("example.com", "website", 1000, provider.adapter)).toMatchObject({ status: "partial", domains: ["api.example.com"] });
-  });
-
-  it("follows explicitly referenced local scripts and sitemap indexes and reads escaped application hosts", async () => {
-    const provider = dependencies(url => {
-      if (url.pathname === "/") return document('<base href="/assets/"><script src="entry.js"></script><link rel="modulepreload" href="more.js"><script src="https://other.com/external.js"></script>');
-      if (url.pathname === "/robots.txt") return document("Sitemap: https://example.com/maps/index.xml");
-      if (url.pathname === "/sitemap.xml") return document("", { statusCode: 404 });
-      if (url.pathname === "/maps/index.xml") return document('<sitemapindex><sitemap><loc>https://example.com/maps/child.xml</loc></sitemap></sitemapindex>');
-      if (url.pathname === "/maps/child.xml") return document('<urlset><url><loc>https://docs.example.com/start</loc></url></urlset>');
-      if (url.pathname === "/assets/entry.js") return document('const api="https:\\/\\/api.example.com/v1"; import("./lazy.js");');
-      if (url.pathname === "/assets/more.js") return document('const host="rpc.example.com"; const no="_bad.example.com"; const escaped="\\u0061pi.example.com";');
-      if (url.pathname === "/assets/lazy.js") return document('const host="https://game.example.com";');
-      throw new Error("unexpected URL");
-    });
-    expect(await discoverSubdomains("example.com", "website", 1000, provider.adapter)).toEqual({
-      source: "website", status: "success", domains: ["api.example.com", "docs.example.com", "game.example.com", "rpc.example.com"]
-    });
-    expect(provider.fetchDocument).toHaveBeenCalledTimes(8);
-    expect(provider.fetchDocument.mock.calls.every(([url]) => new URL(url).hostname === "example.com")).toBe(true);
-  });
-
-  it("does not claim website evidence was fully read when the real homepage is missing", async () => {
-    const provider = dependencies(() => document("404 page not found\n", { statusCode: 404 }));
-    expect(await discoverSubdomains("stonkrobbers.io", "website", 1000, provider.adapter)).toMatchObject({
-      status: "partial", domains: [], message: "网站首页返回 HTTP 404，未能读取页面和脚本线索"
-    });
-  });
-
-  it("does not follow external, credentialed or local-looking resource URLs and bounds recursive resources", async () => {
-    const provider = dependencies(url => url.pathname === "/" ? document('<script src="https://outside.com/a.js"></script><script src="http://user:pass@api.example.com/a.js"></script><script src="http://127.0.0.1/a.js"></script>' + Array.from({ length: 20 }, (_, i) => `<script src="/assets/${i}.js"></script>`).join("")) : document("", { statusCode: 404 }));
-    const result = await discoverSubdomains("example.com", "website", 1000, provider.adapter);
-    expect(result.status).toBe("partial");
-    expect(provider.fetchDocument.mock.calls.length).toBeLessThanOrEqual(12);
-    expect(provider.fetchDocument.mock.calls.every(([url]) => new URL(url).hostname === "example.com")).toBe(true);
-    expect(result.message).toContain("上限");
   });
 });
 
@@ -404,15 +306,14 @@ describe("discovery operation bounds", () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
-  it("cancels DNS immediately and avoids work on pre-cancelled requests", async () => {
+  it("cancels provider HTTP work immediately and avoids work on pre-cancelled requests", async () => {
     const controller = new AbortController();
-    const resolver = metadataResolver();
-    resolver.resolveNs.mockImplementation(() => new Promise(() => {}));
-    const provider = dependencies(() => document(""), resolver);
-    const pending = discoverSubdomains("example.com", "dns", 20000, provider.adapter, controller.signal);
+    let requestSignal: AbortSignal | undefined;
+    const provider = dependencies((_url, _call, signal) => { requestSignal = signal; return new Promise(() => {}); });
+    const pending = discoverSubdomains("example.com", "subdomaincenter", 20000, provider.adapter, controller.signal);
     controller.abort();
     expect((await pending).status).toBe("error");
-    expect(resolver.cancel).toHaveBeenCalled();
+    expect(requestSignal?.aborted).toBe(true);
     const preCancelled = dependencies(() => document(""));
     expect((await discoverSubdomains("example.com", "subdomaincenter", 1000, preCancelled.adapter, controller.signal)).status).toBe("error");
     expect(preCancelled.fetchDocument).not.toHaveBeenCalled();

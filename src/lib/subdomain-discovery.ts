@@ -1,17 +1,14 @@
 import { createSubdomainValidator, formatScanCsv, normalizeDomain, requestNetworkScan, type SubdomainScanResult } from "./network-scan";
 import { createStreamingScanQueue } from "./streaming-scan-queue";
 
-export type AutomaticSubdomainDiscoverySource = "subdomaincenter" | "certspotter" | "hackertarget" | "dns" | "website" | "anubis" | "common" | "pentesttools" | "certkit";
-export type SubdomainDiscoverySource = AutomaticSubdomainDiscoverySource | "manual";
+export type AutomaticSubdomainDiscoverySource = "subdomaincenter" | "certspotter" | "hackertarget" | "common" | "pentesttools" | "certkit";
+export type SubdomainDiscoverySource = AutomaticSubdomainDiscoverySource | "manual" | "cname";
 
 export const SUBDOMAIN_DISCOVERY_SOURCES: { id: AutomaticSubdomainDiscoverySource; label: string }[] = [
   { id: "common", label: "常用名称 · DNS 补充" },
   { id: "subdomaincenter", label: "Subdomain Center · 免费数据库" },
   { id: "certspotter", label: "SSLMate / Cert Spotter · 证书记录" },
   { id: "hackertarget", label: "HackerTarget · 被动 DNS" },
-  { id: "dns", label: "域名 DNS 记录" },
-  { id: "website", label: "网站公开链接" },
-  { id: "anubis", label: "Anubis · 免费数据库" },
   { id: "pentesttools", label: "Pentest-Tools · 子域名扫描" },
   { id: "certkit", label: "CertKit · CT 证书记录" }
 ];
@@ -88,14 +85,15 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
     if (!normalized.endsWith(`.${root}`)) throw new Error("补充名单包含当前主域名之外的名称。");
     return normalized;
   }))];
-  const sourceOrder: SubdomainDiscoverySource[] = [...SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id), ...(additionalDomains.length ? ["manual" as const] : [])];
+  const discoverySourceOrder: SubdomainDiscoverySource[] = [...SUBDOMAIN_DISCOVERY_SOURCES.map(source => source.id), ...(additionalDomains.length ? ["manual" as const] : [])];
+  // CNAME observations retain provenance without adding another discovery provider.
+  const sourceOrder: SubdomainDiscoverySource[] = [...discoverySourceOrder, "cname"];
   const controller = new AbortController();
   const stop = () => controller.abort(options.signal.reason);
   options.signal.addEventListener("abort", stop, { once: true });
   const signal = controller.signal;
   const sources = new Map<SubdomainDiscoverySource, SubdomainDiscoverySourceResult>();
   const candidates = new Map<string, Set<SubdomainDiscoverySource>>();
-  const observedCnames = new Set<string>();
   let truncated = false;
   let nextSource = 0;
   let validated = 0;
@@ -106,7 +104,7 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
     signal.throwIfAborted();
     options.onProgress?.({ phase: discoveryFinished ? "validating" : "discovering", completed: validated,
       total: candidates.size, discovered: candidates.size, discoveryCompleted: sources.size,
-      discoveryTotal: sourceOrder.length });
+      discoveryTotal: discoverySourceOrder.length });
   };
   const addCandidate = (domain: string, source: SubdomainDiscoverySource) => {
     signal.throwIfAborted();
@@ -127,11 +125,6 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
     queue.add(domain);
     return true;
   };
-  const mergeDnsSource = (result: SubdomainDiscoverySourceResult): SubdomainDiscoverySourceResult => {
-    if (!observedCnames.size) return result;
-    return { ...result, domains: [...new Set([...result.domains, ...observedCnames])],
-      ...(result.status === "error" ? { status: "partial", message: "根域名 DNS 元数据未完成；已通过子域名 CNAME 获取部分线索。" } : {}) };
-  };
   let validator: ReturnType<typeof createSubdomainValidator> | undefined;
   const queue = createStreamingScanQueue<SubdomainScanResult>({
     concurrency: Math.min(options.concurrency, 5), signal,
@@ -147,15 +140,7 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
         if (result.cname && !/[:/\\?#@\s]/.test(result.cname)) {
           let cname: string | undefined;
           try { cname = normalizeDomain(result.cname); } catch { /* Only real scoped DNS names can expand discovery. */ }
-          if (cname?.endsWith(`.${root}`) && cname !== result.domain && addCandidate(cname, "dns")) {
-            observedCnames.add(cname);
-            const dnsSource = sources.get("dns");
-            if (dnsSource && !dnsSource.domains.includes(cname)) {
-              const updated = mergeDnsSource(dnsSource);
-              sources.set("dns", updated);
-              options.onSource(updated);
-            }
-          }
+          if (cname?.endsWith(`.${root}`) && cname !== result.domain) addCandidate(cname, "cname");
         }
         const discovered = { ...result, sources: provenance(result.domain) };
         emitted.set(result.domain, discovered);
@@ -181,9 +166,8 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
         const result = await discoverFromSource(root, source, signal);
         signal.throwIfAborted();
         for (const domain of result.domains) addCandidate(domain, source);
-        const merged = source === "dns" ? mergeDnsSource(result) : result;
-        sources.set(source, merged);
-        options.onSource(merged);
+        sources.set(source, result);
+        options.onSource(result);
         progress();
       }
     }));
@@ -195,7 +179,7 @@ export async function discoverSubdomains(options: DiscoveryOptions): Promise<Sub
     await queue.done();
     signal.throwIfAborted();
     return { discovered: candidates.size, validated, truncated,
-      sources: sourceOrder.map(source => sources.get(source)!) };
+      sources: discoverySourceOrder.map(source => sources.get(source)!) };
   } catch (error) {
     controller.abort(error);
     await queue.cancel();

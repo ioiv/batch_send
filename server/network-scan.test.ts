@@ -86,7 +86,7 @@ describe("public-target validation", () => {
 
   it("validates known passive discovery sources with their separate 20-second timeout", () => {
     expect(validateScanPayload({ kind: "subdomain-discovery", domain: "Example.com", source: "subdomaincenter" })).toEqual({ kind: "subdomain-discovery", domain: "example.com", source: "subdomaincenter", timeoutMs: 20000 });
-    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "dns", timeoutMs: 15000 })).toHaveProperty("timeoutMs", 15000);
+    expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "hackertarget", timeoutMs: 15000 })).toHaveProperty("timeoutMs", 15000);
     expect(validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "common", timeoutMs: 15000 })).toHaveProperty("source", "common");
     expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "https://evil.com" })).toThrow();
     expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "certspotter", headers: { Authorization: "Bearer fixture-not-a-real-key" } })).toThrow();
@@ -572,16 +572,16 @@ describe("Node HTTP handler", () => {
     } finally { discover.mockRestore(); }
   });
   it("dispatches passive discovery through the same validated and cancellable endpoint", async () => {
-    const result = { source: "dns" as const, status: "success" as const, domains: ["api.example.com"] };
+    const result = { source: "hackertarget" as const, status: "success" as const, domains: ["api.example.com"] };
     const discover = vi.spyOn(discovery, "discoverSubdomains").mockResolvedValue(result);
     try {
       const request = mockHandlerRequest();
-      request.body = { kind: "subdomain-discovery", domain: "example.com", source: "dns", timeoutMs: 15000 };
+      request.body = { kind: "subdomain-discovery", domain: "example.com", source: "hackertarget", timeoutMs: 15000 };
       const response = mockHandlerResponse();
       await handleNetworkScanRequest(request, response.response);
       expect(response.state.statusCode).toBe(200);
       expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
-      expect(discover).toHaveBeenCalledWith("example.com", "dns", 15000, undefined, expect.any(AbortSignal), undefined);
+      expect(discover).toHaveBeenCalledWith("example.com", "hackertarget", 15000, undefined, expect.any(AbortSignal), undefined);
     } finally { discover.mockRestore(); }
   });
   it("dispatches the free anonymous CertKit source with its public-provider deadline", async () => {
@@ -611,7 +611,7 @@ describe("Node HTTP handler", () => {
       expect(discover).toHaveBeenCalledWith("example.com", "pentesttools", 120000, undefined, expect.any(AbortSignal), undefined);
     } finally { discover.mockRestore(); }
   });
-  it.each(["crtsh", "wayback"])("rejects retired or unavailable automatic source %s", source => {
+  it.each(["crtsh", "wayback", "website", "anubis", "dns"])("rejects retired or unavailable automatic source %s", source => {
     expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source })).toThrow();
   });
   it("passes middleware credentials to discovery without returning them or accepting client credentials", async () => {

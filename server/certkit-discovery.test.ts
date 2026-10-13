@@ -15,8 +15,7 @@ function provider(response: PublicDocumentResult | ((request: PublicDocumentOpti
     return typeof response === "function" ? response(request) : response;
   });
   const adapter: SubdomainDiscoveryDependencies = {
-    fetchDocument,
-    createResolver: () => { throw new Error("CertKit must not query target DNS directly"); }
+    fetchDocument
   };
   return { adapter, fetchDocument };
 }

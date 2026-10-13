@@ -1,11 +1,10 @@
-import { Resolver } from "node:dns/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { fetchPublicDocument, normalizeDomain, scanSubdomain, type PublicDocumentOptions, type PublicDocumentResult, type SubdomainScanResult } from "./network-scan.js";
 import { SubdomainSourceCache } from "./subdomain-source-cache.js";
 import { discoverPentestTools, PENTEST_TOOLS_TIMEOUT_MS } from "./pentest-tools-discovery.js";
 
-export type SubdomainDiscoverySource = "subdomaincenter" | "certspotter" | "hackertarget" | "dns" | "website" | "anubis" | "common" | "pentesttools" | "certkit";
+export type SubdomainDiscoverySource = "subdomaincenter" | "certspotter" | "hackertarget" | "common" | "pentesttools" | "certkit";
 export interface SubdomainDiscoveryResult {
   source: SubdomainDiscoverySource;
   status: "success" | "partial" | "error";
@@ -13,10 +12,8 @@ export interface SubdomainDiscoveryResult {
   message?: string;
 }
 
-type MetadataResolver = Pick<Resolver, "resolveNs" | "resolveMx" | "resolveTxt" | "resolveSoa" | "cancel">;
 export interface SubdomainDiscoveryDependencies {
   fetchDocument(url: string, options: PublicDocumentOptions): Promise<PublicDocumentResult>;
-  createResolver(): MetadataResolver;
   scanDomain?(domain: string, timeoutMs: number, signal: AbortSignal): Promise<SubdomainScanResult>;
 }
 
@@ -26,7 +23,7 @@ export interface SubdomainDiscoveryOptions {
 }
 
 const defaults: SubdomainDiscoveryDependencies = {
-  fetchDocument: fetchPublicDocument, createResolver: () => new Resolver(),
+  fetchDocument: fetchPublicDocument,
   scanDomain: (domain, timeoutMs, signal) => scanSubdomain(domain, timeoutMs, undefined, signal)
 };
 export const MAX_DISCOVERY_DOMAINS = 5000;
@@ -35,7 +32,6 @@ const MAX_PAGES = 8;
 const MAX_FREE_HOSTSEARCH_RECORDS = 50;
 const MAX_FREE_CERTKIT_CERTIFICATES = 100;
 const sourceCache = new SubdomainSourceCache<SubdomainDiscoveryResult>();
-const ABSENT_DNS_CODES = new Set(["ENODATA", "ENOTFOUND"]);
 export const COMMON_SUBDOMAIN_LABELS = [
   "www", "app", "api", "docs", "game", "play", "mint", "status", "dashboard", "portal", "auth", "login",
   "account", "web", "static", "assets", "cdn", "media", "images", "blog", "news", "help", "support", "mail",
@@ -65,13 +61,6 @@ class DomainCollector {
     if (this.domains.size >= MAX_DISCOVERY_DOMAINS) { this.capped = true; return; }
     this.domains.add(hostname);
     if (this.domains.size === MAX_DISCOVERY_DOMAINS) this.capped = true;
-  }
-  addUrl(value: unknown): void {
-    if (typeof value !== "string" || value.length > 16384) return;
-    try {
-      const url = new URL(value.startsWith("//") ? `https:${value}` : value);
-      if (url.protocol === "http:" || url.protocol === "https:") this.add(url.hostname);
-    } catch { /* Historical URLs and document contents can contain malformed entries. */ }
   }
 }
 
@@ -118,10 +107,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-async function discoverIndexedNames(context: Context, source: "subdomaincenter" | "anubis"): Promise<void> {
-  const url = source === "subdomaincenter" ? new URL("https://api.subdomain.center/")
-    : new URL(`https://anubisdb.com/anubis/subdomains/${encodeURIComponent(context.domain)}`);
-  if (source === "subdomaincenter") url.searchParams.set("domain", context.domain);
+async function discoverIndexedNames(context: Context): Promise<void> {
+  const url = new URL("https://api.subdomain.center/");
+  url.searchParams.set("domain", context.domain);
   const response = await readDocument(context, url);
   if (response.truncated) {
     // Recover only complete JSON strings from the bounded array sample.
@@ -131,13 +119,10 @@ async function discoverIndexedNames(context: Context, source: "subdomaincenter" 
     return;
   }
   const names = parseJson(response);
-  const label = source === "subdomaincenter" ? "Subdomain Center" : "Anubis";
-  if (!Array.isArray(names) || names.some(name => typeof name !== "string")) throw new SourceFailure(`${label} 返回的数据格式无效`);
+  if (!Array.isArray(names) || names.some(name => typeof name !== "string")) throw new SourceFailure("Subdomain Center 返回的数据格式无效");
   names.forEach(name => context.collector.add(name));
-  if (source === "subdomaincenter") {
-    context.notes.add("使用免费匿名查询，最多返回 500 个随机样本");
-    if (names.length >= 500) context.warnings.add("Subdomain Center 达到免费抽样上限，结果可能不完整");
-  } else if (names.length >= 10000) context.warnings.add("Anubis 达到来源记录上限，结果可能不完整");
+  context.notes.add("使用免费匿名查询，最多返回 500 个随机样本");
+  if (names.length >= 500) context.warnings.add("Subdomain Center 达到免费抽样上限，结果可能不完整");
   if (!names.length) context.notes.add("免费数据库暂无此域名的收录");
 }
 
@@ -239,137 +224,6 @@ async function discoverHackerTarget(context: Context): Promise<void> {
   if (lines.length >= MAX_FREE_HOSTSEARCH_RECORDS) context.warnings.add("HackerTarget 达到免费来源记录上限，结果可能不完整");
 }
 
-function documentText(text: string): string {
-  return text.replace(/\\\//g, "/").replace(/\\u002f/gi, "/").replace(/\\u003a/gi, ":").replace(/&amp;/gi, "&");
-}
-
-function extractDocumentUrls(context: Context, rawText: string): void {
-  const text = documentText(rawText);
-  for (const match of text.matchAll(/(?:https?:\/\/|\/\/)[^\s"'<>]+/gi)) context.collector.addUrl(match[0]);
-  // Bundled application configuration can publish bare hostnames as well as URLs.
-  for (const match of text.matchAll(/(?<![a-z0-9_.\\-])[a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,63}(?![a-z0-9_.\\-])/gi)) context.collector.add(match[0]);
-}
-
-type WebsiteDocument = { url: string; kind: "page" | "robots" | "sitemap" | "script"; depth: number };
-const MAX_WEBSITE_DOCUMENTS = 12;
-const MAX_WEBSITE_DOCUMENT_BYTES = 512 * 1024;
-
-async function discoverWebsite(context: Context): Promise<void> {
-  const queue: WebsiteDocument[] = [];
-  const seen = new Set<string>();
-  let readable = 0;
-  let bytesRead = 0;
-  const enqueue = (value: string, base: string, kind: WebsiteDocument["kind"], depth: number) => {
-    try {
-      const url = new URL(documentText(value), base);
-      context.collector.addUrl(url.href);
-      const hostname = normalizeDomain(url.hostname);
-      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port
-        || (hostname !== context.domain && !hostname.endsWith(`.${context.domain}`))) return;
-      url.hash = "";
-      if (seen.has(url.href)) return;
-      if (depth > 3 || queue.length >= MAX_WEBSITE_DOCUMENTS) {
-        context.warnings.add("网站公开资源达到读取上限，结果可能不完整"); return;
-      }
-      seen.add(url.href);
-      queue.push({ url: url.href, kind, depth });
-    } catch { /* Ignore malformed or out-of-scope resource references. */ }
-  };
-  const root = `https://${context.domain}/`;
-  enqueue(root, root, "page", 0);
-  enqueue("/robots.txt", root, "robots", 0);
-  enqueue("/sitemap.xml", root, "sitemap", 0);
-  const attribute = (tag: string, name: string) => tag.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"))?.slice(1).find(value => value !== undefined);
-  for (let offset = 0; offset < queue.length; offset += 3) {
-    if (context.signal.aborted) throw new SourceFailure("网站文档查询已取消");
-    // Reserve each document's sample before parallel reads to enforce an aggregate bound.
-    await Promise.all(queue.slice(offset, offset + 3).map(async doc => {
-      const budget = Math.min(MAX_WEBSITE_DOCUMENT_BYTES, MAX_DISCOVERY_BYTES - bytesRead);
-      if (budget <= 0) { context.warnings.add("网站公开资源达到读取上限，结果可能不完整"); return; }
-      bytesRead += budget;
-      try {
-        const remaining = context.deadline - Date.now();
-        if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("来源查询超时或已取消");
-        const response = await context.dependencies.fetchDocument(doc.url, { timeoutMs: remaining, maxBytes: budget, signal: context.signal });
-        bytesRead -= budget - Math.min(budget, response.body.length);
-        if (context.signal.aborted) return;
-        if (response.statusCode >= 200 && response.statusCode < 400) {
-          readable += 1;
-          if (response.location) enqueue(response.location, doc.url, doc.kind, doc.depth + 1);
-          const text = documentText(response.body.toString("utf8"));
-          extractDocumentUrls(context, text);
-          if (response.truncated) context.warnings.add("网站文档达到读取上限，结果可能不完整");
-          if (doc.kind === "page") {
-            const baseValue = text.match(/<base\b[^>]*>/i)?.[0];
-            let base = doc.url;
-            try { if (baseValue && attribute(baseValue, "href")) base = new URL(attribute(baseValue, "href")!, doc.url).href; } catch { /* Use the document URL. */ }
-            for (const match of text.matchAll(/<(?:script|link)\b[^>]*>/gi)) {
-              const tag = match[0];
-              const script = /^<script\b/i.test(tag);
-              const rel = attribute(tag, "rel")?.toLowerCase().split(/\s+/) ?? [];
-              if (!script && !rel.includes("modulepreload") && !(rel.includes("preload") && attribute(tag, "as")?.toLowerCase() === "script")) continue;
-              const reference = attribute(tag, script ? "src" : "href");
-              if (reference) enqueue(reference, base, "script", doc.depth + 1);
-            }
-          } else if (doc.kind === "script") {
-            for (const match of text.matchAll(/["']((?:\.{0,2}\/|https?:\/\/)[^"'\s]+\.m?js(?:\?[^"'\s]*)?)["']/gi)) enqueue(match[1], doc.url, "script", doc.depth + 1);
-          } else if (doc.kind === "robots") {
-            for (const match of text.matchAll(/^\s*Sitemap:\s*(\S+)\s*$/gim)) enqueue(match[1], doc.url, "sitemap", doc.depth + 1);
-          } else if (/<sitemapindex\b/i.test(text)) {
-            for (const match of text.matchAll(/<loc\b[^>]*>\s*([^<]+?)\s*<\/loc\s*>/gi)) enqueue(match[1], doc.url, "sitemap", doc.depth + 1);
-          }
-        } else if (response.statusCode === 404 || response.statusCode === 410) {
-          readable += 1;
-          if (doc.kind === "page") context.warnings.add(`网站首页返回 HTTP ${response.statusCode}，未能读取页面和脚本线索`);
-        } else context.warnings.add("部分网站文档不可读取，已保留可用线索");
-      } catch { context.warnings.add("部分网站文档请求失败，已保留可用线索"); }
-    }));
-  }
-  if (!readable) throw new SourceFailure("网站文档暂时无法读取");
-}
-
-function dnsCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
-}
-
-async function discoverDnsMetadata(context: Context): Promise<void> {
-  const resolver = context.dependencies.createResolver();
-  let cancelled = false;
-  const cancelResolver = () => {
-    if (cancelled) return;
-    cancelled = true;
-    try { resolver.cancel(); } catch { /* Cancelling an already finished resolver is not a source failure. */ }
-  };
-  const onAbort = () => cancelResolver();
-  if (context.signal.aborted) { cancelResolver(); throw new SourceFailure("来源查询已取消"); }
-  context.signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    const answers = await Promise.allSettled([resolver.resolveNs(context.domain), resolver.resolveMx(context.domain), resolver.resolveTxt(context.domain), resolver.resolveSoa(context.domain)]);
-    let operationalErrors = 0;
-    let usableQueries = 0;
-    answers.forEach((answer) => {
-      if (answer.status === "fulfilled" || ABSENT_DNS_CODES.has(dnsCode(answer.reason) ?? "")) usableQueries += 1;
-      else operationalErrors += 1;
-    });
-    if (!usableQueries) throw new SourceFailure("DNS 元数据来源查询失败");
-    if (operationalErrors) context.warnings.add("部分 DNS 元数据查询失败，已保留可用线索");
-    const [ns, mx, txt, soa] = answers;
-    if (ns.status === "fulfilled") (ns.value as string[]).forEach((name) => context.collector.add(name));
-    if (mx.status === "fulfilled") (mx.value as Array<{ exchange: string }>).forEach((entry) => context.collector.add(entry.exchange));
-    if (txt.status === "fulfilled") {
-      for (const chunks of txt.value as string[][]) {
-        // Preserve the whole DNS token so an underscore label cannot turn into an invented host.
-        for (const match of chunks.join("").matchAll(/(?<![a-z0-9_.-])[a-z0-9_.-]+\.[a-z0-9_.-]+(?![a-z0-9_.-])/gi)) context.collector.add(match[0]);
-      }
-    }
-    // SOA hostmaster encodes an email address, so only its nameserver is a host candidate.
-    if (soa.status === "fulfilled") context.collector.add((soa.value as { nsname: string }).nsname);
-  } finally {
-    context.signal.removeEventListener("abort", onAbort);
-    cancelResolver();
-  }
-}
-
 function sameDnsAnswer(candidate: SubdomainScanResult, control: SubdomainScanResult): boolean {
   if (candidate.cname && control.cname) return candidate.cname.toLowerCase() === control.cname.toLowerCase();
   return Boolean(candidate.addresses.length && candidate.addresses.some(address => control.addresses.includes(address)));
@@ -424,7 +278,7 @@ export async function discoverSubdomains(domainInput: string, source: SubdomainD
   const maxTimeoutMs = source === "pentesttools" ? PENTEST_TOOLS_TIMEOUT_MS : 20000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > maxTimeoutMs) throw new Error(`发现来源超时必须在 1000–${maxTimeoutMs} 毫秒之间`);
   if (signal?.aborted) return { source, status: "error", domains: [], message: "来源查询已取消" };
-  const cachedSource = dependencies === defaults && ["subdomaincenter", "anubis", "certspotter", "hackertarget", "pentesttools", "certkit"].includes(source);
+  const cachedSource = dependencies === defaults && ["subdomaincenter", "certspotter", "hackertarget", "pentesttools", "certkit"].includes(source);
   // Different credentials must never share authenticated data or cached permission failures.
   const cacheKey = cachedSource ? `${source}:${domain}:${source === "certspotter" ? createHash("sha256").update(options.sslmateApiKey ?? "").digest("hex") : "anonymous"}` : undefined;
   if (cacheKey) {
@@ -455,8 +309,8 @@ export async function discoverSubdomains(domainInput: string, source: SubdomainD
       if (result.status === "error") throw new SourceFailure(result.message || "Pentest-Tools 来源查询失败");
       if (result.status === "partial") warnings.add(result.message || "Pentest-Tools 仅返回部分结果");
       else if (result.message) context.notes.add(result.message);
-    })() : source === "subdomaincenter" || source === "anubis" ? discoverIndexedNames(context, source) : source === "certspotter" ? discoverCertspotter(context) : source === "certkit" ? discoverCertkit(context) : source === "hackertarget" ? discoverHackerTarget(context)
-      : source === "website" ? discoverWebsite(context) : source === "dns" ? discoverDnsMetadata(context) : source === "common" ? discoverCommonNames(context) : Promise.reject(new SourceFailure("不支持的发现来源"));
+    })() : source === "subdomaincenter" ? discoverIndexedNames(context) : source === "certspotter" ? discoverCertspotter(context) : source === "certkit" ? discoverCertkit(context) : source === "hackertarget" ? discoverHackerTarget(context)
+      : source === "common" ? discoverCommonNames(context) : Promise.reject(new SourceFailure("不支持的发现来源"));
     await Promise.race([operation, interruption]);
     if (collector.wildcardPatterns.size) warnings.add(source === "certspotter" || source === "certkit"
       ? collector.domains.size ? "证书包含通配名称，具体子域名仍需其他来源或 DNS 验证补充" : "证书仅公开通配名称，无法从证书列出具体子域名"

@@ -98,7 +98,9 @@ describe("Subdomain discovery workbench", () => {
     expect(screen.queryByRole("textbox", { name: "外部结果（可选）" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(within(screen.getByRole("list", { name: "公开发现来源" })).getAllByRole("listitem")).toHaveLength(SUBDOMAIN_DISCOVERY_SOURCES.length);
-    expect(screen.getByText("自动查询 9 个来源，无需提供字典")).toBeVisible();
+    expect(screen.getByText("自动查询 6 个来源，无需提供字典")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "当前已解析" })).toHaveAttribute("aria-selected", "true");
+    for (const label of ["网站公开链接", "Anubis · 免费数据库", "域名 DNS 记录"]) expect(screen.queryByText(label)).not.toBeInTheDocument();
     expect(within(screen.getByRole("list", { name: "公开发现来源" })).getByText("CertKit · CT 证书记录")).toBeVisible();
     expect(within(screen.getByRole("list", { name: "公开发现来源" })).getByText("Pentest-Tools · 子域名扫描")).toBeVisible();
     domainInput("EXAMPLE.COM");
@@ -122,30 +124,33 @@ describe("Subdomain discovery workbench", () => {
       { source: "subdomaincenter", status: "success", domains: ["www.example.com", "api.example.com"] },
       { source: "certspotter", status: "partial", domains: ["api.example.com"], message: "上游分页受限" },
       { source: "hackertarget", status: "error", domains: [], message: "上游 API 配额耗尽" },
-      { source: "dns", status: "success", domains: ["www.example.com"] },
-      { source: "website", status: "success", domains: ["broken.example.com"] },
-      { source: "anubis", status: "success", domains: ["old.example.com"] },
-      { source: "pentesttools", status: "success", domains: ["www.example.com"] },
-      { source: "certkit", status: "success", domains: ["www.example.com"] }
+      { source: "pentesttools", status: "success", domains: ["www.example.com", "broken.example.com"] },
+      { source: "certkit", status: "success", domains: ["www.example.com", "old.example.com"] }
     ];
     await act(async () => {
       sources.forEach(options.onSource);
-      options.onProgress?.({ phase: "discovering", completed: 9, total: 9, discovered: 4 });
+      options.onProgress?.({ phase: "discovering", completed: 6, total: 6, discovered: 4 });
     });
-    expect(screen.getByText("发现中 · 已读取 9 / 9 个来源 · 发现 4 个子域名")).toBeVisible();
+    expect(screen.getByText("发现中 · 已读取 6 / 6 个来源 · 发现 4 个子域名")).toBeVisible();
     const sourceList = within(screen.getByRole("list", { name: "公开发现来源" }));
     expect(sourceList.getByText("上游分页受限")).toBeVisible();
     expect(sourceList.getByText("上游 API 配额耗尽")).toBeVisible();
     await act(async () => {
       options.onProgress?.({ phase: "validating", completed: 0, total: 4, discovered: 4 });
-      options.onResult({ domain: "www.example.com", status: "resolved", addresses: ["93.184.216.34"], cname: "edge.example.com", sources: ["subdomaincenter", "dns", "pentesttools", "certkit"] });
+      options.onResult({ domain: "www.example.com", status: "resolved", addresses: ["93.184.216.34"], cname: "edge.example.com", sources: ["subdomaincenter", "pentesttools", "certkit", "cname"] });
       options.onResult({ domain: "api.example.com", status: "resolved", addresses: ["93.184.216.34"], wildcard: true, sources: ["subdomaincenter", "certspotter"] });
-      options.onResult({ domain: "old.example.com", status: "not-found", addresses: [], sources: ["anubis"] });
-      options.onResult({ domain: "broken.example.com", status: "error", addresses: [], message: "DNS 验证超时", sources: ["website"] });
+      options.onResult({ domain: "old.example.com", status: "not-found", addresses: [], sources: ["certkit"] });
+      options.onResult({ domain: "broken.example.com", status: "error", addresses: [], message: "DNS 验证超时", sources: ["pentesttools"] });
       options.onProgress?.({ phase: "validating", completed: 4, total: 4, discovered: 4 });
     });
     expect(screen.getByText("DNS 验证中 · 已验证 4 / 4 项 · 发现 4 个子域名")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "当前已解析" })).toHaveAttribute("aria-selected", "true");
     let table = within(screen.getByRole("table", { name: "子域名发现结果" }));
+    expect(table.getAllByRole("row")).toHaveLength(2);
+    for (const hidden of ["api.example.com", "old.example.com", "broken.example.com"]) expect(table.queryByText(hidden)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "全部" }));
+    table = within(screen.getByRole("table", { name: "子域名发现结果" }));
+    expect(table.getAllByRole("row")).toHaveLength(5);
     expect(table.getByRole("columnheader", { name: "发现来源" })).toBeVisible();
     expect(table.getByRole("link", { name: "www.example.com" })).toHaveAttribute("href", "https://www.example.com");
     expect(table.getByRole("link", { name: "扫描 www.example.com 的网址路径" })).toHaveAttribute("href", "/network/paths/?target=https%3A%2F%2Fwww.example.com%2F");
@@ -162,7 +167,7 @@ describe("Subdomain discovery workbench", () => {
     await user.click(table.getByRole("button", { name: "说明：www.example.com 的发现来源" }));
     details = within(screen.getByRole("dialog", { name: "www.example.com 的发现来源" }));
     expect(details.getByText(SUBDOMAIN_DISCOVERY_SOURCES.find(source => source.id === "subdomaincenter")!.label)).toBeVisible();
-    expect(details.getByText("域名 DNS 记录")).toBeVisible();
+    expect(details.getByText("CNAME 线索")).toBeVisible();
     expect(details.getByText("Pentest-Tools · 子域名扫描")).toBeVisible();
     expect(details.getByText("CertKit · CT 证书记录")).toBeVisible();
     await user.keyboard("{Escape}");
@@ -179,9 +184,9 @@ describe("Subdomain discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "导出 CSV" }));
     const [filename, csv] = vi.mocked(downloadScanCsv).mock.calls[0];
     expect(filename).toMatch(/^subdomain-discovery-.*\.csv$/u);
-    for (const expected of ["www.example.com", "api.example.com", "old.example.com", "broken.example.com", "subdomaincenter", "anubis", "pentesttools", "certkit"]) expect(csv).toContain(expected);
+    for (const expected of ["www.example.com", "api.example.com", "old.example.com", "broken.example.com", "subdomaincenter", "cname", "pentesttools", "certkit"]) expect(csv).toContain(expected);
     await user.click(screen.getByRole("tab", { name: "全部" }));
-    fireEvent.change(screen.getByRole("searchbox", { name: "搜索子域名发现结果" }), { target: { value: "Anubis" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索子域名发现结果" }), { target: { value: "CertKit" } });
     table = within(screen.getByRole("table", { name: "子域名发现结果" }));
     expect(table.getByText("old.example.com")).toBeVisible();
     expect(table.queryByText("api.example.com")).not.toBeInTheDocument();
@@ -199,34 +204,34 @@ describe("Subdomain discovery workbench", () => {
     domainInput();
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     await act(async () => {
-      options.onProgress?.({ phase: "discovering", completed: 0, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 9 });
+      options.onProgress?.({ phase: "discovering", completed: 0, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 6 });
     });
     expect(screen.getByRole("status", { name: "发现并验证中" })).toBeVisible();
     expect(screen.getByText("正在发现并验证子域名，等待首批 DNS 结果…")).toBeVisible();
     expect(screen.getByRole("progressbar", { name: "DNS 验证进度" })).toHaveTextContent("0/2");
-    expect(screen.getByRole("progressbar", { name: "公开来源发现进度" })).toHaveTextContent("1/9");
+    expect(screen.getByRole("progressbar", { name: "公开来源发现进度" })).toHaveTextContent("1/6");
 
     await act(async () => {
       options.onSource({ source: "subdomaincenter", status: "success", domains: ["www.example.com", "api.example.com"] });
       options.onResult({ domain: "www.example.com", status: "resolved", addresses: ["93.184.216.34"], sources: ["subdomaincenter"] });
-      options.onProgress?.({ phase: "discovering", completed: 1, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 9 });
+      options.onProgress?.({ phase: "discovering", completed: 1, total: 2, discovered: 2, discoveryCompleted: 1, discoveryTotal: 6 });
     });
-    expect(screen.getByText("发现并验证中 · 已处理 1 / 9 个发现请求 · 已验证 1 / 当前候选 2 · 发现 2 个子域名")).toBeVisible();
+    expect(screen.getByText("发现并验证中 · 已处理 1 / 6 个发现请求 · 已验证 1 / 当前候选 2 · 发现 2 个子域名")).toBeVisible();
     expect(screen.getByRole("link", { name: "www.example.com" })).toBeVisible();
     expect(screen.getByRole("button", { name: "停止扫描" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "导出 CSV" }));
     expect(vi.mocked(downloadScanCsv).mock.calls.at(-1)![1]).toContain("www.example.com");
 
     await act(async () => {
-      options.onResult({ domain: "www.example.com", status: "resolved", addresses: ["93.184.216.34"], sources: ["subdomaincenter", "dns"] });
-      options.onProgress?.({ phase: "discovering", completed: 1, total: 3, discovered: 3, discoveryCompleted: 2, discoveryTotal: 9 });
+      options.onResult({ domain: "www.example.com", status: "resolved", addresses: ["93.184.216.34"], sources: ["subdomaincenter", "certkit"] });
+      options.onProgress?.({ phase: "discovering", completed: 1, total: 3, discovered: 3, discoveryCompleted: 2, discoveryTotal: 6 });
     });
     const table = within(screen.getByRole("table", { name: "子域名发现结果" }));
     expect(table.getAllByRole("row")).toHaveLength(2);
-    expect(screen.getByText("发现并验证中 · 已处理 2 / 9 个发现请求 · 已验证 1 / 当前候选 3 · 发现 3 个子域名")).toBeVisible();
+    expect(screen.getByText("发现并验证中 · 已处理 2 / 6 个发现请求 · 已验证 1 / 当前候选 3 · 发现 3 个子域名")).toBeVisible();
     expect(screen.getByRole("progressbar", { name: "DNS 验证进度" })).toHaveTextContent("1/3");
     await user.click(screen.getByRole("button", { name: "导出 CSV" }));
-    expect(vi.mocked(downloadScanCsv).mock.calls.at(-1)![1]).toContain('"subdomaincenter; dns"');
+    expect(vi.mocked(downloadScanCsv).mock.calls.at(-1)![1]).toContain('"subdomaincenter; certkit"');
     await user.click(screen.getByRole("button", { name: "停止扫描" }));
     await act(async () => { pending.resolve(summary()); await pending.promise; });
     expect(screen.getByRole("link", { name: "www.example.com" })).toBeVisible();
@@ -239,8 +244,8 @@ describe("Subdomain discovery workbench", () => {
     vi.mocked(discoverSubdomains).mockImplementation(async options => {
       sources.forEach(options.onSource);
       options.onResult({ domain: "old.example.com", status: "not-found", addresses: [], sources: ["certkit"] });
-      options.onResult({ domain: "api.example.com", status: "resolved", addresses: ["93.184.216.34"], sources: ["subdomaincenter"] });
-      options.onProgress?.({ phase: "validating", completed: 2, total: 2, discovered: 2, discoveryCompleted: 9, discoveryTotal: 9 });
+      options.onResult({ domain: "api.example.com", status: "not-found", addresses: [], sources: ["subdomaincenter"] });
+      options.onProgress?.({ phase: "validating", completed: 2, total: 2, discovered: 2, discoveryCompleted: 6, discoveryTotal: 6 });
       return { discovered: 2, validated: 2, truncated: false, sources };
     });
     render(<SubdomainScanPage />);
@@ -250,6 +255,9 @@ describe("Subdomain discovery workbench", () => {
     domainInput();
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByText("当前暂无已解析的子域名，可切换分类查看其他结果")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "全部" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索子域名发现结果" }), { target: { value: "CertKit" } });
     const table = within(screen.getByRole("table", { name: "子域名发现结果" }));
     expect(table.getByText("old.example.com")).toBeVisible();
@@ -275,7 +283,7 @@ describe("Subdomain discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     await act(async () => {
       options.onSource({ source: "subdomaincenter", status: "success", domains: ["www.example.com"] });
-      options.onProgress?.({ phase: "discovering", completed: 1, total: 9, discovered: 1 });
+      options.onProgress?.({ phase: "discovering", completed: 1, total: 6, discovered: 1 });
     });
     await user.click(screen.getByRole("button", { name: "停止扫描" }));
     expect(options.signal.aborted).toBe(true);
@@ -289,13 +297,15 @@ describe("Subdomain discovery workbench", () => {
       pending.resolve(summary());
       await pending.promise;
     });
-    expect(screen.getByText("已停止 · 已读取 1 / 9 个来源 · 发现 1 个子域名")).toBeVisible();
+    expect(screen.getByText("已停止 · 已读取 1 / 6 个来源 · 发现 1 个子域名")).toBeVisible();
     expect(screen.queryByText("过期来源错误")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "主域名" })).toHaveValue("example.com");
     expect(screen.getByRole("textbox", { name: "主域名" })).toBeEnabled();
+    await user.click(screen.getByRole("tab", { name: "全部" }));
     await user.click(screen.getByRole("button", { name: "重新扫描" }));
     await waitFor(() => expect(discoverSubdomains).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("tab", { name: "当前已解析" })).toHaveAttribute("aria-selected", "true");
     await act(async () => { options.onResult({ domain: "stale.example.com", status: "resolved", addresses: [], sources: ["subdomaincenter"] }); });
     expect(screen.queryByRole("link", { name: "stale.example.com" })).not.toBeInTheDocument();
   });
