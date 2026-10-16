@@ -129,4 +129,20 @@ describe("CollectionResults", () => {
     expect(screen.getByText("预检后显示余额")).toHaveClass("sr-only");
     expect(screen.getByRole("button", { name: "导出全部 CSV" })).toBeDisabled();
   });
+
+  it("shows the target in the result summary and copies structured asset identity in details", async () => {
+    const user = userEvent.setup();
+    const targetAddress = "0x4444444444444444444444444444444444444444";
+    const contractAddress = "0x5555555555555555555555555555555555555555";
+    render(<CollectionResults exportFilename="collection.csv" results={[{ ...results[0], targetAddress, contractAddress, tokenId: "7", tokenStandard: "erc1155", asset: "ERC1155 #7 · 0x5555…5555" }]} />);
+    expect(screen.getByLabelText("归集目标摘要")).toHaveTextContent(targetAddress);
+    await user.click(within(screen.getByLabelText("归集目标摘要")).getByRole("button", { name: "复制目标地址" }));
+    expect(copyText).toHaveBeenCalledWith(targetAddress);
+    await user.click(screen.getByRole("button", { name: "查看来源 1的详情" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("ERC1155")).toBeVisible();
+    expect(dialog.getByText("7")).toBeVisible();
+    await user.click(dialog.getByRole("button", { name: "复制合约地址" }));
+    expect(copyText).toHaveBeenCalledWith(contractAddress);
+  });
 });

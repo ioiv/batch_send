@@ -563,7 +563,10 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
       const imported = await readSecretKeyFile(file, mode);
       if (requestId !== importRequestRef.current || disabledRef.current || !draftTextareaRef.current) return;
 
-      draftTextareaRef.current.value = imported.sourceValue;
+      // Files can contain unrelated secrets (for example mnemonic columns).
+      // Keep their contents out of the visible paste field; the normalized
+      // import value stays in importPreviewRef until the user confirms.
+      draftTextareaRef.current.value = "";
       workbookSheetsRef.current = imported.sheets || [];
       setWorkbookSheetNames((imported.sheets || []).map((sheet) => sheet.name));
       const { value, duplicates, format, issues, lineCount, wallets: incomingWallets } = imported;
@@ -591,7 +594,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     const sheet = workbookSheetsRef.current[index];
     if (!sheet || !draftTextareaRef.current) return;
     setSelectedWorkbookSheet(index);
-    draftTextareaRef.current.value = sheet.text;
+    draftTextareaRef.current.value = "";
     importPreviewRef.current = null;
     setImportPreview(null);
     setAllowPartialImport(false);
@@ -877,6 +880,9 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             />
             {draftLineCount > maximumSecretInputLines ? (
               <FieldError>超过 {maximumSecretInputLines.toLocaleString("zh-CN")} 行上限，请减少后再导入</FieldError>
+            ) : null}
+            {fileStatus.kind === "success" ? (
+              <FieldDescription>文件内容已识别，私钥及其他敏感列不会显示在输入框中。直接粘贴会改为识别新内容。</FieldDescription>
             ) : null}
           </Field>
           <div className="secret-import-file-row">

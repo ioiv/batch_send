@@ -866,26 +866,41 @@ export async function getEvmTokenDetails({
 
 export async function getEvmNativeBalance({
   address,
+  minBlockNumber,
   network,
   rpcEndpoint
 }: {
   address: string;
+  minBlockNumber?: bigint;
   network: EvmNetworkConfig;
   rpcEndpoint: string;
 }) {
   const publicClient = createEvmPublicClient(network, rpcEndpoint);
 
   await assertEvmRpcNetwork(publicClient, network);
-  return publicClient.getBalance({ address: getAddress(address) });
+  const blockNumber = await getBalanceReadBlock(publicClient, minBlockNumber);
+  return publicClient.getBalance({ address: getAddress(address), ...(blockNumber === undefined ? {} : { blockNumber }) });
+}
+
+async function getBalanceReadBlock(publicClient: ReturnType<typeof createEvmPublicClient>, minBlockNumber?: bigint) {
+  if (minBlockNumber === undefined) return undefined;
+  const blockNumber = await publicClient.getBlockNumber({ cacheTime: 0 });
+  if (blockNumber < minBlockNumber) {
+    throw new Error("RPC 尚未同步至交易确认区块，请稍后重试");
+  }
+  // Pin the read so a lagging RPC backend cannot return a pre-transaction balance as current.
+  return blockNumber;
 }
 
 export async function getEvmTokenBalance({
   address,
+  minBlockNumber,
   network,
   rpcEndpoint,
   tokenAddress
 }: {
   address: string;
+  minBlockNumber?: bigint;
   network: EvmNetworkConfig;
   rpcEndpoint: string;
   tokenAddress: string;
@@ -896,12 +911,14 @@ export async function getEvmTokenBalance({
 
   await assertEvmRpcNetwork(publicClient, network);
   await ensureTokenContract(publicClient, network, erc20Address);
+  const blockNumber = await getBalanceReadBlock(publicClient, minBlockNumber);
 
   return publicClient.readContract({
     abi: erc20Abi,
     address: erc20Address,
     args: [ownerAddress],
-    functionName: "balanceOf"
+    functionName: "balanceOf",
+    ...(blockNumber === undefined ? {} : { blockNumber })
   });
 }
 
@@ -916,6 +933,7 @@ export async function preflightEvmDistribution({
   assetMode,
   from,
   gasSettings = autoEvmGasSettings,
+  minBlockNumber,
   network,
   rows,
   rpcEndpoint,
@@ -924,6 +942,7 @@ export async function preflightEvmDistribution({
   assetMode: EvmAssetMode;
   from: string;
   gasSettings?: EvmGasSettings;
+  minBlockNumber?: bigint;
   network: EvmNetworkConfig;
   rows: EvmDistributionRow[];
   rpcEndpoint: string;
@@ -942,9 +961,11 @@ export async function preflightEvmDistribution({
 
   await assertEvmRpcNetwork(publicClient, network);
   await ensureDisperseContract(publicClient, network);
+  const blockNumber = await getBalanceReadBlock(publicClient, minBlockNumber);
+  const balanceBlock = blockNumber === undefined ? {} : { blockNumber };
 
   if (assetMode === "native") {
-    const balance = await publicClient.getBalance({ address: account });
+    const balance = await publicClient.getBalance({ address: account, ...balanceBlock });
     if (balance < totalWei) {
       throw new Error(`钱包余额不足：分发金额需要 ${formatWei(totalWei, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}，当前余额 ${formatWei(balance, network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol}`);
     }
@@ -986,15 +1007,17 @@ export async function preflightEvmDistribution({
       abi: erc20Abi,
       address: tokenAddress,
       args: [account],
-      functionName: "balanceOf"
+      functionName: "balanceOf",
+      ...balanceBlock
     }),
     publicClient.readContract({
       abi: erc20Abi,
       address: tokenAddress,
       args: [account, network.disperseContractAddress],
-      functionName: "allowance"
+      functionName: "allowance",
+      ...balanceBlock
     }),
-    publicClient.getBalance({ address: account }),
+    publicClient.getBalance({ address: account, ...balanceBlock }),
     resolveEvmFeeQuote(publicClient, gasSettings)
   ]);
   if (tokenBalance < totalWei) {

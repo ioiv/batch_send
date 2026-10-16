@@ -43,6 +43,7 @@ export default defineConfig(({ mode }) => ({
         evmBatchDistributor: resolve(projectRoot, "evm/index.html"),
         evmTokenCollection: resolve(projectRoot, "evm/collect/index.html"),
         evmNftCollection: resolve(projectRoot, "evm/nft-collect/index.html"),
+        evmContractCall: resolve(projectRoot, "evm/call/index.html"),
         evmContractDeploy: resolve(projectRoot, "evm/deploy/index.html"),
         subdomainScan: resolve(projectRoot, "network/subdomains/index.html"),
         websitePathScan: resolve(projectRoot, "network/paths/index.html")

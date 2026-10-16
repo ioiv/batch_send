@@ -129,7 +129,7 @@ function getRecipientEditor(name = "收款地址") {
 
 async function prepareReadyDistributionPage() {
   const user = userEvent.setup();
-  render(createElement(EvmBatchDistributorPage));
+  const { rerender } = render(createElement(EvmBatchDistributorPage));
   const addressInput = getRecipientEditor();
   await user.click(addressInput);
   await user.paste(recipient);
@@ -137,7 +137,7 @@ async function prepareReadyDistributionPage() {
   await waitFor(() => expect(preflightButton).toBeEnabled());
   await user.click(preflightButton);
   await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
-  return { addressInput, user };
+  return { addressInput, rerender, user };
 }
 
 async function prepareReadyTokenDistributionPage() {
@@ -182,6 +182,7 @@ describe("EvmBatchDistributorPage safety", () => {
     const initialBalance = 10_000_000_000_001n;
     const remainingBalance = 8_000_000_000_001n;
     pageMocks.getTokenBalance.mockResolvedValueOnce(initialBalance).mockResolvedValue(remainingBalance);
+    pageMocks.sendToken.mockResolvedValueOnce({ hashes: [transactionHash], receipt: { blockNumber: 110n } });
     pageMocks.getTokenDetails.mockResolvedValue({ address: tokenAddress, decimals: 18, name: "Wrapped Ether", symbol: "WETH" });
     pageMocks.preflight.mockResolvedValue({ ...preflightResult, assetBalanceWei: initialBalance });
     const user = userEvent.setup();
@@ -203,9 +204,30 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(await screen.findByText("分发完成")).toBeVisible();
     expect(await within(tokenInfo).findByTitle("0.000008000000000001 WETH")).toHaveTextContent("0.000008");
     expect(pageMocks.getTokenBalance).toHaveBeenCalledTimes(2);
+    expect(pageMocks.getTokenBalance).toHaveBeenLastCalledWith(expect.objectContaining({ address: connectedAccount, minBlockNumber: 110n, tokenAddress }));
+    expect(screen.getByText(/余额更新于/)).toBeVisible();
     expect(pageMocks.sendToken.mock.calls[0][0].rows).toEqual([
       expect.objectContaining({ amountRaw: "0.000002", valueWei: 2_000_000_000_000n })
     ]);
+
+    let failRefresh!: (error: Error) => void;
+    pageMocks.getTokenBalance.mockImplementationOnce(() => new Promise((_resolve, reject) => { failRefresh = reject; }));
+    await user.click(screen.getByRole("button", { name: "开始新一轮分发" }));
+    await waitFor(() => expect(within(tokenInfo).getByText("读取中")).toBeVisible());
+    expect(within(tokenInfo).queryByTitle("0.000008000000000001 WETH")).not.toBeInTheDocument();
+    await act(async () => { failRefresh(new Error("RPC 尚未同步至交易确认区块，请稍后重试")); });
+    expect(await within(tokenInfo).findByText("读取失败")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("RPC 尚未同步至交易确认区块");
+    await user.click(screen.getByRole("button", { name: "重试读取" }));
+    expect(await within(tokenInfo).findByTitle("0.000008000000000001 WETH")).toBeVisible();
+
+    pageMocks.preflight.mockRejectedValueOnce(new Error("Token 余额不足"));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每个地址的金额（WETH）" }), { target: { value: "0.00002" } });
+    await user.click(screen.getByRole("button", { name: "开始分发" }));
+    await waitFor(() => expect(pageMocks.preflight).toHaveBeenCalledTimes(3));
+    expect(pageMocks.preflight).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n }));
+    expect(screen.queryByRole("alertdialog", { name: "确认 EVM 分发" })).not.toBeInTheDocument();
+    expect(pageMocks.sendToken).toHaveBeenCalledTimes(1);
   });
 
   it("also preserves a small nonzero native balance and its full value", async () => {
@@ -213,6 +235,58 @@ describe("EvmBatchDistributorPage safety", () => {
     render(createElement(EvmBatchDistributorPage));
     const balance = await within(screen.getByLabelText("原生币余额")).findByTitle("0.000008000000000001 ETH");
     expect(balance).toHaveTextContent("0.000008");
+  });
+
+  it("preserves the confirmed balance block when changing RPC on the same chain", async () => {
+    pageMocks.sendNative.mockResolvedValueOnce({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    const { user } = await prepareReadyDistributionPage();
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 分发" })).getByRole("button", { name: "签名并分发" }));
+    expect(await screen.findByText("分发完成")).toBeVisible();
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n })));
+    if (!screen.queryByRole("textbox", { name: "RPC" })) await user.click(screen.getByRole("button", { name: "修改 RPC" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "RPC" }), { target: { value: "https://alternate-rpc.example.test" } });
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ rpcEndpoint: "https://alternate-rpc.example.test" })));
+    expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n }));
+  });
+
+  it("keeps the chain confirmation block across account changes and ignores a stale balance response", async () => {
+    pageMocks.sendNative.mockResolvedValueOnce({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    const { rerender, user } = await prepareReadyDistributionPage();
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 分发" })).getByRole("button", { name: "签名并分发" }));
+    expect(await screen.findByText("分发完成")).toBeVisible();
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n })));
+    let finishOldRead!: (value: bigint) => void;
+    const oldRead = new Promise<bigint>(resolve => { finishOldRead = resolve; });
+    pageMocks.getNativeBalance.mockImplementation(({ address }: { address: string }) => address === switchedAccount ? oldRead : Promise.resolve(7_000_000_000_000_000_000n));
+    pageMocks.walletAddress = switchedAccount;
+    rerender(createElement(EvmBatchDistributorPage));
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ address: switchedAccount, minBlockNumber: 110n })));
+    expect(within(screen.getByLabelText("原生币余额")).getByText("读取中")).toBeVisible();
+    pageMocks.walletAddress = connectedAccount;
+    rerender(createElement(EvmBatchDistributorPage));
+    expect(await within(screen.getByLabelText("原生币余额")).findByTitle("7 ETH")).toBeVisible();
+    await act(async () => finishOldRead(20_000_000_000_000_000_000n));
+    expect(within(screen.getByLabelText("原生币余额")).getByTitle("7 ETH")).toBeVisible();
+    expect(within(screen.getByLabelText("原生币余额")).queryByTitle("20 ETH")).not.toBeInTheDocument();
+  });
+
+  it("isolates confirmed balance blocks by chain and restores the original chain block after switching back", async () => {
+    pageMocks.sendNative.mockResolvedValueOnce({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    const { user } = await prepareReadyDistributionPage();
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 分发" })).getByRole("button", { name: "签名并分发" }));
+    expect(await screen.findByText("分发完成")).toBeVisible();
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n })));
+    const network = screen.getByRole("combobox", { name: "搜索 EVM 链名称或 Chain ID" });
+    await user.click(network);
+    await user.clear(network);
+    await user.type(network, "8453");
+    await user.click(screen.getByRole("option", { name: /Base.*8453/ }));
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ network: expect.objectContaining({ chainId: 8453 }), minBlockNumber: undefined })));
+    await user.click(network);
+    await user.clear(network);
+    await user.type(network, "1");
+    await user.click(screen.getByRole("option", { name: /Ethereum.*ID 1$/ }));
+    await waitFor(() => expect(pageMocks.getNativeBalance).toHaveBeenLastCalledWith(expect.objectContaining({ network: expect.objectContaining({ chainId: 1 }), minBlockNumber: 110n })));
   });
 
   it("imports recipient columns in either order and signs every original 18-decimal amount", async () => {

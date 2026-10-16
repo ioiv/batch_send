@@ -59,8 +59,12 @@ function ResultDetails({ result, label }: { result: CollectionDisplayResult; lab
       </DialogHeader>
       <dl className="result-detail-list">
         <div><dt>来源地址</dt><dd><code>{result.address}</code><CopyButton value={result.address} label="复制地址" /></dd></div>
+        {result.targetAddress ? <div><dt>目标地址</dt><dd><code>{result.targetAddress}</code><CopyButton value={result.targetAddress} label="复制目标地址" /></dd></div> : null}
         <div><dt>资产</dt><dd>{result.asset}</dd></div>
-        {result.assetKey ? <div><dt>资产标识</dt><dd><code>{result.assetKey}</code><CopyButton value={result.assetKey} label="复制资产标识" /></dd></div> : null}
+        {result.tokenStandard ? <div><dt>资产标准</dt><dd>{result.tokenStandard.toUpperCase()}</dd></div> : null}
+        {result.contractAddress ? <div><dt>合约 / Mint 地址</dt><dd><code>{result.contractAddress}</code><CopyButton value={result.contractAddress} label="复制合约地址" /></dd></div> : null}
+        {result.tokenId !== undefined ? <div><dt>Token ID</dt><dd>{result.tokenId}</dd></div> : null}
+        {!result.contractAddress && result.assetKey ? <div><dt>资产标识</dt><dd><code>{result.assetKey}</code><CopyButton value={result.assetKey} label="复制资产标识" /></dd></div> : null}
         <div><dt>数量</dt><dd className="mono">{result.amount || "—"}</dd></div>
         <div><dt>执行说明</dt><dd>{result.message || "—"}</dd></div>
         {result.hash ? <div><dt>交易哈希</dt><dd><code>{result.hash}</code><CopyButton value={result.hash} label="复制交易哈希" />
@@ -75,6 +79,11 @@ type IndexedCollectionResult = {
   originalIndex: number;
   result: CollectionDisplayResult;
 };
+
+function AssetLabel({ value }: { value: string }) {
+  return <>{value.split(/(0x[\da-f]+…[\da-f]+)/iu).map((part, index) => /^0x[\da-f]+…[\da-f]+$/iu.test(part)
+    ? <span className="collection-result-short-address" key={index}>{part}</span> : part)}</>;
+}
 
 export function getCollectionResultSetIdentity(results: CollectionDisplayResult[]) {
   return JSON.stringify(results.map((result) => [result.address, result.asset, result.label || ""]));
@@ -176,7 +185,7 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
                         {statusLabels[displayStatus]}
                       </Badge>
                     </TableCell>
-                    <TableCell data-label="资产" className="collection-result-asset">{result.phase ? <Badge variant="outline">{result.phase === "token" ? "Token" : result.phase === "nft" ? "NFT" : "原生币"}</Badge> : null} {result.asset}</TableCell>
+                    <TableCell data-label="资产" className="collection-result-asset">{result.phase ? <Badge variant="outline">{result.phase === "token" ? "Token" : result.phase === "nft" ? "NFT" : "原生币"}</Badge> : null} <AssetLabel value={result.asset} /></TableCell>
                     <TableCell data-label="数量" className="mono collection-result-amount">{result.amount || "—"}</TableCell>
                     <TableCell className="collection-result-transaction">
                       {result.explorerUrl && result.hash ? (
@@ -228,6 +237,7 @@ export function CollectionResults({
 }) {
   const titleId = useId();
   const resultSetIdentity = useMemo(() => getCollectionResultSetIdentity(results), [results]);
+  const targetAddresses = useMemo(() => [...new Set(results.flatMap(result => result.targetAddress ? [result.targetAddress] : []))], [results]);
   const reviewResults = useMemo(
     () => results.filter((result) => ["error", "skipped", "uncertain"].includes(getCollectionResultDisplayStatus(result))),
     [results]
@@ -240,6 +250,7 @@ export function CollectionResults({
         <div>
           <Heading className="panel-title" id={titleId}>{title}</Heading>
           {description ? <p className="sr-only">{description}</p> : null}
+          {targetAddresses.length ? <div aria-label="归集目标摘要" className="collection-result-targets">{targetAddresses.map(address => <span key={address}>目标地址 <code>{address}</code><CopyButton label="复制目标地址" value={address} /></span>)}</div> : null}
         </div>
         <div className="action-group">
           <Button disabled={!results.length} onClick={() => downloadCollectionResults(results, exportFilename)} type="button" variant="outline">导出全部 CSV</Button>

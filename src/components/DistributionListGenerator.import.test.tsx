@@ -34,6 +34,18 @@ function setup(initialAddresses = "") {
 }
 
 describe("recipient wallet import", () => {
+  it.each(["", " \r\n\t\r\n"])("explains empty file imports and preserves the current list (%j)", async (text) => {
+    const { upload, result } = setup(one);
+    const originalResult = result();
+    await upload(text, "empty.txt");
+    const dialog = await screen.findByRole("dialog", { name: "导入收款钱包" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("文件为空，未导入地址；当前清单保持原样");
+    expect(within(dialog).getByRole("button", { name: "替换当前清单" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "追加到当前清单" })).toBeDisabled();
+    expect(within(dialog).getByRole("textbox", { name: "粘贴地址或清单" })).toHaveValue("");
+    expect(result()).toEqual(originalResult);
+  });
+
   it("uses the collection-style entry, previews pasted table columns, and deduplicates on confirmation", async () => {
     const { user, result } = setup();
     expect(screen.getByRole("textbox", { name: "收款地址" })).not.toBeVisible();

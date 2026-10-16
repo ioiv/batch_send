@@ -19,15 +19,18 @@ describe("HomePage ecosystem filter", () => {
     expect(main.getByRole("link", { name: /代币归集/ })).toBeVisible();
     expect(main.getByRole("link", { name: /子域名扫描/ })).toHaveAttribute("href", "/network/subdomains/");
     expect(main.getByRole("link", { name: /网站路径扫描/ })).toHaveAttribute("href", "/network/paths/");
+    expect(within(main.getByRole("region", { name: "合约工具" })).getByRole("link", { name: /合约批量调用/ })).toHaveAttribute("href", "/evm/call/");
     expect(screen.queryByRole("tab", { name: "Ethereum" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Solana" }));
     expect(main.getByRole("link", { name: /SOL 分发/ })).toBeVisible();
     expect(main.getByRole("link", { name: /SOL.*归集/ })).toBeVisible();
     expect(main.queryByRole("link", { name: /代币归集/ })).not.toBeInTheDocument();
+    expect(main.queryByRole("link", { name: /合约批量调用/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "EVM" }));
     expect(main.getByRole("link", { name: /EVM 分发/ })).toBeVisible();
+    expect(main.getByRole("link", { name: /合约批量调用/ })).toBeVisible();
     expect(main.queryByRole("link", { name: /SOL.*归集/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "网络" }));

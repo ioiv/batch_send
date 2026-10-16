@@ -6,6 +6,9 @@ export type WalletAssetHolding = {
   symbol: string | null;
   raw: bigint | null;
   decimals: number | null;
+  name?: string;
+  tokenStandard?: string;
+  tokenId?: string;
 };
 
 export type WalletNativeBalance = {
@@ -36,6 +39,14 @@ export function shortenAssetAddress(address: string) {
 
 export function getWalletAssetSymbol(holding: Pick<WalletAssetHolding, "symbol" | "address">) {
   return holding.symbol?.trim() || shortenAssetAddress(holding.address) || "未知资产";
+}
+
+export function getWalletNftIdentity(holding: WalletAssetHolding) {
+  const legacyIdentity = /^erc-?(721|1155):[^:]+:(\d+)$/iu.exec(holding.key);
+  return {
+    standard: holding.tokenStandard?.toUpperCase() || (legacyIdentity ? `ERC${legacyIdentity[1]}` : "NFT"),
+    tokenId: holding.tokenId ?? legacyIdentity?.[2]
+  };
 }
 
 /** Never converts raw balances to Number, including while formatting previews. */

@@ -259,6 +259,7 @@ export function AdvancedSettings({
 export function ConfirmActionDialog({
   cancelLabel = "取消",
   confirmLabel,
+  confirmDisabled = false,
   description,
   disabled = false,
   hideTrigger = false,
@@ -275,6 +276,7 @@ export function ConfirmActionDialog({
 }: {
   cancelLabel?: string;
   confirmLabel: string;
+  confirmDisabled?: boolean;
   description: ReactNode;
   disabled?: boolean;
   hideTrigger?: boolean;
@@ -321,7 +323,7 @@ export function ConfirmActionDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
-            disabled={disabled}
+            disabled={disabled || confirmDisabled}
             onClick={() => {
               setOpen(false);
               void onConfirm();

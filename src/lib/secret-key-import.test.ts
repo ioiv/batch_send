@@ -114,6 +114,32 @@ describe("smart wallet file import", () => {
     expect(result.wallets[0].label).toBe("运营 A");
   });
 
+  it.each([",", "\t", ";", "|"])("ignores empty cells before, within and after records while preserving source line numbers (%s)", async (separator) => {
+    const source = [
+      "",
+      `${separator}${separator}`,
+      ["address", "private_key", "label"].join(separator),
+      `${separator}${separator}`,
+      [firstAddress, first, "ops"].join(separator),
+      ['" "', '""', '""'].join(separator),
+      [secondAddress, "not-a-key", "invalid"].join(separator),
+      `${separator}${separator}`,
+      ""
+    ].join("\r\n");
+    const result = await readSecretKeyFile(makeFile("wallets.csv", source), "evm");
+    expect(result.lineCount).toBe(2);
+    expect(result.wallets).toEqual([{ address: firstAddress, id: firstAddress.toLowerCase(), label: "ops", line: 5 }]);
+    expect(result.issues).toEqual([{ line: 7, message: "私钥无效或无法派生地址" }]);
+    expect(result.value).toBe(`ops,${first}`);
+  });
+
+  it("ignores empty headerless rows without hiding malformed CSV records", () => {
+    const result = analyzeSecretKeyText(`,,\n\n${first}\n""\n"unterminated,`, "evm");
+    expect(result.wallets[0]).toMatchObject({ address: firstAddress, line: 3 });
+    expect(result.lineCount).toBe(2);
+    expect(result.issues).toEqual([{ line: 5, message: "引号或密钥数组未闭合，请检查这一行" }]);
+  });
+
   it("keeps original source and reports original rows for invalid or mismatched entries", async () => {
     const source = `address,private_key\n${firstAddress},${first}\n${firstAddress},${second}\n${secondAddress},not-a-key`;
     const result = await readSecretKeyFile(makeFile("wallets.csv", source), "evm");

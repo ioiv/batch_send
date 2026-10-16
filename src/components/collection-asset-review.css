@@ -1,0 +1,10 @@
+.collection-asset-review { display:grid;gap:var(--space-sm);max-height:22rem;overflow-y:auto;min-width:0; }
+.collection-asset-review__contract { display:grid;gap:var(--space-xs);min-width:0;padding:var(--space-sm);border:1px solid var(--border);border-radius:var(--radius); }
+.collection-asset-review__heading,.collection-asset-review__address { display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-xs);min-width:0; }
+.collection-asset-review__heading { justify-content:space-between; }
+.collection-asset-review__heading>span,.collection-asset-review__source small { color:var(--muted-foreground);font-size:var(--text-caption); }
+.collection-asset-review__address code { flex:1;min-width:0;overflow-wrap:anywhere;user-select:text; }
+.collection-asset-review__sources { display:grid;gap:var(--space-xs); }
+.collection-asset-review__source { display:grid;gap:var(--space-xs);min-width:0;padding-top:var(--space-xs);border-top:1px solid var(--border);font-size:var(--text-label); }
+.collection-asset-review__source code { overflow-wrap:anywhere;user-select:text; }
+.collection-asset-review__source strong { font-variant-numeric:tabular-nums; }

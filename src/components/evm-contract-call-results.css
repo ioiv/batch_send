@@ -1,0 +1,93 @@
+.contract-call-result-body { display: grid; gap: var(--space-md); min-width: 0; }
+.contract-call-result-overview { display: grid; gap: var(--space-sm); min-width: 0; }
+.contract-call-result-summary { display: grid; grid-template-columns: minmax(6rem, .7fr) minmax(8rem, 1fr) minmax(0, 1.5fr); gap: var(--space-md); margin: 0; }
+.contract-call-result-summary > div { display: grid; align-content: start; gap: var(--space-xs); min-width: 0; }
+.contract-call-result-summary dt { color: var(--muted-foreground); font-size: var(--text-caption); }
+.contract-call-result-summary dd { margin: 0; overflow-wrap: anywhere; font-size: var(--text-body); font-weight: 600; font-variant-numeric: tabular-nums; }
+.contract-call-result-summary dd > span:not(.contract-call-result-amount-value) { color: var(--muted-foreground); font-size: var(--text-caption); font-weight: 400; }
+.contract-call-result-total small { display: block; margin-top: var(--space-xs); color: var(--muted-foreground); font-size: var(--text-caption); font-weight: 400; }
+.contract-call-result-contract { min-width: 0; color: var(--muted-foreground); font-size: var(--text-caption); }
+.contract-call-result-contract > summary { width: fit-content; max-width: 100%; padding-block: var(--space-xs); cursor: pointer; overflow-wrap: anywhere; }
+.contract-call-result-contract > summary code { margin-inline: var(--space-xs); color: var(--foreground); }
+.contract-call-result-contract > summary > span { text-decoration: underline; text-underline-offset: .2em; }
+.contract-call-result-contract > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin-top: var(--space-xs); }
+.contract-call-result-contract > div > code { min-width: 0; color: var(--foreground); overflow-wrap: anywhere; user-select: text; }
+.contract-call-result-notice { margin: 0; padding: var(--space-sm) var(--space-md); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--muted); font-size: var(--text-caption); line-height: 1.6; overflow-wrap: anywhere; }
+.contract-call-result-explanation { margin: 0; color: var(--muted-foreground); font-size: var(--text-caption); line-height: 1.6; }
+.contract-call-result-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); justify-content: space-between; min-width: 0; }
+.contract-call-result-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
+.contract-call-result-filter > span { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.contract-call-result-filter[aria-pressed="true"] > span { color: inherit; }
+.contract-call-result-controls .contract-call-result-search { flex: 1 1 16rem; width: auto; max-width: 24rem; min-width: 0; }
+.contract-call-result-table { min-width: 0; }
+.contract-call-result-table [data-slot="table-container"] { overflow-x: visible; }
+.contract-call-result-table table { table-layout: fixed; }
+.contract-call-result-table th:first-child { width: 25%; }
+.contract-call-result-table th:nth-child(2) { width: 22%; }
+.contract-call-result-table th:nth-child(3) { width: 15%; }
+.contract-call-result-table th:last-child { width: 38%; }
+.contract-call-result-table td { min-width: 0; padding-block: var(--space-sm); vertical-align: top; overflow-wrap: anywhere; white-space: normal; }
+.contract-call-result-wallet strong { display: block; color: var(--foreground); font-size: var(--text-body); font-weight: 500; line-height: 1.6; }
+.contract-call-result-wallet > code { display: block; margin-top: var(--space-xs); color: var(--muted-foreground); font-size: var(--text-caption); }
+.contract-call-result-amount { font-variant-numeric: tabular-nums; }
+.contract-call-result-status [data-status="unknown"] { border-color: color-mix(in oklab, var(--warning) 45%, transparent); color: var(--warning); }
+.contract-call-result-status [data-status="preparing"],
+.contract-call-result-status [data-status="signing"],
+.contract-call-result-status [data-status="sending"] { border-color: color-mix(in oklab, var(--primary) 35%, transparent); color: var(--primary); }
+.contract-call-result-status [data-status="submitted"] { border-color: var(--border); color: var(--foreground); }
+.contract-call-result-status [data-status="pending"],
+.contract-call-result-status [data-status="cancelled"] { color: var(--muted-foreground); }
+.contract-call-result-hash { display: block; width: fit-content; max-width: 100%; margin-block: .15rem var(--space-xs); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.6; overflow-wrap: anywhere; }
+a.contract-call-result-hash { color: var(--primary); text-underline-offset: .2em; }
+a.contract-call-result-hash:hover { text-decoration: underline; }
+.contract-call-result-message { margin: 0 0 var(--space-xs); color: var(--muted-foreground); font-size: var(--text-caption); line-height: 1.6; }
+.contract-call-result-row[data-status="failed"] .contract-call-result-message { color: var(--destructive); }
+.contract-call-result-row[data-status="unknown"] .contract-call-result-message { color: var(--warning); }
+.contract-call-result-details { font-size: var(--text-caption); }
+.contract-call-result-details > summary { width: fit-content; padding-block: .2rem; color: var(--muted-foreground); cursor: pointer; }
+.contract-call-result-details-content { display: grid; gap: var(--space-sm); padding-block: var(--space-sm); min-width: 0; }
+.contract-call-result-detail-list { display: grid; gap: var(--space-sm); margin: 0; min-width: 0; }
+.contract-call-result-detail-list > div { display: grid; gap: var(--space-xs); min-width: 0; }
+.contract-call-result-detail-list dt { color: var(--muted-foreground); }
+.contract-call-result-detail-list dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.contract-call-result-detail-list code { flex-basis: 100%; min-width: 0; white-space: normal; user-select: text; }
+.contract-call-result-calldata { min-width: 0; }
+.contract-call-result-calldata > summary { padding-block: var(--space-xs); cursor: pointer; }
+.contract-call-result-calldata > summary > span { color: var(--muted-foreground); }
+.contract-call-result-calldata-content { display: grid; justify-items: start; gap: var(--space-sm); min-width: 0; padding-block: var(--space-xs); }
+.contract-call-result-calldata-content > code { display: block; width: 100%; max-height: 12rem; padding: var(--space-sm); overflow: auto; border-radius: var(--radius-control); background: var(--muted); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+.contract-call-result-empty { display: grid; justify-items: center; gap: var(--space-sm); padding: var(--space-lg) var(--space-md); color: var(--muted-foreground); font-size: var(--text-body); }
+.contract-call-result-empty > p { margin: 0; }
+.contract-call-result-expand,
+.contract-call-result-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); color: var(--muted-foreground); font-size: var(--text-caption); }
+.contract-call-result-pagination > nav { display: flex; align-items: center; gap: var(--space-sm); }
+.contract-call-result-contract > summary:focus-visible,
+.contract-call-result-details > summary:focus-visible,
+.contract-call-result-calldata > summary:focus-visible,
+a.contract-call-result-hash:focus-visible { border-radius: var(--radius-control); outline: 2px solid var(--ring); outline-offset: 3px; }
+
+@media (max-width: 48rem) {
+  .contract-call-result-panel > .workbench-panel__footer { position: sticky; bottom: 0; z-index: 5; padding-block: var(--space-sm); border-top: 1px solid var(--border); background: var(--card); }
+  .contract-call-result-summary { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-sm) var(--space-md); }
+  .contract-call-result-total { grid-column: 1 / -1; }
+  .contract-call-result-total small { display: inline; margin-left: var(--space-sm); }
+  .contract-call-result-controls { align-items: stretch; }
+  .contract-call-result-controls .contract-call-result-search { flex-basis: 100%; max-width: none; }
+  .contract-call-result-table table,
+  .contract-call-result-table tbody { display: block; width: 100%; }
+  .contract-call-result-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .contract-call-result-table .contract-call-result-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-sm); padding-block: var(--space-md); }
+  .contract-call-result-table td { display: block; padding: 0; }
+  .contract-call-result-wallet { grid-column: 1; grid-row: 1; }
+  .contract-call-result-status { grid-column: 2; grid-row: 1; }
+  .contract-call-result-table .contract-call-result-amount { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-xs) var(--space-sm); grid-column: 1 / -1; grid-row: 2; font-size: var(--text-body); }
+  .contract-call-result-amount::before { content: attr(data-label); color: var(--muted-foreground); font-size: var(--text-caption); }
+  .contract-call-result-transaction { grid-column: 1 / -1; grid-row: 3; }
+  .contract-call-result-details > summary { min-height: 2rem; }
+  .contract-call-result-details-content { padding: var(--space-sm); border-radius: var(--radius-control); background: color-mix(in oklab, var(--muted) 45%, transparent); }
+  .contract-call-result-contract > summary > span { display: inline-block; }
+  .contract-call-result-expand { align-items: stretch; }
+  .contract-call-result-expand > button { width: 100%; }
+  .contract-call-result-pagination { justify-content: center; }
+  .contract-call-result-pagination > span { width: 100%; text-align: center; }
+}

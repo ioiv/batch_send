@@ -78,8 +78,15 @@ type TokenLookupState = {
 type BalanceLookupState = {
   message: string;
   status: "idle" | "loading" | "success" | "error";
+  updatedAt?: number;
   valueWei: bigint | null;
 };
+
+function BalanceReadTime({ state }: { state: BalanceLookupState }) {
+  return state.status === "success" && state.updatedAt ? (
+    <p className="field-hint" role="status">余额更新于 <time dateTime={new Date(state.updatedAt).toISOString()}>{new Date(state.updatedAt).toLocaleTimeString()}</time></p>
+  ) : null;
+}
 
 function EvmBalanceValue({ className, decimals, showSymbol = false, symbol, valueWei }: {
   className?: string;
@@ -267,6 +274,13 @@ export function EvmBatchDistributorPage() {
   const [nativeBalanceLookup, setNativeBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
+  const [balanceAnchors, setBalanceAnchors] = useState<Record<number, bigint>>({});
+  const refreshBalances = useCallback(() => setBalanceRefreshNonce((value) => value + 1), []);
+  const rememberConfirmationBlock = (chainId: number, blockNumber?: bigint) => {
+    if (blockNumber === undefined) return;
+    setBalanceAnchors((current) => current[chainId] !== undefined && current[chainId] >= blockNumber
+      ? current : { ...current, [chainId]: blockNumber });
+  };
   const [listImporting, setListImporting] = useState(false);
   const listImportingRef = useRef(false);
   const generatorRef = useRef<DistributionListGeneratorHandle>(null);
@@ -303,6 +317,7 @@ export function EvmBatchDistributorPage() {
     value: network.id
   })), [networkState.networks]);
   const effectiveRpcEndpoint = rpcEndpoint.trim() || selectedNetwork.rpcEndpoint;
+  const minBalanceBlockNumber = balanceAnchors[selectedNetwork.chainId];
   const gas = useEvmGas({
     network: selectedNetwork,
     rpcEndpoint: effectiveRpcEndpoint
@@ -525,9 +540,9 @@ export function EvmBatchDistributorPage() {
 
   const resetForEdit = useCallback(() => {
     if (sending || preflighting) return;
-    archiveTerminalRound();
+    if (archiveTerminalRound()) refreshBalances();
     resetConfirmation();
-  }, [archiveTerminalRound, preflighting, resetConfirmation, sending]);
+  }, [archiveTerminalRound, preflighting, refreshBalances, resetConfirmation, sending]);
   resetForEditRef.current = resetForEdit;
 
   const handleGeneratedListChange = useCallback((result: GeneratedDistributionList) => {
@@ -655,6 +670,7 @@ export function EvmBatchDistributorPage() {
 
     void getEvmNativeBalance({
       address: wallet.address,
+      minBlockNumber: minBalanceBlockNumber,
       network: selectedNetwork,
       rpcEndpoint: effectiveRpcEndpoint
     }).then((valueWei) => {
@@ -662,6 +678,7 @@ export function EvmBatchDistributorPage() {
       setNativeBalanceLookup({
         message: "",
         status: "success",
+        updatedAt: Date.now(),
         valueWei
       });
     }).catch((error) => {
@@ -676,7 +693,7 @@ export function EvmBatchDistributorPage() {
     return () => {
       active = false;
     };
-  }, [balanceRefreshNonce, effectiveRpcEndpoint, nativeCurrencyEnabled, selectedNetwork, wallet.address, wallet.connected]);
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, minBalanceBlockNumber, nativeCurrencyEnabled, selectedNetwork, wallet.address, wallet.connected]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -706,6 +723,7 @@ export function EvmBatchDistributorPage() {
 
     void getEvmTokenBalance({
       address: wallet.address,
+      minBlockNumber: minBalanceBlockNumber,
       network: selectedNetwork,
       rpcEndpoint: effectiveRpcEndpoint,
       tokenAddress: tokenDetails.address
@@ -714,6 +732,7 @@ export function EvmBatchDistributorPage() {
       setTokenBalanceLookup({
         message: "",
         status: "success",
+        updatedAt: Date.now(),
         valueWei
       });
     }).catch((error) => {
@@ -728,7 +747,7 @@ export function EvmBatchDistributorPage() {
     return () => {
       active = false;
     };
-  }, [balanceRefreshNonce, effectiveRpcEndpoint, selectedNetwork, tokenDetails, wallet.address, wallet.connected]);
+  }, [balanceRefreshNonce, effectiveRpcEndpoint, minBalanceBlockNumber, selectedNetwork, tokenDetails, wallet.address, wallet.connected]);
 
   const handleTokenStep = (step: EvmTokenDistributionStep) => {
     if (step.type === "distribution-signing") {
@@ -814,6 +833,7 @@ export function EvmBatchDistributorPage() {
         assetMode,
         from: wallet.address,
         gasSettings,
+        minBlockNumber: minBalanceBlockNumber,
         network: selectedNetwork,
         rows: parsed.validRows,
         rpcEndpoint: effectiveRpcEndpoint,
@@ -827,9 +847,9 @@ export function EvmBatchDistributorPage() {
         result,
         status: "success"
       });
-      setNativeBalanceLookup({ message: "", status: "success", valueWei: result.nativeBalanceWei });
+      setNativeBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.nativeBalanceWei });
       if (assetMode === "token") {
-        setTokenBalanceLookup({ message: "", status: "success", valueWei: result.assetBalanceWei });
+        setTokenBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.assetBalanceWei });
       }
     } catch (error) {
       if (preflightEpochRef.current !== preflightEpoch) return;
@@ -908,6 +928,7 @@ export function EvmBatchDistributorPage() {
           assetMode,
           from: wallet.address,
           gasSettings,
+          minBlockNumber: minBalanceBlockNumber,
           network: selectedNetwork,
           rows: parsed.validRows,
           rpcEndpoint: effectiveRpcEndpoint,
@@ -926,9 +947,9 @@ export function EvmBatchDistributorPage() {
             result: freshPreflight,
             status: "success"
           });
-          setNativeBalanceLookup({ message: "", status: "success", valueWei: freshPreflight.nativeBalanceWei });
+          setNativeBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: freshPreflight.nativeBalanceWei });
           if (assetMode === "token") {
-            setTokenBalanceLookup({ message: "", status: "success", valueWei: freshPreflight.assetBalanceWei });
+            setTokenBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: freshPreflight.assetBalanceWei });
           }
 
           publishSendState({
@@ -942,7 +963,7 @@ export function EvmBatchDistributorPage() {
             if (!tokenDetails) throw new Error("请先填写并读取 ERC20 Token 合约地址");
 
             distributionSenderStarted = true;
-            const { hashes } = await sendEvmTokenDistribution({
+            const { hashes, receipt } = await sendEvmTokenDistribution({
               feeQuote: freshPreflight.feeQuote,
               from: wallet.address,
               gasSettings,
@@ -960,7 +981,8 @@ export function EvmBatchDistributorPage() {
               signatures: hashes,
               status: "success"
             });
-            setBalanceRefreshNonce((value) => value + 1);
+            rememberConfirmationBlock(selectedNetwork.chainId, receipt?.blockNumber);
+            refreshBalances();
             return;
           }
 
@@ -969,7 +991,7 @@ export function EvmBatchDistributorPage() {
           }
 
           distributionSenderStarted = true;
-          const { hash } = await sendEvmNativeDistribution({
+          const { hash, receipt } = await sendEvmNativeDistribution({
             feeQuote: freshPreflight.feeQuote,
             from: wallet.address,
             gasSettings,
@@ -995,7 +1017,8 @@ export function EvmBatchDistributorPage() {
             signatures: [hash],
             status: "success"
           });
-          setBalanceRefreshNonce((value) => value + 1);
+          rememberConfirmationBlock(selectedNetwork.chainId, receipt?.blockNumber);
+          refreshBalances();
         }
       });
     } catch (error) {
@@ -1337,6 +1360,7 @@ export function EvmBatchDistributorPage() {
                       <EvmBalanceValue decimals={selectedNetwork.nativeCurrency.decimals} symbol={selectedNetwork.nativeCurrency.symbol} valueWei={nativeBalanceLookup.valueWei} />
                     ) : <strong>{nativeBalanceDescription || nativeBalance}</strong>}</div>
                   </div>
+                  <BalanceReadTime state={nativeBalanceLookup} />
                   {nativeBalanceLookup.status === "error" ? (
                     <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
                       <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
@@ -1371,6 +1395,7 @@ export function EvmBatchDistributorPage() {
                       ) : <strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong>}</div>
                     </div>
                   ) : null}
+                  {tokenDetails ? <BalanceReadTime state={tokenBalanceLookup} /> : null}
                   {tokenLookup.status === "error" ? (
                     <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
                   ) : null}

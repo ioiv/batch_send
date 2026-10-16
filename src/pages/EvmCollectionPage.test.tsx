@@ -329,7 +329,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
     await act(async () => finishReading(privateKey));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeEnabled());
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue(privateKey);
+    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
     await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
     expect(screen.getByRole("button", { name: "继续导入钱包" })).toHaveTextContent("已导入 1 个钱包");
     expect(container.querySelector("#evm-collection-target")).toBeEnabled();
@@ -396,6 +396,138 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(dialog).getByText("每钱包每资产 50 枚对应 Token")).toBeVisible();
     expect(await within(dialog).findByText("50 TOK")).toBeVisible();
     expect(within(dialog).getByText("单笔最高网络费")).toBeVisible();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("reads a public per-source estimate before confirmation and rereads before execution", async () => {
+    const user = await prepareReadyErc20Page();
+    let finish!: (items: EvmCollectionPlanItem[]) => void;
+    evmMocks.plan.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+    await act(async () => { finish([planItem, { ...planItem, id: "second-source", address: secondSignerAccount.address, account: secondSignerAccount, label: "来源二", amount: 2_000_000_000_000_000_000n }]); });
+    expect(dialog.getByText("Token · TOK")).toBeVisible();
+    expect(dialog.getByText("ERC20")).toBeVisible();
+    expect(dialog.getAllByText(tokenAddress)).toHaveLength(1);
+    expect(dialog.getByText(signerAccount.address)).toBeVisible();
+    expect(dialog.getByText(secondSignerAccount.address)).toBeVisible();
+    expect(dialog.getByText("估计数量 1")).toBeVisible();
+    expect(dialog.getByText("估计数量 2")).toBeVisible();
+    expect(dialog.getByText("估计数量读取时间")).toBeVisible();
+    expect(dialog.getByRole("button", { name: "复制合约地址" })).toBeEnabled();
+    expect(readTaskHistory("evm-token-collection")).toEqual([]);
+    await user.click(dialog.getByRole("button", { name: "确认并开始归集" }));
+    await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
+    expect(evmMocks.plan).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps confirmation disabled on a failed estimate and can retry without signing", async () => {
+    const user = await prepareReadyErc20Page();
+    evmMocks.plan.mockRejectedValueOnce(new Error("余额读取失败"));
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    expect(await dialog.findByText("余额读取失败")).toBeVisible();
+    expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    await user.click(dialog.getByRole("button", { name: "重新读取估计数量" }));
+    await waitFor(() => expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeEnabled());
+    expect(dialog.getByText("估计数量 1")).toBeVisible();
+    await user.click(dialog.getByRole("button", { name: "取消" }));
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("ignores an estimate that resolves after its confirmation was cancelled", async () => {
+    const user = await prepareReadyErc20Page();
+    let finish!: (items: EvmCollectionPlanItem[]) => void;
+    evmMocks.plan.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" })).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "确认 EVM 归集？" })).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    await waitFor(() => expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeEnabled());
+    await act(async () => { finish([{ ...planItem, amount: 99_000_000_000_000_000_000n }]); });
+    expect(dialog.getByText("估计数量 1")).toBeVisible();
+    expect(dialog.queryByText("估计数量 99")).not.toBeInTheDocument();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("identifies the same NFT ID in different contracts with optional collection metadata", async () => {
+    const user = userEvent.setup();
+    const nftPlan = [tokenAddress, secondTokenAddress].map((contractAddress, index) => ({ ...planItem,
+      asset: { contractAddress: contractAddress as `0x${string}`, key: `erc721:${contractAddress}:7`, standard: "erc721" as const, tokenId: 7n },
+      amount: 1n, id: `nft-review-${index}`, metadata: undefined
+    }));
+    evmMocks.plan.mockResolvedValue(nftPlan);
+    evmMocks.readContract.mockImplementation(async ({ address, functionName }) => functionName === "name"
+      ? address === tokenAddress ? "First Collection" : "Second Collection" : address === tokenAddress ? "FIRST" : "SECOND");
+    render(<EvmCollectionPage fixedStandard="nft" />);
+    await importEvmSecret(user);
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    for (const contractAddress of [tokenAddress, secondTokenAddress]) {
+      const contract = screen.getByRole("textbox", { name: "NFT 合约" });
+      await user.clear(contract);
+      await user.type(contract, contractAddress);
+      const ids = screen.getByLabelText("Token ID / 区间");
+      await user.clear(ids);
+      await user.type(ids, "7");
+      await user.click(screen.getByRole("button", { name: "加入清单" }));
+    }
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    expect(await dialog.findByText("First Collection · FIRST")).toBeVisible();
+    expect(dialog.getByText("Second Collection · SECOND")).toBeVisible();
+    expect(dialog.getAllByText("Token ID 7 · 估计数量 1")).toHaveLength(2);
+    expect(dialog.getAllByText(tokenAddress)).toHaveLength(1);
+    expect(dialog.getAllByText(secondTokenAddress)).toHaveLength(1);
+    expect(dialog.getAllByText("ERC721")).toHaveLength(2);
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mode: "全部数量", expected: "归集扣除网络费后的全部可用余额；实际数量在发送前计算。" },
+    { mode: "固定数量", expected: "计划归集 0.1 ETH；执行时先预留网络费，可用余额不足时跳过。" },
+    { mode: "百分比数量", expected: "归集扣除网络费后可用余额的 25%；实际数量在发送前计算。" },
+    { mode: "随机数量", expected: "从扣除网络费后的可用余额中随机归集 0.01–0.1 ETH；发送前确定数量，低于最小值时跳过。" }
+  ])("labels native $mode balance separately from the amount sent after network fees", async ({ mode, expected }) => {
+    evmMocks.plan.mockResolvedValue([{ ...planItem, asset: { key: "native", standard: "native" }, amount: 3_000_000_000_000_000_000n, metadata: undefined }]);
+    const user = await prepareReadyErc20Page("");
+    await user.click(screen.getByRole("tab", { name: mode }));
+    if (mode === "百分比数量") fireEvent.change(screen.getByRole("spinbutton", { name: "归集百分比" }), { target: { value: "25" } });
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    expect(await dialog.findByText("当前余额 3")).toBeVisible();
+    expect(dialog.getByText(expected)).toBeVisible();
+    expect(dialog.queryByText("估计数量 3")).not.toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
+    expect(evmMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed ERC721 ownership reads visible and blocks confirmation until reread succeeds", async () => {
+    const nftPlan = [7n, 8n].map(tokenId => ({ ...planItem, asset: { contractAddress: tokenAddress,
+      key: `erc721:${tokenAddress}:${tokenId}`, standard: "erc721" as const, tokenId }, amount: 1n, metadata: undefined, id: `review-${tokenId}` }));
+    evmMocks.plan.mockResolvedValue(nftPlan);
+    evmMocks.plan.mockResolvedValueOnce([nftPlan[0], { ...nftPlan[1], amount: 0n, status: "failed", message: "ownerOf RPC 读取超时" }]);
+    const user = userEvent.setup();
+    render(<EvmCollectionPage fixedStandard="nft" />);
+    await importEvmSecret(user);
+    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
+    await user.type(screen.getByLabelText("Token ID / 区间"), "7,8");
+    await user.click(screen.getByRole("button", { name: "加入清单" }));
+    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认 EVM 归集？" }));
+    expect(await dialog.findByText("Token ID 8 · 估计数量 读取失败")).toBeVisible();
+    expect(dialog.getByText("ownerOf RPC 读取超时")).toBeVisible();
+    expect(dialog.getByText("Token ID 7 · 估计数量 1")).toBeVisible();
+    expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
+    expect(dialog.getByText("未完整读取可归集数量，请检查来源与资产后重新读取。")).toBeVisible();
+    await user.click(dialog.getByRole("button", { name: "重新读取估计数量" }));
+    expect(await dialog.findByText("Token ID 8 · 估计数量 1")).toBeVisible();
+    expect(dialog.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
     expect(evmMocks.execute).not.toHaveBeenCalled();
   });
 
@@ -777,12 +909,12 @@ describe("EvmCollectionPage workbench", () => {
   it("summarizes complete discovery results in the source wallet row", async () => {
     const user = await discoverNft();
     const walletList = screen.getByLabelText("已导入来源钱包");
-    expect(await within(walletList).findByText("NFT 1")).toBeVisible();
+    expect(await within(walletList).findByText("NFT 1 项 / 1 件")).toBeVisible();
     const walletRow = within(walletList).getByTitle(signerAccount.address).closest('[role="listitem"]') as HTMLElement;
     const walletBalances = within(walletRow).getByLabelText(`${signerAccount.address} 原生币余额`);
     expect(within(walletBalances).getByText("3")).toBeVisible();
     expect([...walletBalances.querySelectorAll("small")].map((item) => item.textContent)).toEqual(["ETH"]);
-    expect(within(walletRow).getByLabelText(`${signerAccount.address} 代币与 NFT 概览`)).toHaveTextContent("NFT 1");
+    expect(within(walletRow).getByLabelText(`${signerAccount.address} 代币与 NFT 概览`)).toHaveTextContent("NFT 1 项 / 1 件");
     expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
     expect(screen.getByText(/共有 1 个可归集 ERC721/)).toHaveAttribute("role", "status");
     expect(screen.getByRole("button", { name: "说明：归集数量说明" }).querySelector("svg")).not.toBeNull();
@@ -848,8 +980,8 @@ describe("EvmCollectionPage workbench", () => {
     const walletList = screen.getByLabelText("已导入来源钱包");
     const firstRow = within(walletList).getByTitle(signerAccount.address).closest('[role="listitem"]') as HTMLElement;
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
-    expect(await within(firstRow).findByText("NFT 1")).toBeVisible();
-    expect(within(secondRow).getByText("NFT 2")).toBeVisible();
+    expect(await within(firstRow).findByText("NFT 1 项 / 1 件")).toBeVisible();
+    expect(within(secondRow).getByText("NFT 2 项 / 2 件")).toBeVisible();
     expect(screen.getByText(/共有 3 个可归集 ERC721/)).toBeVisible();
     expandSettings("执行节奏");
     const concurrencyInput = screen.getByRole("spinbutton", { name: "并发钱包数" });
@@ -919,11 +1051,11 @@ describe("EvmCollectionPage workbench", () => {
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
     expect(await within(firstRow).findByText("读取失败")).toBeVisible();
     expect(within(firstRow).getByText("ETH")).toBeVisible();
-    expect(within(firstRow).getByText("NFT 1")).toBeVisible();
-    expect(within(firstRow).getByText("NFT 1")).toBeVisible();
+    expect(within(firstRow).getByText("NFT 1 项 / 1 件")).toBeVisible();
+    expect(within(firstRow).getByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(within(secondRow).getByText("2")).toBeVisible();
     expect(within(secondRow).getByText("ETH")).toBeVisible();
-    expect(within(secondRow).getByText("NFT 1")).toBeVisible();
+    expect(within(secondRow).getByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(screen.getByText(/共有 2 个可归集 ERC721/)).toBeVisible();
   });
 
@@ -979,7 +1111,7 @@ describe("EvmCollectionPage workbench", () => {
       openSeaApiKey: "temporary-opensea-key",
       ownerAddresses: [signerAccount.address]
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(window.localStorage.getItem("chainkit.opensea-api-key.v1")).toBe("temporary-opensea-key");
 
     view.unmount();
@@ -1046,7 +1178,7 @@ describe("EvmCollectionPage workbench", () => {
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(within(walletList).getByText("3")).toBeVisible();
     expect(within(walletList).getByText("ETH")).toBeVisible();
-    expect(within(walletList).getByText("NFT 4")).toBeVisible();
+    expect(within(walletList).getByText("NFT 1 项 / 4 件")).toBeVisible();
     expect(screen.getByText("归集全部余额")).toBeVisible();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
@@ -1068,7 +1200,7 @@ describe("EvmCollectionPage workbench", () => {
       message: "已检测到可归集 NFT 余额",
       status: "ready" as const
     })) satisfies EvmCollectionPlanItem[];
-    evmMocks.plan.mockResolvedValueOnce(erc1155Plan);
+    evmMocks.plan.mockResolvedValue(erc1155Plan);
     evmMocks.execute.mockResolvedValueOnce(erc1155Plan.map((item) => ({
       address: item.address,
       amount: item.amount,
@@ -1190,7 +1322,7 @@ describe("EvmCollectionPage workbench", () => {
       ownerAddresses: [signerAccount.address],
       snapshotBlock: 100n
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(screen.queryByText(/回溯|历史扫描/)).not.toBeInTheDocument();
   });
 
@@ -1249,14 +1381,14 @@ describe("EvmCollectionPage workbench", () => {
       fromTokenId: 40n,
       toTokenId: 45n
     })));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
   it("reconciles a repeated complete discovery and clears stale zero-holding rows", async () => {
     const user = await discoverNft();
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1 项 / 1 件")).toBeVisible();
     evmMocks.discoverEnumerable.mockResolvedValueOnce({
       assets: [],
       issues: [],
@@ -1308,7 +1440,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(trigger);
     dialog = screen.getByRole("alertdialog", { name: "使用部分识别结果？" });
     await user.click(within(dialog).getByRole("button", { name: "确认使用部分结果" }));
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("3")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("ETH")).toBeVisible();
   });
@@ -1318,6 +1450,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const executeDialog = screen.getByRole("alertdialog", { name: "确认 EVM 归集？" });
     await user.click(within(executeDialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "确认 EVM 归集？" })).not.toBeInTheDocument());
     expect(evmMocks.execute).not.toHaveBeenCalled();
 
     const target = screen.getByRole("textbox", { name: "目标地址" });
@@ -1408,7 +1541,7 @@ describe("EvmCollectionPage workbench", () => {
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
 
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
-    expect(evmMocks.plan).toHaveBeenCalledTimes(1);
+    expect(evmMocks.plan).toHaveBeenCalledTimes(2);
     expect(evmMocks.preflight).not.toHaveBeenCalled();
     expect(evmMocks.createWalletClient).toHaveBeenCalledTimes(1);
     expect(evmMocks.execute.mock.calls[0][0].plan).toEqual([
@@ -1472,7 +1605,7 @@ describe("EvmCollectionPage workbench", () => {
       message: "已确认 NFT 所有权",
       status: "ready" as const
     })) satisfies EvmCollectionPlanItem[];
-    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.plan.mockResolvedValue(nftPlan);
     evmMocks.execute.mockResolvedValueOnce([
       {
         address: signerAccount.address,
@@ -1499,7 +1632,7 @@ describe("EvmCollectionPage workbench", () => {
     ]);
 
     const user = await discoverNft();
-    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 2")).toBeVisible();
+    expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("NFT 2 项 / 2 件")).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "指定总数量" }));
     const nftTotal = screen.getByRole("spinbutton", { name: "ERC721 归集总数量" });
     await user.clear(nftTotal);
@@ -1535,7 +1668,7 @@ describe("EvmCollectionPage workbench", () => {
     });
     await user.click(screen.getByRole("button", { name: "再次识别" }));
     await screen.findByText(/持仓识别完成/);
-    expect(within(walletList).getByText("NFT 1")).toBeVisible();
+    expect(within(walletList).getByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
     expect(screen.getByRole("spinbutton", { name: "ERC721 归集总数量" })).toHaveValue(1);
@@ -1573,7 +1706,7 @@ describe("EvmCollectionPage workbench", () => {
       message: "已确认 NFT 所有权",
       status: "ready" as const
     })) satisfies EvmCollectionPlanItem[];
-    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.plan.mockResolvedValue(nftPlan);
 
     const user = await discoverNft();
     await user.click(screen.getByRole("tab", { name: "指定总数量" }));
@@ -1705,7 +1838,7 @@ describe("EvmCollectionPage workbench", () => {
       message: "已确认 NFT 所有权",
       status: "ready" as const
     })) satisfies EvmCollectionPlanItem[];
-    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.plan.mockResolvedValue(nftPlan);
     evmMocks.execute.mockResolvedValueOnce([
       {
         address: signerAccount.address,
@@ -1776,7 +1909,7 @@ describe("EvmCollectionPage workbench", () => {
       message: "已确认 NFT 所有权",
       status: "ready" as const
     }] satisfies EvmCollectionPlanItem[];
-    evmMocks.plan.mockResolvedValueOnce(nftPlan);
+    evmMocks.plan.mockResolvedValue(nftPlan);
     evmMocks.execute.mockResolvedValueOnce([{
       address: signerAccount.address,
       amount: 1n,

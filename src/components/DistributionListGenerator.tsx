@@ -233,10 +233,13 @@ export function DistributionListGenerator({
     }
   };
 
-  const identifyImport = (text: string, format?: string) => {
+  const identifyImport = (text: string, format?: string, emptyMessage?: string) => {
     setPendingImport(null);
     setImportError("");
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      if (emptyMessage) setImportError(emptyMessage);
+      return;
+    }
     try {
       const imported = importDistributionFileText(text, { addressKind });
       if (format) imported.format = format;
@@ -322,7 +325,9 @@ export function DistributionListGenerator({
         workbookSheetsRef.current = sheets;
         setWorkbookSheetNames(sheets.map(sheet => sheet.name));
       }
-      const imported = identifyImport(fileText || "", sheets ? "XLSX" : undefined);
+      const imported = identifyImport(fileText || "", sheets ? "XLSX" : undefined, sheets
+        ? "当前工作表为空，未导入地址；当前清单保持原样"
+        : "文件为空，未导入地址；当前清单保持原样");
       const publicRows = imported?.rows || "";
       importDraftValueRef.current = publicRows;
       if (importDraftRef.current) importDraftRef.current.value = publicRows;
@@ -344,7 +349,7 @@ export function DistributionListGenerator({
     if (!sheet) return;
     beginLocalFileImport(importEpochRef.current);
     setSelectedWorkbookSheet(index);
-    const imported = identifyImport(sheet.text, "XLSX");
+    const imported = identifyImport(sheet.text, "XLSX", "当前工作表为空，未导入地址；当前清单保持原样");
     const publicRows = imported?.rows || "";
     importDraftValueRef.current = publicRows;
     if (importDraftRef.current) importDraftRef.current.value = publicRows;

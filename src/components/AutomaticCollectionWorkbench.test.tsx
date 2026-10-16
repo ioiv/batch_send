@@ -188,6 +188,29 @@ describe("AutomaticCollectionWorkbench", () => {
     expect(wallet.verifyEmpty).not.toHaveBeenCalled();
   });
 
+  it("confirms NFT standard, IDs and source quantities without an internal composite key", async () => {
+    const user = userEvent.setup();
+    const { wallet } = preparedWallet();
+    const contract = "0x1111111111111111111111111111111111111111";
+    const nft = wallet.tasks[1];
+    nft.preview = { ...nft.preview, tokenStandard: "erc1155", tokenId: "7", contractAddress: contract, amount: "5" };
+    nft.holding = { ...nft.holding!, key: `erc1155:${contract}:7`, address: contract, raw: 5n, tokenStandard: "erc1155", tokenId: "7" };
+    wallet.tasks.push({ ...nft, id: `${address}:nft-extra`, preview: { ...nft.preview, tokenId: "8" }, holding: { ...nft.holding, key: `erc1155:${contract}:8`, tokenId: "8", raw: 1n } });
+    vi.mocked(prepareAutomaticSolCollection).mockResolvedValue([wallet]);
+    renderWorkbench();
+    await scan(user);
+    await user.click(runButton());
+    const dialog = within(screen.getByRole("alertdialog", { name: "确认一键归集？" }));
+    expect(dialog.getByText("ERC1155")).toBeVisible();
+    expect(dialog.getByText("Token ID 7 · 估计数量 5")).toBeVisible();
+    expect(dialog.getByText("Token ID 8 · 估计数量 1")).toBeVisible();
+    expect(dialog.getAllByText(contract)).toHaveLength(1);
+    expect(dialog.queryByText(`erc1155:${contract}:7`)).not.toBeInTheDocument();
+    expect(dialog.getByText("估计数量读取时间")).toBeVisible();
+    expect(dialog.getAllByRole("button", { name: "复制合约地址" })).toHaveLength(2);
+    expect(wallet.tasks[0].execute).not.toHaveBeenCalled();
+  });
+
   it("excludes a contract across wallets rather than just hiding its display", async () => {
     const user = userEvent.setup();
     const { wallet, events } = preparedWallet();
@@ -306,7 +329,7 @@ describe("AutomaticCollectionWorkbench", () => {
     const row = screen.getByTitle(address).closest('[role="listitem"]')! as HTMLElement;
     expect(within(row).getByText("USDC")).toBeVisible();
     expect(within(row).getByText("12")).toBeVisible();
-    expect(within(row).getByText("NFT 1")).toBeVisible();
+    expect(within(row).getByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(events).toEqual([]);
     await user.click(runButton());
     expect(events).toEqual([]);

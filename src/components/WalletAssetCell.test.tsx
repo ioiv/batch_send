@@ -26,7 +26,7 @@ describe("WalletAssetCell", () => {
     ] })} />);
     expect(screen.getByText("TOK0")).toBeVisible();
     expect(screen.getByText("TOK1")).toBeVisible();
-    expect(screen.getByText("NFT 8")).toBeVisible();
+    expect(screen.getByText("NFT 1 项 / 8 件")).toBeVisible();
     expect(screen.queryByText("TOK2")).not.toBeInTheDocument();
     expect(screen.getAllByText("123.456789")).toHaveLength(2);
   });
@@ -56,6 +56,18 @@ describe("WalletAssetCell", () => {
     expect(screen.getByText("MintAd…3456")).toBeVisible();
     expect(screen.getByText("数量未知")).toBeVisible();
     expect(screen.getByText("扫描不完整")).toBeVisible();
+  });
+
+  it("distinguishes NFT asset items from ERC1155 units and shows a public Token ID", async () => {
+    const user = userEvent.setup();
+    const contract = "0x1111111111111111111111111111111111111111";
+    render(<WalletAssetCell overview={buildWalletAssetOverview({ complete: true, holdings: [1n, 1n, 5n, 1n].map((raw, index) => ({
+      kind: "nft", key: `erc1155:${contract}:${index + 1}`, address: contract, symbol: "ART", raw, decimals: 0
+    })) })} />);
+    expect(screen.getByText("NFT 4 项 / 8 件")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /完整资产明细/u }));
+    expect(screen.getByText("ERC1155 · Token ID 3")).toBeVisible();
+    expect(screen.queryByText(`资产 ID：erc1155:${contract}:3`)).not.toBeInTheDocument();
   });
 
   it("keeps native currency outside the asset count and exposes exact dust", async () => {

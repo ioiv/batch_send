@@ -46,7 +46,8 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
         message: item.message, status: item.status === 'failed' ? 'error' : item.status === 'skipped' ? 'skipped' : 'pending' };
       tasks.push({ id, phase, preview, holding: isNative ? undefined : {
         kind: phase === 'token' ? 'token' : 'nft', key: asset.key, address: asset.contractAddress, symbol: item.metadata?.symbol || null,
-        raw: item.status === 'failed' ? null : item.amount, decimals
+        raw: item.status === 'failed' ? null : item.amount, decimals, name: item.metadata?.name, tokenStandard: asset.standard,
+        ...('tokenId' in asset ? { tokenId: asset.tokenId.toString() } : {})
       }, async execute(progress, control) {
         await control.waitUntilResumed(); await assertEvmRpcNetwork(client, network); assertAutomaticOperationActive(signal);
         const [liveItem] = await planEvmCollection({ accounts: [source], assets: [asset], publicClient: client });

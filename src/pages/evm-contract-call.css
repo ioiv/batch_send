@@ -1,0 +1,21 @@
+.contract-call-workspace > [hidden] { display: none; }
+.contract-call-workspace [hidden] { display: none; }
+.contract-call-wallet-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); font-size: var(--text-caption); }
+.contract-call-wallet-summary code { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.contract-call-acknowledgment { display: flex; align-items: flex-start; gap: var(--space-sm); font-size: var(--text-caption); }
+.contract-call-template { min-height: 6rem; overflow-wrap: anywhere; }
+.contract-call-notice { margin: 0; font-size: var(--text-caption); overflow-wrap: anywhere; }
+.contract-call-notice--error { color: var(--destructive); }
+.contract-call-editor-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); }
+.contract-call-token-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .125rem; }
+.contract-call-token-actions > button { font-size: var(--text-caption); }
+.contract-call-sample { min-width: 0; color: var(--muted-foreground); font-size: var(--text-caption); }
+.contract-call-sample > summary { cursor: pointer; width: fit-content; }
+.contract-call-sample > code { display: block; margin-block-start: var(--space-xs); overflow-wrap: anywhere; word-break: break-all; color: var(--foreground); }
+.contract-call-result-anchor { min-width: 0; scroll-margin-top: 5rem; }
+.contract-call-workspace .advanced-settings__summary { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .contract-call-editor-heading { align-items: flex-start; }
+  .contract-call-token-actions { width: 100%; }
+  .contract-call-token-actions > .help-tooltip__trigger { margin-inline-start: auto; }
+}

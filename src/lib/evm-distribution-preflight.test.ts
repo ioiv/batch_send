@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   estimateContractGas: vi.fn(),
   getBalance: vi.fn(),
+  getBlockNumber: vi.fn(),
   getChainId: vi.fn(),
   getCode: vi.fn(),
   getGasPrice: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock("viem", async (importOriginal) => {
   };
 });
 
-import { evmNetworks, preflightEvmDistribution, type EvmDistributionRow } from "./evm";
+import { evmNetworks, getEvmNativeBalance, getEvmTokenBalance, preflightEvmDistribution, type EvmDistributionRow } from "./evm";
 
 const from = "0x00000000000000000000000000000000000000aa";
 const recipient = "0x0000000000000000000000000000000000000002";
@@ -36,11 +37,30 @@ const rows: EvmDistributionRow[] = [{
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getChainId.mockResolvedValue(network.chainId);
+  mocks.getBlockNumber.mockResolvedValue(120n);
   mocks.getCode.mockResolvedValue("0x1234");
   mocks.getGasPrice.mockResolvedValue(2n);
 });
 
 describe("preflightEvmDistribution", () => {
+  it("checks the next round against a block at least as new as the previous receipt", async () => {
+    mocks.readContract.mockImplementation(async ({ functionName }) => functionName === "balanceOf" ? 50n : 1_000n);
+    mocks.getBalance.mockResolvedValue(1_000n);
+    await expect(preflightEvmDistribution({
+      assetMode: "token", from, minBlockNumber: 110n, network, rows, rpcEndpoint: network.rpcEndpoint,
+      token: { address: tokenAddress, decimals: 18, name: "Wrapped Ether", symbol: "WETH" }
+    })).rejects.toThrow("Token 余额不足");
+    expect(mocks.readContract).toHaveBeenCalledWith(expect.objectContaining({ functionName: "balanceOf", blockNumber: 120n }));
+  });
+
+  it("blocks the next round while the RPC is behind the confirmed transaction", async () => {
+    mocks.getBlockNumber.mockResolvedValueOnce(109n);
+    await expect(preflightEvmDistribution({
+      assetMode: "native", from, minBlockNumber: 110n, network, rows, rpcEndpoint: network.rpcEndpoint
+    })).rejects.toThrow("RPC 尚未同步至交易确认区块");
+    expect(mocks.getBalance).not.toHaveBeenCalled();
+  });
+
   it("estimates native distribution cost without requesting a wallet write", async () => {
     mocks.getBalance.mockResolvedValue(1_000n);
     mocks.estimateContractGas.mockResolvedValue(100n);
@@ -142,5 +162,26 @@ describe("preflightEvmDistribution", () => {
       rpcEndpoint: network.rpcEndpoint,
       token: { address: tokenAddress, decimals: 6, name: "Test Token", symbol: "TEST" }
     })).rejects.toThrow("原生币余额不足以支付预估网络费");
+  });
+});
+
+describe("confirmed distribution balance reads", () => {
+  it.each(["native", "token"])("reads %s balances at a fresh explicit block", async (asset) => {
+    mocks.getBalance.mockResolvedValue(12n);
+    mocks.readContract.mockResolvedValue(12n);
+    const options = { address: from, minBlockNumber: 110n, network, rpcEndpoint: network.rpcEndpoint };
+    const balance = asset === "native" ? await getEvmNativeBalance(options) : await getEvmTokenBalance({ ...options, tokenAddress });
+    expect(balance).toBe(12n);
+    expect(mocks.getBlockNumber).toHaveBeenCalledWith({ cacheTime: 0 });
+    expect(asset === "native" ? mocks.getBalance : mocks.readContract).toHaveBeenCalledWith(expect.objectContaining({ blockNumber: 120n }));
+  });
+
+  it.each(["native", "token"])("does not display a %s balance from before confirmation", async (asset) => {
+    mocks.getBlockNumber.mockResolvedValueOnce(109n);
+    const options = { address: from, minBlockNumber: 110n, network, rpcEndpoint: network.rpcEndpoint };
+    await expect(asset === "native" ? getEvmNativeBalance(options) : getEvmTokenBalance({ ...options, tokenAddress }))
+      .rejects.toThrow("RPC 尚未同步至交易确认区块");
+    expect(mocks.getBalance).not.toHaveBeenCalled();
+    expect(mocks.readContract).not.toHaveBeenCalled();
   });
 });

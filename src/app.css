@@ -1654,10 +1654,27 @@
 }
 
 .secret-import-dialog {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   max-width: min(36rem, calc(100vw - 2rem));
   max-height: calc(100dvh - 2rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.secret-import-dialog > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.secret-import-dialog [data-slot="dialog-footer"] {
+  flex-wrap: wrap;
+}
+
+.secret-import-dialog [data-slot="dialog-footer"] button {
+  min-width: 0;
+  white-space: normal;
 }
 
 .secret-import-preview {
@@ -1698,6 +1715,9 @@
 }
 
 .secret-import-textarea {
+  field-sizing: fixed;
+  min-width: 0;
+  max-width: 100%;
   min-height: clamp(12rem, 34vh, 20rem);
   max-height: 48vh;
   overflow: auto;
@@ -1728,6 +1748,15 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+}
+
+.secret-import-file-row > button {
+  flex-shrink: 0;
+}
+
+.secret-import-file-row > .secret-file-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .wallet-import-sheet-field {

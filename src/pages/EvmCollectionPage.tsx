@@ -22,6 +22,7 @@ import { RpcSettings } from "../components/RpcSettings";
 import { HelpTooltip } from "../components/HelpTooltip";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { CollectionResults } from "../components/CollectionResults";
+import { CollectionAssetReview, type CollectionAssetReviewItem } from "../components/CollectionAssetReview";
 import { NftAssetInput } from "../components/NftAssetInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import {
@@ -652,6 +653,13 @@ export function EvmCollectionPage({
   const [roundSequence, setRoundSequence] = useState(1);
   const [tokenRecognition, setTokenRecognition] = useState<TokenRecognitionState>(emptyTokenRecognitionState);
   const [addressBalances, setAddressBalances] = useState<AddressBalanceState>(emptyAddressBalanceState);
+  const [confirmationPreview, setConfirmationPreview] = useState<{
+    items: CollectionAssetReviewItem[];
+    message: string;
+    readAt?: string;
+    status: "idle" | "loading" | "ready" | "error";
+  }>({ items: [], message: "", status: "idle" });
+  const confirmationRequestRef = useRef(0);
   const keyInputRef = useRef<SecretKeyInputHandle>(null);
   const nftAssetInputsRef = useRef(nftAssetInputs);
   const assetImportingRef = useRef(false);
@@ -796,6 +804,8 @@ export function EvmCollectionPage({
 
   useEffect(() => {
     const discardSigningPlan = () => {
+      confirmationRequestRef.current += 1;
+      setConfirmationPreview({ items: [], message: "", status: "idle" });
       discoveryAbortRef.current?.abort();
       openSeaApiKeyRef.current = "";
       planRef.current = [];
@@ -822,6 +832,7 @@ export function EvmCollectionPage({
     window.addEventListener("pagehide", discardSigningPlan);
     window.addEventListener("pageshow", resetRestoredPage);
     return () => {
+      confirmationRequestRef.current += 1;
       window.removeEventListener("pagehide", discardSigningPlan);
       window.removeEventListener("pageshow", resetRestoredPage);
       pauseControllerRef.current.resume();
@@ -1363,12 +1374,12 @@ export function EvmCollectionPage({
           complete: ownersFullyKnown && (discovery.standard !== "erc1155" || !discovery.assets.length || Boolean(discovery.holdings?.length)),
           overviewHoldings: discovery.standard === "erc1155"
             ? discovery.holdings?.length ? discovery.holdings.filter((holding) => holding.ownerAddress.toLowerCase() === accountKey).map((holding) => ({
-              kind: "nft" as const, key: holding.tokenId.toString(), address: discovery.contractAddress, symbol: contractInspection?.symbol || null, raw: holding.balance, decimals: 0
+              kind: "nft" as const, key: holding.tokenId.toString(), address: discovery.contractAddress, symbol: contractInspection?.symbol || null, raw: holding.balance, decimals: 0, tokenStandard: discovery.standard, tokenId: holding.tokenId.toString()
             })) : discovery.assets.filter((asset) => asset.ownerAddress ? asset.ownerAddress.toLowerCase() === accountKey : selectedAccounts.length === 1).map((asset) => ({
-              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: null, decimals: 0
+              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: null, decimals: 0, tokenStandard: discovery.standard, tokenId: asset.tokenId.toString()
             }))
             : discovery.assets.filter((asset) => asset.ownerAddress ? asset.ownerAddress.toLowerCase() === accountKey : selectedAccounts.length === 1).map((asset) => ({
-              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: 1n, decimals: 0
+              kind: "nft" as const, key: asset.tokenId.toString(), address: asset.contractAddress, symbol: contractInspection?.symbol || null, raw: 1n, decimals: 0, tokenStandard: discovery.standard, tokenId: asset.tokenId.toString()
             })),
           assets: [nativeBalance, {
             amount: discovery.standard === "erc1155"
@@ -1778,6 +1789,70 @@ export function EvmCollectionPage({
       : "已继续归集，正在启动后续钱包与归集项");
   };
 
+  const readConfirmationPreview = async () => {
+    const request = ++confirmationRequestRef.current;
+    setConfirmationPreview({ items: [], message: "正在读取各来源的估计数量…", status: "loading" });
+    try {
+      const prepared = validateCollectionInputs();
+      if (prepared.nextIssues.length) throw new Error(prepared.nextIssues.join("；"));
+      const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
+      await assertEvmRpcNetwork(publicClient, selectedNetwork);
+      const ownershipPlan = await planEvmCollection({ accounts: prepared.parsedAccounts.accounts, assets: prepared.parsedAssets.validAssets, publicClient });
+      const previewPlan = fixedStandard === "erc20"
+        ? applyEvmAmountPolicy(ownershipPlan, selectedNetwork.nativeCurrency.decimals, { fixedAmount, mode: amountMode, percentageAmount, randomMaximum, randomMinimum })
+        : nftStandard === "erc1155" ? ownershipPlan : [
+          ...selectErc721CollectionPlan(ownershipPlan, prepared.parsedAccounts.accounts,
+            nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null),
+          ...ownershipPlan.filter(item => item.status === "failed")
+        ];
+      if (confirmationRequestRef.current !== request) return;
+      const nftContracts = [...new Set(previewPlan.flatMap(item => item.asset.standard === "erc721" || item.asset.standard === "erc1155" ? [item.asset.contractAddress] : []))];
+      const nftMetadata = new Map<string, { name?: string; symbol?: string }>(await mapWithConcurrency(nftContracts, 4, async (address) => {
+        if (confirmationRequestRef.current !== request) return [address.toLowerCase(), {}] as const;
+        if (address.toLowerCase() === contractInspection?.address.toLowerCase()) return [address.toLowerCase(), contractInspection] as const;
+        const values = await Promise.allSettled([
+          publicClient.readContract({ address, abi: erc20CollectionAbi, functionName: "name" }),
+          publicClient.readContract({ address, abi: erc20CollectionAbi, functionName: "symbol" })
+        ]);
+        const text = (value: PromiseSettledResult<unknown>) => value.status === "fulfilled" && typeof value.value === "string"
+          ? value.value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 120) : undefined;
+        return [address.toLowerCase(), { name: text(values[0]), symbol: text(values[1]) }] as const;
+      }));
+      if (confirmationRequestRef.current !== request) return;
+      const items = previewPlan.map((item): CollectionAssetReviewItem => {
+        const contractAddress = item.asset.standard === "native" ? undefined : item.asset.contractAddress;
+        const inspection = contractAddress ? nftMetadata.get(contractAddress.toLowerCase()) : undefined;
+        const nativePolicy = item.asset.standard === "native" && item.status === "ready" ? item.amountPolicy : undefined;
+        const nativeMessage = !nativePolicy ? undefined : nativePolicy.mode === "fixed"
+          ? `计划归集 ${formatUnits(nativePolicy.amount, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}；执行时先预留网络费，可用余额不足时跳过。`
+          : nativePolicy.mode === "percentage"
+            ? `归集扣除网络费后可用余额的 ${formatUnits(nativePolicy.percentageBps, 2)}%；实际数量在发送前计算。`
+            : nativePolicy.mode === "random"
+              ? `从扣除网络费后的可用余额中随机归集 ${formatUnits(nativePolicy.minAmount, selectedNetwork.nativeCurrency.decimals)}–${formatUnits(nativePolicy.maxAmount, selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}；发送前确定数量，低于最小值时跳过。`
+              : "归集扣除网络费后的全部可用余额；实际数量在发送前计算。";
+        return {
+          amount: item.status === "failed" ? "读取失败" : getFormattedAmount(item, selectedNetwork.nativeCurrency),
+          amountLabel: item.asset.standard === "native" ? "当前余额" : undefined,
+          contractAddress,
+          message: nativeMessage || (item.status === "ready" ? undefined : item.message),
+          name: item.asset.standard === "native" ? selectedNetwork.nativeCurrency.name : item.metadata?.name || inspection?.name,
+          sourceAddress: item.address || "地址未知",
+          sourceLabel: item.label,
+          standard: item.asset.standard === "native" ? "原生币" : item.asset.standard,
+          symbol: item.asset.standard === "native" ? selectedNetwork.nativeCurrency.symbol : item.metadata?.symbol || inspection?.symbol,
+          tokenId: "tokenId" in item.asset ? item.asset.tokenId.toString() : undefined
+        };
+      });
+      const estimatesComplete = items.length > 0 && !previewPlan.some(item => item.status === "failed");
+      setConfirmationPreview({ items,
+        message: estimatesComplete ? standard === "native" ? "当前余额已读取；归集数量会在发送前预留网络费后计算。" : "估计数量已读取；实际发送前会重新核对余额和网络费。" : "未完整读取可归集数量，请检查来源与资产后重新读取。",
+        readAt: new Date().toLocaleString(), status: estimatesComplete ? "ready" : "error" });
+    } catch (error) {
+      if (confirmationRequestRef.current !== request) return;
+      setConfirmationPreview({ items: [], message: sanitizeRoundArchiveText(error instanceof Error ? error.message : "读取估计数量失败，请重试"), status: "error" });
+    }
+  };
+
   const executeCollection = async (retryIds?: readonly string[]) => {
     if (operationRef.current || assetImportingRef.current || keyImportingRef.current || running || taskHistory.checkRecoveryReview()) return;
     const retryOnly = retryIds !== undefined;
@@ -2141,6 +2216,11 @@ export function EvmCollectionPage({
             <ConfirmActionDialog
               triggerSize="lg"
               confirmLabel="确认并开始归集"
+              confirmDisabled={confirmationPreview.status !== "ready"}
+              onOpenChange={(open) => {
+                if (open) void readConfirmationPreview();
+                else confirmationRequestRef.current += 1;
+              }}
               description={(
                 <div className="summary-list">
                   <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
@@ -2152,6 +2232,10 @@ export function EvmCollectionPage({
                   </div>
                   <div><span>归集数量</span><strong>{amountSummary}</strong></div>
                   <div><span>配置总量</span><strong>{plannedTotal}</strong></div>
+                  <div role="status">{confirmationPreview.message}</div>
+                  {confirmationPreview.readAt ? <div><span>{standard === "native" ? "余额读取时间" : "估计数量读取时间"}</span><strong>{confirmationPreview.readAt}</strong></div> : null}
+                  {confirmationPreview.items.length ? <CollectionAssetReview items={confirmationPreview.items} /> : null}
+                  {confirmationPreview.status === "error" ? <Button onClick={() => void readConfirmationPreview()} type="button" variant="outline">重新读取估计数量</Button> : null}
                   {configuredTokenTotals.length ? <section aria-label="各 Token 配置合计" className="summary-list max-h-40 overflow-y-auto">
                     {configuredTokenTotals.map((total) => <div key={total.key}><span>{total.label}</span><strong>{total.amount}</strong></div>)}
                   </section> : null}

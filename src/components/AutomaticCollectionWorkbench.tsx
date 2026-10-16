@@ -15,6 +15,7 @@ import { ActionBar, AdvancedSettings, WorkbenchPanel, WorkbenchSection, Workbenc
 import { WorkflowFeedback, type WorkflowRequirement } from './WorkflowFeedback';
 import { RpcSettings } from './RpcSettings';
 import { CollectionResults } from './CollectionResults';
+import { CollectionAssetReview } from './CollectionAssetReview';
 import { EvmGasBadge, EvmGasSettings } from './EvmGasControl';
 import { useEvmGas, type EvmGasChoice } from '../hooks/useEvmGas';
 import { getEvmDistributionNetworks, getEvmNetworkConfig } from '../lib/evm';
@@ -25,7 +26,7 @@ import { prepareAutomaticEvmCollection } from '../lib/automatic-evm-collection';
 import { prepareAutomaticSolCollection } from '../lib/automatic-sol-collection';
 import { automaticPhaseLabels, executeAutomaticCollection, type AutomaticCollectionPhase, type AutomaticCollectionScanProgress, type AutomaticCollectionTask, type AutomaticCollectionWallet } from '../lib/collection-orchestrator';
 import { CollectionPauseController } from '../lib/collection-execution';
-import { buildWalletAssetOverview, formatWalletAssetAmount, getWalletAssetSymbol } from '../lib/wallet-asset-overview';
+import { buildWalletAssetOverview, formatWalletAssetAmount, getWalletAssetSymbol, getWalletNftIdentity } from '../lib/wallet-asset-overview';
 import type { CollectionManualDraft } from '../lib/collection-mode-draft';
 import { useTaskHistory } from '../hooks/useTaskHistory';
 import { TaskHistoryPanel } from './TaskHistoryPanel';
@@ -71,6 +72,7 @@ export function AutomaticCollectionWorkbench({ kind, currentToolId, initialConfi
   const [paused, setPaused] = useState(false);
   const [message, setMessage] = useState('');
   const [wallets, setWallets] = useState<WalletView[]>([]);
+  const [scanReadAt, setScanReadAt] = useState('');
   const [results, setResults] = useState<CollectionDisplayResult[]>([]);
   const resultsRef = useRef<CollectionDisplayResult[]>([]);
   const [history, setHistory] = useState<AutomaticCollectionRound[]>(historyRef.current || []);
@@ -121,7 +123,6 @@ export function AutomaticCollectionWorkbench({ kind, currentToolId, initialConfi
   const selectedItems = assetItems.filter(item => selectedAssets.has(item.id));
   const retainedWallets = wallets.filter(wallet => wallet.assets.some(item => !selectedAssets.has(item.id))).length;
   const totals = buildWalletAssetOverview({ holdings: selectedItems.flatMap(item => item.holding ? [item.holding] : []), complete: true, native: null });
-  const selectedTotalAssets = [...totals.tokens, ...totals.nfts];
   const nativeEligibleWallets = wallets.filter(wallet => wallet.complete && wallet.assets.every(item => selectedAssets.has(item.id)));
   const eligibleNativeResults = includeNative ? results.filter(result => result.phase === 'native' && nativeEligibleWallets.some(wallet => wallet.address === result.address)) : [];
   const nativePlannedTransactions = eligibleNativeResults.length;
@@ -192,6 +193,7 @@ export function AutomaticCollectionWorkbench({ kind, currentToolId, initialConfi
       if (abort.signal.aborted) { setStage('editing'); setMessage('扫描已取消'); return; }
       preparedRef.current = prepared;
       setWallets(prepared.map(walletView));
+      setScanReadAt(new Date().toLocaleString());
       setScanProgress({ completed: prepared.length, total: prepared.length });
       setSelectedAssets(new Set(prepared.flatMap(wallet => wallet.tasks.filter(task => task.phase !== 'native' && task.preview.status === 'pending').map(task => task.id))));
       setPublicResults(prepared.flatMap(wallet => wallet.tasks.map(task => task.preview)));
@@ -277,7 +279,17 @@ export function AutomaticCollectionWorkbench({ kind, currentToolId, initialConfi
               <div><span>执行顺序</span><strong>Token → NFT{includeNative ? ' → 原生币' : ''}</strong></div>
               <div><span>钱包 / 资产</span><strong>{wallets.length} 个钱包 · 已选 {counts.token} 个 Token 项 · {counts.nft} 个 NFT 项</strong></div>
               <div><span>数量规则</span><strong>转出所选资产的全部可转余额；执行前重新读取</strong></div>
-              {selectedTotalAssets.map(asset => <div key={`${asset.kind}:${asset.address}:${asset.key}`}><span>{asset.kind === 'nft' ? 'NFT' : 'Token'} 合计 · {getWalletAssetSymbol(asset)}</span><strong>{formatWalletAssetAmount(asset.raw, asset.decimals)}<small className="automatic-total-address mono">{asset.address}{asset.kind === 'nft' ? ` · ${asset.key}` : ''}</small></strong></div>)}
+              <div><span>估计数量读取时间</span><strong>{scanReadAt}</strong></div>
+              {totals.tokens.map(asset => <div key={asset.address}><span>Token 估计合计 · {getWalletAssetSymbol(asset)}</span><strong>{formatWalletAssetAmount(asset.raw, asset.decimals)}</strong></div>)}
+              <CollectionAssetReview items={selectedItems.map(item => ({ amount: item.holding ? formatWalletAssetAmount(item.holding.raw, item.holding.decimals) : item.preview.amount || '数量未知',
+                contractAddress: item.holding?.address || item.preview.contractAddress,
+                name: item.holding?.name,
+                sourceAddress: item.preview.address,
+                sourceLabel: item.preview.label,
+                standard: item.preview.tokenStandard || (item.holding?.kind === 'nft' ? getWalletNftIdentity(item.holding).standard : item.holding?.tokenStandard || (kind === 'evm' ? 'ERC20' : 'SPL')),
+                symbol: item.holding?.symbol || (item.phase === 'token' ? item.preview.asset : undefined),
+                tokenId: item.preview.tokenId ?? (item.holding?.kind === 'nft' ? getWalletNftIdentity(item.holding).tokenId : undefined)
+              }))} />
               {nativePlannedTransactions ? <div><span>原生币扫描余额</span><strong>{formatWalletAssetAmount(nativeRawTotal, kind === 'evm' ? network.nativeCurrency.decimals : 9)} {kind === 'evm' ? network.nativeCurrency.symbol : 'SOL'}；到账数量以执行时余额扣除网络费为准</strong></div> : null}
               <div><span>预计交易数</span><strong>最多 {plannedTransactions} 笔；零余额或保护拦截时减少</strong></div>
               <div><span>费用保护</span><strong>{kind === 'evm' ? `单笔上限 ${maxFee} ${network.nativeCurrency.symbol}；本次最多 ${fee === null ? '—' : formatUnits(fee * BigInt(plannedTransactions), network.nativeCurrency.decimals)} ${network.nativeCurrency.symbol} 网络费` : '逐笔模拟并估算网络费；新建接收 Token 账户时另需租金，费用无法确认时跳过'}</strong></div>

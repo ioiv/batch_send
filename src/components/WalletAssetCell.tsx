@@ -5,6 +5,7 @@ import {
   formatWalletAssetAmount,
   getWalletAssetSymbol,
   getWalletNftCount,
+  getWalletNftIdentity,
   type WalletAssetHolding,
   type WalletAssetOverview
 } from "../lib/wallet-asset-overview";
@@ -37,7 +38,7 @@ function AssetDetails({ overview }: { overview: WalletAssetOverview }) {
                 <span>{holding.kind === "nft" ? "NFT" : "Token"}</span>
               </div>
               <span className="wallet-asset-detail__amount">{formatWalletAssetAmount(holding.raw, holding.decimals)}</span>
-              {holding.kind === "nft" ? <small className="wallet-asset-detail__id">资产 ID：{holding.key}</small> : null}
+              {holding.kind === "nft" ? <small className="wallet-asset-detail__id">{getWalletNftIdentity(holding).standard}{getWalletNftIdentity(holding).tokenId !== undefined ? ` · Token ID ${getWalletNftIdentity(holding).tokenId}` : ""}</small> : null}
               <div className="wallet-asset-detail__address">
                 <code>{holding.address}</code>
                 <Button
@@ -81,7 +82,7 @@ export function WalletAssetCell({
             <span>{formatWalletAssetAmount(holding.raw, holding.decimals, { compact: true })}</span>
           </span>
         ))}
-        {overview.nfts.length ? <span className="wallet-asset-cell__nfts">NFT {nftCount === null ? "数量未知" : nftCount.toString()}</span> : null}
+        {overview.nfts.length ? <span className="wallet-asset-cell__nfts">NFT {overview.nfts.length} 项 / {nftCount === null ? "件数未知" : `${nftCount} 件`}</span> : null}
         {overview.complete && !hasAssets ? <span className="wallet-asset-cell__empty">无资产</span> : null}
       </div>
       {(hasAssets || !overview.complete) ? (

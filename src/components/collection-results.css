@@ -2,6 +2,12 @@
 .collection-result-table th:first-child { width: 28%; }
 .collection-result-table td { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .collection-result-table .collection-result-amount { text-align: right; font-variant-numeric: tabular-nums; }
+.collection-result-table th:nth-child(3) { width: 23%; }
+.collection-result-table .collection-result-asset { overflow-wrap: normal; word-break: normal; }
+.collection-result-short-address { white-space:nowrap; }
+.collection-result-targets { display:grid;gap:var(--space-xs);margin-top:var(--space-xs);min-width:0;font-size:var(--text-caption);color:var(--muted-foreground); }
+.collection-result-targets>span { display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-xs);min-width:0; }
+.collection-result-targets code { overflow-wrap:anywhere;user-select:text; }
 .collection-result-table .collection-result-transaction a { max-width: 100%; padding-inline: 0; font-size: var(--text-caption); }
 .collection-result-table [data-status="uncertain"] [data-slot="badge"] { color: var(--warning); border-color: color-mix(in oklab, var(--warning) 45%, transparent); }
 .collection-result-table [data-status="success"] .collection-result-status [data-slot="badge"] { color: var(--success); }

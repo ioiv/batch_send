@@ -50,7 +50,7 @@ const labelHeaders = new Set(["label", "name", "remark", "remarks", "note", "not
 const mnemonicHeaders = new Set(["mnemonic", "mnemonicphrase", "recoveryphrase", "seedphrase", "助记词"]);
 const normalizeHeader = (value: string) => value.trim().toLowerCase().replace(/[\s_\-]/g, "");
 const fileExtension = (name: string) => /\.([^.]+)$/.exec(name.trim().toLowerCase())?.[1] || "";
-const normalizeText = (value: string) => value.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+const normalizeText = (value: string) => value.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
 
 function safeFileName(name: string) {
   const normalized = name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
@@ -171,7 +171,13 @@ function jsonCandidates(raw: string, mode: SecretKeyImportMode): Candidate[] {
   });
 }
 function textCandidates(raw: string, mode: SecretKeyImportMode): { candidates: Candidate[]; format: string } {
-  const lines = raw.split("\n").map((value, index) => ({ value: value.trim(), line: index + 1 })).filter((item) => item.value && !/^(?:#|\/\/)/u.test(item.value));
+  const lines = raw.split("\n").map((value, index) => ({ value: value.trim(), line: index + 1 })).filter((item) => {
+    if (!item.value || /^(?:#|\/\/)/u.test(item.value)) return false;
+    // A CSV/TSV row of empty cells is blank too. Filter before finding the
+    // header, while retaining each remaining record's original line number.
+    const cells = splitCells(item.value, findDelimiter(item.value) || ",");
+    return !cells || cells.some((cell) => cell !== "");
+  });
   if (!lines.length) return { candidates: [], format: "逐行私钥" };
   const delimiter = findDelimiter(lines[0].value);
   const first = splitCells(lines[0].value, delimiter || ",");
@@ -205,9 +211,10 @@ function textCandidates(raw: string, mode: SecretKeyImportMode): { candidates: C
 export function analyzeSecretKeyText(rawText: string, mode: SecretKeyImportMode, formatHint?: string): SecretKeyTextImportResult {
   assertContent(rawText);
   const raw = normalizeText(rawText);
+  const trimmedRaw = raw.trim();
   let candidates: Candidate[];
   let format: string;
-  const looksJson = formatHint !== "xlsx" && (formatHint === "json" || /^"(?:[^"\\]|\\.)*"$/u.test(raw) || raw.startsWith("{") || /^\[\s*(?:\{|"|\[|\d)/u.test(raw) && !raw.includes("\n["));
+  const looksJson = formatHint !== "xlsx" && (formatHint === "json" || /^"(?:[^"\\]|\\.)*"$/u.test(trimmedRaw) || trimmedRaw.startsWith("{") || /^\[\s*(?:\{|"|\[|\d)/u.test(trimmedRaw) && !trimmedRaw.includes("\n["));
   if (looksJson) {
     try { candidates = jsonCandidates(raw, mode); format = "JSON · 自动识别钱包条目"; }
     catch (error) {

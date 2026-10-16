@@ -46,7 +46,7 @@ export const toolCategories: ToolCategoryDefinition[] = [
   {
     id: "contract",
     label: "合约工具",
-    description: "部署、校验并管理 EVM 合约",
+    description: "批量调用、部署并校验 EVM 合约",
     href: "/#contract"
   },
   {
@@ -128,6 +128,19 @@ export const tools: ToolDefinition[] = [
     featured: true,
     badge: "热门",
     keywords: ["EVM", "ERC20", "批量发送", "空投"]
+  },
+  {
+    id: "evm-contract-call",
+    title: "EVM 合约批量调用",
+    shortTitle: "合约批量调用",
+    description: "按钱包替换 calldata 模板，本地签名后通过自定义 RPC 并发提交。",
+    href: "/evm/call/",
+    category: "contract",
+    ecosystems: ["evm"],
+    icon: "contract",
+    featured: true,
+    badge: "新增",
+    keywords: ["EVM", "合约批量调用", "合约", "calldata", "私钥", "本地签名", "RPC", "批量交互"]
   },
   {
     id: "evm-contract-deploy",

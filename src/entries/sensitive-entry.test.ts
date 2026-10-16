@@ -46,6 +46,7 @@ describe("sensitive entry isolation", () => {
   it.each([
     "./evm-token-collection.tsx",
     "./evm-nft-collection.tsx",
+    "./evm-contract-call.tsx",
     "./sol-collection.tsx"
   ])("routes %s through the sensitive renderer", (entryPath) => {
     const source = read(entryPath);
@@ -57,6 +58,7 @@ describe("sensitive entry isolation", () => {
   it.each([
     "evm-token-collection.tsx",
     "evm-nft-collection.tsx",
+    "evm-contract-call.tsx",
     "sol-collection.tsx"
   ])("keeps Analytics out of the complete %s source graph", (entryName) => {
     const entryPath = fileURLToPath(new URL(`./${entryName}`, import.meta.url));
