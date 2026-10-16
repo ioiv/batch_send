@@ -372,17 +372,22 @@ describe("planEvmCollection", () => {
     const accounts = parseAccounts();
     const asset = getSingleAsset(`${nftAddress},7`, "erc721");
     const { client, readContract } = makePublicClient({
-      readContract: async () => accounts[1].address
+      readContract: async ({ functionName }) => {
+        if (functionName === "name") return "Example Collectibles";
+        if (functionName === "symbol") return "NFT";
+        return accounts[1].address;
+      }
     });
 
     const plan = await planEvmCollection({ accounts, assets: [asset], publicClient: client });
 
-    expect(readContract).toHaveBeenCalledOnce();
+    expect(readContract.mock.calls.filter(([request]) => request.functionName === "ownerOf")).toHaveLength(1);
     expect(plan).toHaveLength(1);
     expect(plan[0]).toMatchObject({
       address: accounts[1].address,
       amount: 1n,
       label: "来源 2",
+      metadata: { name: "Example Collectibles", symbol: "NFT", decimals: 0 },
       status: "ready"
     });
   });
@@ -414,6 +419,45 @@ describe("planEvmCollection", () => {
 
     expect(plan.map((item) => item.status)).toEqual(["ready", "skipped"]);
     expect(plan.map((item) => item.amount)).toEqual([12n, 0n]);
+  });
+
+  it("reuses NFT contract metadata across IDs while still checking each owner", async () => {
+    const accounts = parseAccounts([privateKeyOne]);
+    const assets = parseEvmCollectionAssets(`${nftAddress},1\n${nftAddress},2`, "erc721").assets;
+    const { client, readContract } = makePublicClient({
+      readContract: async ({ functionName }) => {
+        if (functionName === "name") return "  Example\u0000 Collection  ";
+        if (functionName === "symbol") return "  EXNFT  ";
+        return accounts[0].address;
+      }
+    });
+
+    const plan = await planEvmCollection({ accounts, assets, publicClient: client });
+    expect(plan.map(item => item.metadata)).toEqual([
+      { contractAddress: getAddress(nftAddress), decimals: 0, name: "Example Collection", symbol: "EXNFT" },
+      { contractAddress: getAddress(nftAddress), decimals: 0, name: "Example Collection", symbol: "EXNFT" }
+    ]);
+    expect(readContract.mock.calls.filter(([request]) => request.functionName === "name")).toHaveLength(1);
+    expect(readContract.mock.calls.filter(([request]) => request.functionName === "symbol")).toHaveLength(1);
+    expect(readContract.mock.calls.filter(([request]) => request.functionName === "ownerOf")).toHaveLength(2);
+  });
+
+  it.each(["erc721", "erc1155"] as const)("keeps %s ownership readable when optional metadata calls fail", async standard => {
+    const accounts = parseAccounts([privateKeyOne]);
+    const asset = getSingleAsset(`${nftAddress},3`, standard);
+    const { client } = makePublicClient({
+      readContract: async ({ functionName }) => {
+        if (functionName === "name" || functionName === "symbol") throw new Error("optional metadata unavailable");
+        return functionName === "ownerOf" ? accounts[0].address : 4n;
+      }
+    });
+
+    const [item] = await planEvmCollection({ accounts, assets: [asset], publicClient: client });
+    expect(item).toMatchObject({
+      amount: standard === "erc721" ? 1n : 4n,
+      metadata: { name: "", symbol: "", decimals: 0 },
+      status: "ready"
+    });
   });
 });
 

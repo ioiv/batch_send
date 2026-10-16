@@ -67,6 +67,7 @@ import {
   runEvmDistributionSigningGate
 } from "./EvmBatchDistributorPage";
 import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
+import { EvmRpcSyncPendingError } from "../lib/evm-rpc-sync";
 
 const recipient = "0x00000000000000000000000000000000000000b1";
 const secondRecipient = "0x00000000000000000000000000000000000000b2";
@@ -92,7 +93,10 @@ const preflightResult = {
   totalTransactions: 1
 };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   pageMocks.walletAddress = connectedAccount;
@@ -157,6 +161,85 @@ async function prepareReadyTokenDistributionPage() {
 }
 
 describe("EvmBatchDistributorPage safety", () => {
+  it.each(["native", "token"])("automatically recovers the %s balance after receipt-block lag without showing the old value", async (asset) => {
+    const lookup = asset === "native" ? pageMocks.getNativeBalance : pageMocks.getTokenBalance;
+    const initialBalance = 10_000_000_000_000_000_000n;
+    const remainingBalance = 8_000_000_000_000_000_000n;
+    let readsAfterConfirmation = 0;
+    lookup.mockImplementation(async ({ minBlockNumber }: { minBlockNumber?: bigint }) => {
+      if (minBlockNumber === undefined) return initialBalance;
+      if (readsAfterConfirmation++ === 0) throw new EvmRpcSyncPendingError();
+      return remainingBalance;
+    });
+    pageMocks.sendNative.mockResolvedValue({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    pageMocks.sendToken.mockResolvedValue({ hashes: [transactionHash], receipt: { blockNumber: 110n } });
+    const user = asset === "native" ? (await prepareReadyDistributionPage()).user : await prepareReadyTokenDistributionPage();
+    const balancePanel = screen.getByLabelText(asset === "native" ? "原生币余额" : "Token 信息");
+    const oldBalance = asset === "native" ? "10 ETH" : "10000000000000 MOCK";
+    expect(await within(balancePanel).findByTitle(oldBalance)).toBeVisible();
+    const dialog = screen.getByRole("alertdialog", { name: "确认 EVM 分发" });
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "签名并分发" })); });
+    expect(screen.getByText("等待 RPC 同步，正在自动重试")).toBeVisible();
+    expect(within(balancePanel).queryByTitle(oldBalance)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试读取" })).not.toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(within(balancePanel).getByTitle(asset === "native" ? "8 ETH" : "8000000000000 MOCK")).toBeVisible();
+    expect(screen.queryByText("等待 RPC 同步，正在自动重试")).not.toBeInTheDocument();
+    expect(screen.getByText(/余额更新于/)).toBeVisible();
+    expect(lookup).toHaveBeenLastCalledWith(expect.objectContaining({ minBlockNumber: 110n, address: connectedAccount }));
+    expect(readsAfterConfirmation).toBe(2);
+    expect((asset === "native" ? pageMocks.sendNative : pageMocks.sendToken)).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+    await user.click(screen.getByRole("button", { name: "开始新一轮分发" }));
+    expect(screen.getByRole("button", { name: "开始分发" })).toBeEnabled();
+  });
+
+  it("offers manual balance recovery after bounded automatic retries are exhausted", async () => {
+    pageMocks.sendNative.mockResolvedValue({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    pageMocks.getNativeBalance.mockImplementation(async ({ minBlockNumber }: { minBlockNumber?: bigint }) => {
+      if (minBlockNumber !== undefined) throw new EvmRpcSyncPendingError();
+      return preflightResult.nativeBalanceWei;
+    });
+    const { user } = await prepareReadyDistributionPage();
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 分发" })).getByRole("button", { name: "签名并分发" })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getByRole("alert")).toHaveTextContent("自动重试后 RPC 仍未同步");
+    expect(within(screen.getByLabelText("原生币余额")).getByText("读取失败")).toBeVisible();
+    const retry = screen.getByRole("button", { name: "重试读取" });
+    expect(pageMocks.getNativeBalance.mock.calls.filter(([options]) => options.minBlockNumber === 110n)).toHaveLength(5);
+    pageMocks.getNativeBalance.mockResolvedValue(8_000_000_000_000_000_000n);
+    vi.useRealTimers();
+    await user.click(retry);
+    expect(await screen.findByTitle("8 ETH")).toBeVisible();
+    expect(pageMocks.sendNative).toHaveBeenCalledOnce();
+  });
+
+  it("lets a successful new-round preflight supersede an older balance retry", async () => {
+    pageMocks.sendNative.mockResolvedValue({ hash: transactionHash, receipt: { blockNumber: 110n } });
+    pageMocks.getNativeBalance.mockImplementation(async ({ minBlockNumber }: { minBlockNumber?: bigint }) => {
+      if (minBlockNumber !== undefined) throw new EvmRpcSyncPendingError();
+      return preflightResult.nativeBalanceWei;
+    });
+    await prepareReadyDistributionPage();
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(within(screen.getByRole("alertdialog", { name: "确认 EVM 分发" })).getByRole("button", { name: "签名并分发" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "开始新一轮分发" })); });
+    expect(screen.getByText("等待 RPC 同步，正在自动重试")).toBeVisible();
+    pageMocks.preflight.mockResolvedValue({ ...preflightResult, nativeBalanceWei: 8_000_000_000_000_000_000n });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "开始分发" })); });
+    const balancePanel = screen.getByLabelText("原生币余额");
+    expect(within(balancePanel).getByTitle("8 ETH")).toBeInTheDocument();
+    const backgroundReads = pageMocks.getNativeBalance.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(within(balancePanel).getByTitle("8 ETH")).toBeInTheDocument();
+    expect(screen.queryByText("等待 RPC 同步，正在自动重试")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试读取" })).not.toBeInTheDocument();
+    expect(pageMocks.getNativeBalance).toHaveBeenCalledTimes(backgroundReads);
+    expect(pageMocks.sendNative).toHaveBeenCalledOnce();
+  });
+
   it.each([
     [0n, "0", "0"],
     [10_000_000_000_000n, "0.00001", "0.00001"],

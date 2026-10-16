@@ -28,6 +28,7 @@ import {
 } from "../components/WorkbenchPrimitives";
 import { useEvmWallet } from "../hooks/useEvmWallet";
 import { useEvmGas } from "../hooks/useEvmGas";
+import { isEvmRpcSyncPendingError, readWithEvmRpcSyncRetry } from "../lib/evm-rpc-sync";
 import { shortenAddress } from "../lib/address";
 import { getInitialDistributionInput, type DistributionRow } from "../lib/distribution";
 import { importDistributionInput, type GeneratedDistributionList } from "../lib/distribution-generator";
@@ -77,7 +78,7 @@ type TokenLookupState = {
 
 type BalanceLookupState = {
   message: string;
-  status: "idle" | "loading" | "success" | "error";
+  status: "idle" | "loading" | "syncing" | "success" | "error";
   updatedAt?: number;
   valueWei: bigint | null;
 };
@@ -273,9 +274,20 @@ export function EvmBatchDistributorPage() {
   const [tokenLookupRefreshNonce, setTokenLookupRefreshNonce] = useState(0);
   const [nativeBalanceLookup, setNativeBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
   const [tokenBalanceLookup, setTokenBalanceLookup] = useState<BalanceLookupState>(initialBalanceLookupState);
+  const nativeBalanceReadRef = useRef<AbortController | null>(null);
+  const tokenBalanceReadRef = useRef<AbortController | null>(null);
   const [balanceRefreshNonce, setBalanceRefreshNonce] = useState(0);
   const [balanceAnchors, setBalanceAnchors] = useState<Record<number, bigint>>({});
   const refreshBalances = useCallback(() => setBalanceRefreshNonce((value) => value + 1), []);
+  const publishPreflightBalances = (result: EvmDistributionPreflightResult, mode: EvmAssetMode) => {
+    // A successful preflight supersedes any older display lookup or queued retry.
+    nativeBalanceReadRef.current?.abort();
+    setNativeBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.nativeBalanceWei });
+    if (mode === "token") {
+      tokenBalanceReadRef.current?.abort();
+      setTokenBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.assetBalanceWei });
+    }
+  };
   const rememberConfirmationBlock = (chainId: number, blockNumber?: bigint) => {
     if (blockNumber === undefined) return;
     setBalanceAnchors((current) => current[chainId] !== undefined && current[chainId] >= blockNumber
@@ -414,6 +426,8 @@ export function EvmBatchDistributorPage() {
     ? nativeBalance
     : nativeBalanceLookup.status === "loading"
       ? "读取中"
+      : nativeBalanceLookup.status === "syncing"
+        ? "等待 RPC 同步"
       : nativeBalanceLookup.status === "error"
         ? "读取失败"
         : "";
@@ -430,6 +444,8 @@ export function EvmBatchDistributorPage() {
       ? tokenBalance
       : tokenBalanceLookup.status === "loading"
         ? "读取中"
+        : tokenBalanceLookup.status === "syncing"
+          ? "等待 RPC 同步"
         : tokenBalanceLookup.status === "error"
           ? "读取失败"
           : ""
@@ -446,7 +462,7 @@ export function EvmBatchDistributorPage() {
       ? "error"
       : tokenBalanceLookup.status === "error"
       ? "error"
-      : tokenBalanceLookup.status === "loading"
+      : tokenBalanceLookup.status === "loading" || tokenBalanceLookup.status === "syncing"
         ? "loading"
         : "";
   const tokenBalanceHint = hasPendingTokenAddress
@@ -661,20 +677,29 @@ export function EvmBatchDistributorPage() {
       return;
     }
 
-    let active = true;
+    const controller = new AbortController();
+    nativeBalanceReadRef.current = controller;
     setNativeBalanceLookup({
       message: "正在读取钱包余额",
       status: "loading",
       valueWei: null
     });
 
-    void getEvmNativeBalance({
-      address: wallet.address,
-      minBlockNumber: minBalanceBlockNumber,
-      network: selectedNetwork,
-      rpcEndpoint: effectiveRpcEndpoint
+    void readWithEvmRpcSyncRetry({
+      read: () => getEvmNativeBalance({
+        address: wallet.address,
+        minBlockNumber: minBalanceBlockNumber,
+        network: selectedNetwork,
+        rpcEndpoint: effectiveRpcEndpoint
+      }),
+      signal: controller.signal,
+      onWaiting: () => setNativeBalanceLookup({
+        message: "等待 RPC 同步，正在自动重试",
+        status: "syncing",
+        valueWei: null
+      })
     }).then((valueWei) => {
-      if (!active) return;
+      if (controller.signal.aborted) return;
       setNativeBalanceLookup({
         message: "",
         status: "success",
@@ -682,16 +707,17 @@ export function EvmBatchDistributorPage() {
         valueWei
       });
     }).catch((error) => {
-      if (!active) return;
+      if (controller.signal.aborted) return;
       setNativeBalanceLookup({
-        message: getEvmBalanceLookupErrorMessage(error),
+        message: isEvmRpcSyncPendingError(error) ? "自动重试后 RPC 仍未同步，请重试读取余额" : getEvmBalanceLookupErrorMessage(error),
         status: "error",
         valueWei: null
       });
     });
 
     return () => {
-      active = false;
+      controller.abort();
+      if (nativeBalanceReadRef.current === controller) nativeBalanceReadRef.current = null;
     };
   }, [balanceRefreshNonce, effectiveRpcEndpoint, minBalanceBlockNumber, nativeCurrencyEnabled, selectedNetwork, wallet.address, wallet.connected]);
 
@@ -714,21 +740,30 @@ export function EvmBatchDistributorPage() {
       return;
     }
 
-    let active = true;
+    const controller = new AbortController();
+    tokenBalanceReadRef.current = controller;
     setTokenBalanceLookup({
       message: "正在读取 Token 余额",
       status: "loading",
       valueWei: null
     });
 
-    void getEvmTokenBalance({
-      address: wallet.address,
-      minBlockNumber: minBalanceBlockNumber,
-      network: selectedNetwork,
-      rpcEndpoint: effectiveRpcEndpoint,
-      tokenAddress: tokenDetails.address
+    void readWithEvmRpcSyncRetry({
+      read: () => getEvmTokenBalance({
+        address: wallet.address,
+        minBlockNumber: minBalanceBlockNumber,
+        network: selectedNetwork,
+        rpcEndpoint: effectiveRpcEndpoint,
+        tokenAddress: tokenDetails.address
+      }),
+      signal: controller.signal,
+      onWaiting: () => setTokenBalanceLookup({
+        message: "等待 RPC 同步，正在自动重试",
+        status: "syncing",
+        valueWei: null
+      })
     }).then((valueWei) => {
-      if (!active) return;
+      if (controller.signal.aborted) return;
       setTokenBalanceLookup({
         message: "",
         status: "success",
@@ -736,16 +771,17 @@ export function EvmBatchDistributorPage() {
         valueWei
       });
     }).catch((error) => {
-      if (!active) return;
+      if (controller.signal.aborted) return;
       setTokenBalanceLookup({
-        message: getEvmBalanceLookupErrorMessage(error),
+        message: isEvmRpcSyncPendingError(error) ? "自动重试后 RPC 仍未同步，请重试读取余额" : getEvmBalanceLookupErrorMessage(error),
         status: "error",
         valueWei: null
       });
     });
 
     return () => {
-      active = false;
+      controller.abort();
+      if (tokenBalanceReadRef.current === controller) tokenBalanceReadRef.current = null;
     };
   }, [balanceRefreshNonce, effectiveRpcEndpoint, minBalanceBlockNumber, selectedNetwork, tokenDetails, wallet.address, wallet.connected]);
 
@@ -847,10 +883,7 @@ export function EvmBatchDistributorPage() {
         result,
         status: "success"
       });
-      setNativeBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.nativeBalanceWei });
-      if (assetMode === "token") {
-        setTokenBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: result.assetBalanceWei });
-      }
+      publishPreflightBalances(result, assetMode);
     } catch (error) {
       if (preflightEpochRef.current !== preflightEpoch) return;
       setPreflightState({
@@ -947,10 +980,7 @@ export function EvmBatchDistributorPage() {
             result: freshPreflight,
             status: "success"
           });
-          setNativeBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: freshPreflight.nativeBalanceWei });
-          if (assetMode === "token") {
-            setTokenBalanceLookup({ message: "", status: "success", updatedAt: Date.now(), valueWei: freshPreflight.assetBalanceWei });
-          }
+          publishPreflightBalances(freshPreflight, assetMode);
 
           publishSendState({
             message: `请在 EVM 钱包中确认 ${selectedNetwork.label} ${assetSymbol} 分发交易`,
@@ -1361,6 +1391,7 @@ export function EvmBatchDistributorPage() {
                     ) : <strong>{nativeBalanceDescription || nativeBalance}</strong>}</div>
                   </div>
                   <BalanceReadTime state={nativeBalanceLookup} />
+                  {nativeBalanceLookup.status === "syncing" ? <p className="field-hint" role="status">{nativeBalanceLookup.message}</p> : null}
                   {nativeBalanceLookup.status === "error" ? (
                     <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
                       <Button onClick={() => setBalanceRefreshNonce((value) => value + 1)} type="button" variant="outline">重试读取</Button>
@@ -1396,6 +1427,7 @@ export function EvmBatchDistributorPage() {
                     </div>
                   ) : null}
                   {tokenDetails ? <BalanceReadTime state={tokenBalanceLookup} /> : null}
+                  {tokenDetails && tokenBalanceLookup.status === "syncing" ? <p className="field-hint" role="status">{tokenBalanceLookup.message}</p> : null}
                   {tokenLookup.status === "error" ? (
                     <Button onClick={() => setTokenLookupRefreshNonce((value) => value + 1)} type="button" variant="outline">重新识别</Button>
                   ) : null}

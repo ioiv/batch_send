@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { inspectNftContract, type NftContractInspectionClient } from "./nft-contract-inspection";
+import { createNftContractMetadataReader, inspectNftContract, readNftContractMetadata, type NftContractInspectionClient } from "./nft-contract-inspection";
 
 const contract = "0xD982d8F175BD50B976F4Ad90562c9e38200091f9";
 
@@ -59,6 +59,46 @@ describe("inspectNftContract", () => {
 
     const result = await inspectNftContract({ contractAddress: contract, publicClient: client });
     expect(result).toMatchObject({ enumerable: false, name: "", standard: "erc1155", symbol: "" });
+  });
+
+  it("uses the same cleaned display metadata for inspection and cached scan reads", async () => {
+    const client = createClient();
+    client.readContract.mockImplementation(async ({ functionName, args }: { functionName: string; args?: readonly string[] }) => {
+      if (functionName === "name") return "  Example\u0000 Collectibles  ";
+      if (functionName === "symbol") return "  EXNFT  ";
+      return args?.[0] === "0x01ffc9a7" || args?.[0] === "0x80ac58cd";
+    });
+    const inspection = await inspectNftContract({ contractAddress: contract, publicClient: client });
+    const readMetadata = createNftContractMetadataReader(client);
+    const [first, second] = await Promise.all([readMetadata(contract), readMetadata(contract.toLowerCase() as typeof contract)]);
+
+    expect(first).toMatchObject({ name: inspection.name, symbol: inspection.symbol, decimals: 0 });
+    expect(first).toBe(second);
+    const nameRequests = client.readContract.mock.calls.map(([request]) => request).filter(request => request.functionName === "name");
+    expect(nameRequests).toHaveLength(2);
+    expect(nameRequests[0].blockNumber).toBe(38_000_000n);
+    expect(nameRequests[1].blockNumber).toBeUndefined();
+  });
+
+  it("retains an available name when the optional symbol is absent", async () => {
+    const client = createClient();
+    client.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "name") return "Example Collectibles";
+      throw new Error("symbol not implemented");
+    });
+    expect(await readNftContractMetadata({ contractAddress: contract, publicClient: client })).toMatchObject({
+      name: "Example Collectibles", symbol: ""
+    });
+  });
+
+  it("keeps scan caches scoped to their client instead of mixing networks", async () => {
+    const firstClient = createClient();
+    const secondClient = createClient();
+    secondClient.readContract.mockResolvedValue("Different Network");
+    const first = await createNftContractMetadataReader(firstClient)(contract);
+    const second = await createNftContractMetadataReader(secondClient)(contract);
+    expect(first.name).toBe("Inference Angels");
+    expect(second.name).toBe("Different Network");
   });
 
   it("rejects an ambiguous contract instead of guessing a transfer standard", async () => {

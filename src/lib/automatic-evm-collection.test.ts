@@ -4,10 +4,12 @@ import { prepareAutomaticEvmCollection } from './automatic-evm-collection';
 import type { EvmCollectionPlanItem } from './evm-collection';
 import { executeAutomaticCollection } from './collection-orchestrator';
 import { createCollectionResultsCsv, type CollectionDisplayResult } from './collection-results';
+import { inspectNftContract } from './nft-contract-inspection';
 
-const mocks = vi.hoisted(() => ({ inventory: vi.fn(), plan: vi.fn(), execute: vi.fn(), network: vi.fn(), send: vi.fn(), write: vi.fn() }));
+const mocks = vi.hoisted(() => ({ inventory: vi.fn(), plan: vi.fn(), execute: vi.fn(), network: vi.fn(), send: vi.fn(), write: vi.fn(),
+  publicClient: { getBalance: vi.fn(), getBlockNumber: vi.fn(), readContract: vi.fn() } }));
 vi.mock('viem', async original => ({ ...await original<typeof import('viem')>(), createWalletClient: () => ({ sendTransaction: mocks.send, writeContract: mocks.write }) }));
-vi.mock('./evm', async original => ({ ...await original<typeof import('./evm')>(), createEvmPublicClient: () => ({}), assertEvmRpcNetwork: mocks.network }));
+vi.mock('./evm', async original => ({ ...await original<typeof import('./evm')>(), createEvmPublicClient: () => mocks.publicClient, assertEvmRpcNetwork: mocks.network }));
 vi.mock('./evm-wallet-inventory', async original => ({ ...await original<typeof import('./evm-wallet-inventory')>(), discoverEvmWalletInventory: mocks.inventory }));
 vi.mock('./evm-collection', async original => ({ ...await original<typeof import('./evm-collection')>(), parseEvmPrivateKeyInput: () => ({ accounts: [{ address: source, label: '来源', line: 1, account: { address: source } }], invalid: 0, issues: [] }), planEvmCollection: mocks.plan, executeEvmCollectionPlan: mocks.execute }));
 const source = '0x1111111111111111111111111111111111111111';
@@ -34,6 +36,31 @@ describe('automatic EVM collection adapter', () => {
     const onScanProgress = vi.fn();
     const wallets = await prepareAutomaticEvmCollection({ keys: 'test-only-placeholder', network, rpcEndpoint: network.rpcEndpoint, targetAddress: target, indexer: 'https://eth.blockscout.com', signal: new AbortController().signal, maxFeePerTransactionWei: 1n, onScanProgress });
     expect(onScanProgress).toHaveBeenCalledWith({ completed: 1, total: 1, wallet: wallets[0] });
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+  it('shows the same contract name and symbol as manual confirmation and shares reads across token IDs', async () => {
+    const core = await vi.importActual<typeof import('./evm-collection')>('./evm-collection');
+    mocks.plan.mockImplementation(core.planEvmCollection);
+    mocks.inventory.mockResolvedValue({ assets: [nft, { ...nft, tokenId: nft.tokenId + 1n, key: 'nft:second-id' }], complete: true, issues: [] });
+    mocks.publicClient.getBalance.mockResolvedValue(0n);
+    mocks.publicClient.getBlockNumber.mockResolvedValue(100n);
+    mocks.publicClient.readContract.mockImplementation(async ({ functionName, args }) => {
+      if (functionName === 'name') return 'Example Collectibles';
+      if (functionName === 'symbol') return 'EXNFT';
+      if (functionName === 'ownerOf') return source;
+      return args?.[0] === '0x01ffc9a7' || args?.[0] === '0x80ac58cd';
+    });
+    const manual = await inspectNftContract({ contractAddress: nft.contractAddress, publicClient: mocks.publicClient as never });
+    mocks.publicClient.readContract.mockClear();
+
+    const [wallet] = await prepare(new AbortController().signal);
+    expect(wallet.tasks.filter(task => task.phase === 'nft').map(task => task.holding)).toEqual([
+      expect.objectContaining({ name: manual.name, symbol: manual.symbol, raw: 1n }),
+      expect.objectContaining({ name: manual.name, symbol: manual.symbol, raw: 1n })
+    ]);
+    expect(wallet.tasks[0].preview.asset).toBe(`ERC721 #${nft.tokenId}`);
+    expect(mocks.publicClient.readContract.mock.calls.filter(([request]) => request.functionName === 'name')).toHaveLength(1);
+    expect(mocks.publicClient.readContract.mock.calls.filter(([request]) => request.functionName === 'symbol')).toHaveLength(1);
     expect(mocks.execute).not.toHaveBeenCalled();
   });
   it('exports complete NFT identities through progress, shared ERC1155 hashes, skips and different networks', async () => {

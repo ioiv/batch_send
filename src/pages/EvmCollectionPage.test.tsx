@@ -329,7 +329,9 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
     await act(async () => finishReading(privateKey));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeEnabled());
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).not.toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "改为粘贴输入" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
     expect(screen.getByRole("button", { name: "继续导入钱包" })).toHaveTextContent("已导入 1 个钱包");
     expect(container.querySelector("#evm-collection-target")).toBeEnabled();

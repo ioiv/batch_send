@@ -844,47 +844,58 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
               私钥仅在当前页面内存中解析和签名。关闭或刷新页面后会清除。
             </DialogDescription>
           </DialogHeader>
-          <Field>
-            <div className="secret-import-draft-heading">
-              <FieldLabel htmlFor={`${mode}-secret-draft`}>粘贴私钥</FieldLabel>
-              <Badge
-                aria-live="polite"
-                data-status={draftLineCount > maximumSecretInputLines ? "error" : "ready"}
-                variant="outline"
-              >
-                {draftLineCount
-                  ? `${draftLineCount.toLocaleString("zh-CN")} / ${maximumSecretInputLines.toLocaleString("zh-CN")}`
-                  : `最多 ${maximumSecretInputLines.toLocaleString("zh-CN")} 个`}
-              </Badge>
-            </div>
-            <Textarea
-              autoCapitalize="none"
-              autoComplete="off"
-              className="secret-import-textarea"
+          <div hidden={fileStatus.kind === "success"}>
+            <Field>
+              <div className="secret-import-draft-heading">
+                <FieldLabel htmlFor={`${mode}-secret-draft`}>粘贴私钥</FieldLabel>
+                <Badge
+                  aria-live="polite"
+                  data-status={draftLineCount > maximumSecretInputLines ? "error" : "ready"}
+                  variant="outline"
+                >
+                  {draftLineCount
+                    ? `${draftLineCount.toLocaleString("zh-CN")} / ${maximumSecretInputLines.toLocaleString("zh-CN")}`
+                    : `最多 ${maximumSecretInputLines.toLocaleString("zh-CN")} 个`}
+                </Badge>
+              </div>
+              <Textarea
+                autoCapitalize="none"
+                autoComplete="off"
+                className="secret-import-textarea"
+                disabled={inputLocked}
+                data-1p-ignore="true"
+                data-bwignore="true"
+                id={`${mode}-secret-draft`}
+                maxLength={maximumSecretInputCharacters}
+                onInput={(event) => {
+                  workbookSheetsRef.current = [];
+                  setWorkbookSheetNames([]);
+                  setSelectedWorkbookSheet(0);
+                  analyzeDraft(event.currentTarget.value);
+                  setFileStatus({ kind: "idle", message: "" });
+                }}
+                placeholder={placeholder}
+                ref={assignDraftElement}
+                rows={8}
+                spellCheck={false}
+              />
+              {draftLineCount > maximumSecretInputLines ? (
+                <FieldError>超过 {maximumSecretInputLines.toLocaleString("zh-CN")} 行上限，请减少后再导入</FieldError>
+              ) : null}
+            </Field>
+          </div>
+          {fileStatus.kind === "success" ? <Field>
+            <FieldDescription>文件内容已识别，私钥及其他敏感列不会显示在输入框中。</FieldDescription>
+            <Button
               disabled={inputLocked}
-              data-1p-ignore="true"
-              data-bwignore="true"
-              id={`${mode}-secret-draft`}
-              maxLength={maximumSecretInputCharacters}
-              onInput={(event) => {
-                workbookSheetsRef.current = [];
-                setWorkbookSheetNames([]);
-                setSelectedWorkbookSheet(0);
-                analyzeDraft(event.currentTarget.value);
-                setFileStatus({ kind: "idle", message: "" });
+              onClick={() => {
+                resetDraft();
+                window.requestAnimationFrame(() => draftTextareaRef.current?.focus());
               }}
-              placeholder={placeholder}
-              ref={assignDraftElement}
-              rows={8}
-              spellCheck={false}
-            />
-            {draftLineCount > maximumSecretInputLines ? (
-              <FieldError>超过 {maximumSecretInputLines.toLocaleString("zh-CN")} 行上限，请减少后再导入</FieldError>
-            ) : null}
-            {fileStatus.kind === "success" ? (
-              <FieldDescription>文件内容已识别，私钥及其他敏感列不会显示在输入框中。直接粘贴会改为识别新内容。</FieldDescription>
-            ) : null}
-          </Field>
+              type="button"
+              variant="outline"
+            >改为粘贴输入</Button>
+          </Field> : null}
           <div className="secret-import-file-row">
             <Button disabled={inputLocked} onClick={() => fileInputRef.current?.click()} type="button" variant="outline">
               选择钱包文件

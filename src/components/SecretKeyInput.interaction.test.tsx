@@ -46,12 +46,13 @@ describe("Excel private-wallet import", () => {
     expect(dialog).toHaveTextContent("当前工作表：运营钱包。只导入当前工作表的内容。");
     expect(dialog.textContent).not.toContain(first);
     expect(dialog.textContent).not.toContain(second);
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
+    expect(within(dialog).queryByRole("textbox", { name: "粘贴私钥" })).not.toBeInTheDocument();
     expect(dialog.textContent).not.toContain("abandon ability");
     await user.selectOptions(select, "1");
     expect(within(dialog).getByLabelText("钱包导入预览")).toHaveTextContent(secondAddress);
     expect(within(dialog).getByLabelText("钱包导入预览")).not.toHaveTextContent(firstAddress);
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
     expect(ref.current!.read()).toBe("");
     await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
     expect(ref.current!.read()).toBe(second);
@@ -73,6 +74,9 @@ describe("Excel private-wallet import", () => {
     expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
     await user.selectOptions(select, "1");
     expect(screen.getByRole("button", { name: "确认导入" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "改为粘贴输入" }));
+    expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
     fireEvent.input(screen.getByRole("textbox", { name: "粘贴私钥" }), { target: { value: secret } });
     expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
   });
@@ -114,7 +118,7 @@ describe("Excel private-wallet import", () => {
     Object.defineProperty(textFile, "text", { value: async () => "bad" });
     await user.upload(fileInput, textFile);
     await screen.findByRole("alert");
-    expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(screen.getByLabelText("粘贴私钥")).toHaveValue("");
     expect(screen.queryByRole("combobox", { name: "Excel 工作表" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
   });
@@ -127,7 +131,7 @@ describe("Excel private-wallet import", () => {
     await user.click(screen.getByRole("button", { name: "导入钱包" }));
     await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, binaryWalletFile());
     await screen.findByRole("combobox", { name: "Excel 工作表" });
-    const draft = screen.getByRole("textbox", { name: "粘贴私钥" }) as HTMLTextAreaElement;
+    const draft = screen.getByLabelText("粘贴私钥") as HTMLTextAreaElement;
     expect(draft.value).toBe("");
     expect(screen.getByLabelText("钱包导入预览")).toHaveTextContent("有效钱包 1");
     if (action === "cancel") await user.click(screen.getByRole("button", { name: "取消" }));
@@ -156,7 +160,8 @@ describe("wallet file drop", () => {
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
     const dialog = await screen.findByRole("dialog", { name: "导入来源钱包" });
     await within(dialog).findByLabelText("钱包导入预览");
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
+    expect(within(dialog).queryByRole("textbox", { name: "粘贴私钥" })).not.toBeInTheDocument();
     expect(ref.current?.read()).toBe("");
     await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
     expect(ref.current?.read()).toBe(secret);
@@ -171,6 +176,41 @@ describe("wallet file drop", () => {
     fireEvent.drop(screen.getByRole("button", { name: "导入钱包" }), { dataTransfer: { files: [file] } });
     expect(screen.queryByRole("dialog", { name: "导入来源钱包" })).not.toBeInTheDocument();
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("file import paste layout", () => {
+  it.each(["evm", "solana"] as const)("collapses the empty paste field and can replace the file with pasted content (%s)", async (mode) => {
+    const user = userEvent.setup();
+    const ref = createRef<SecretKeyInputHandle>();
+    const first = mode === "evm" ? `0x${"44".repeat(32)}` : JSON.stringify(Array.from(Keypair.fromSeed(new Uint8Array(32).fill(44)).secretKey));
+    const second = mode === "evm" ? `0x${"45".repeat(32)}` : JSON.stringify(Array.from(Keypair.fromSeed(new Uint8Array(32).fill(45)).secretKey));
+    const file = new File([first], "wallets.txt", { type: "text/plain" });
+    Object.defineProperty(file, "text", { value: async () => first });
+    render(<SecretKeyInput mode={mode} ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    const draft = within(dialog).getByRole("textbox", { name: "粘贴私钥" });
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, file);
+    await within(dialog).findByLabelText("钱包导入预览");
+    expect(draft).toHaveValue("");
+    expect(draft).not.toBeVisible();
+    expect(within(dialog).getByText("wallets.txt · 已读取 1 条")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeEnabled();
+
+    await user.click(within(dialog).getByRole("button", { name: "改为粘贴输入" }));
+    await waitFor(() => expect(draft).toHaveFocus());
+    expect(draft).toBeVisible();
+    expect(draft).toHaveValue("");
+    expect(within(dialog).queryByLabelText("钱包导入预览")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("wallets.txt · 已读取 1 条")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
+    fireEvent.input(draft, { target: { value: second } });
+    await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
+    expect(ref.current!.read()).toBe(second);
+    await user.click(screen.getByRole("button", { name: "继续导入钱包" }));
+    expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
   });
 });
 
@@ -194,7 +234,7 @@ describe("private wallet file privacy", () => {
     const preview = await within(dialog).findByLabelText("钱包导入预览");
     expect(preview).toHaveTextContent(address);
     expect(preview).toHaveTextContent("问题 1");
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
     expect(dialog.outerHTML).not.toContain(secret);
     expect(dialog.outerHTML).not.toContain(mnemonic);
     expect(dialog.outerHTML).not.toContain(invalidSecret);
@@ -555,7 +595,7 @@ describe("smart private-wallet import preview", () => {
     expect(preview.textContent).not.toContain(first);
     expect(preview.textContent).not.toContain(second);
     expect(dialog.textContent).toContain("第 3 行 / 条");
-    expect(within(dialog).getByRole("textbox", { name: "粘贴私钥" })).toHaveValue("");
+    expect(within(dialog).getByLabelText("粘贴私钥")).toHaveValue("");
     expect(within(dialog).getByRole("button", { name: "确认导入" })).toBeDisabled();
     expect(ref.current!.read()).toBe("");
     await user.click(within(dialog).getByRole("checkbox", { name: /仅导入 1 个有效钱包/ }));

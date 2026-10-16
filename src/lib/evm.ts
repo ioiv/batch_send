@@ -15,6 +15,7 @@ import {
   type Hex
 } from "viem";
 import { rpcConfig } from "../config/rpc";
+import { EvmRpcSyncPendingError } from "./evm-rpc-sync";
 import type { EvmWalletProvider } from "../hooks/useEvmWallet";
 import { getDuplicateAddressKey } from "./address";
 import {
@@ -886,7 +887,7 @@ async function getBalanceReadBlock(publicClient: ReturnType<typeof createEvmPubl
   if (minBlockNumber === undefined) return undefined;
   const blockNumber = await publicClient.getBlockNumber({ cacheTime: 0 });
   if (blockNumber < minBlockNumber) {
-    throw new Error("RPC 尚未同步至交易确认区块，请稍后重试");
+    throw new EvmRpcSyncPendingError();
   }
   // Pin the read so a lagging RPC backend cannot return a pre-transaction balance as current.
   return blockNumber;

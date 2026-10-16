@@ -571,7 +571,7 @@ export function DistributionListGenerator({
                 setPendingImport(null);
                 setImportError("粘贴内容不能超过 512 KB，请拆分后重新导入；未修改当前清单");
               }}
-              placeholder="每行一个地址，或地址,金额\n也可以粘贴带表头的表格、钱包 JSON"
+              placeholder={"每行一个地址，或地址,金额\n也可以粘贴带表头的表格、钱包 JSON"}
               ref={importDraftRef}
               rows={6}
               spellCheck={false}

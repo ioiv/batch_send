@@ -28,6 +28,11 @@ import {
 } from "./evm-gas";
 import { resolveCollectionAmount, type CollectionAmountPolicy } from "./collection-amount";
 import type { CollectionPauseControl } from "./collection-execution";
+import {
+  createNftContractMetadataReader,
+  type NftContractMetadata,
+  type NftContractMetadataReader
+} from "./nft-contract-inspection";
 
 export type EvmCollectionStandard = "native" | "erc20" | "erc721" | "erc1155";
 
@@ -118,7 +123,7 @@ export type EvmCollectionPlanItem = {
   id: string;
   label: string;
   message: string;
-  metadata?: Erc20CollectionMetadata;
+  metadata?: Erc20CollectionMetadata | NftContractMetadata;
   /** For native transfers this is resolved only after the live network fee is known. */
   amountPolicy?: CollectionAmountPolicy;
   status: EvmCollectionPlanStatus;
@@ -832,11 +837,13 @@ async function planErc1155Asset(
 export async function planEvmCollection({
   accounts,
   assets,
-  publicClient
+  publicClient,
+  readNftMetadata = createNftContractMetadataReader(publicClient)
 }: {
   accounts: readonly EvmCollectionAccount[];
   assets: readonly EvmCollectionAsset[];
   publicClient: EvmCollectionPublicClient;
+  readNftMetadata?: NftContractMetadataReader;
 }): Promise<EvmCollectionPlanItem[]> {
   const plan: EvmCollectionPlanItem[] = [];
   for (const asset of assets) {
@@ -844,10 +851,14 @@ export async function planEvmCollection({
       plan.push(...await planNativeAsset(asset, accounts, publicClient));
     } else if (asset.standard === "erc20") {
       plan.push(...await planErc20Asset(asset, accounts, publicClient));
-    } else if (asset.standard === "erc721") {
-      plan.push(...await planErc721Asset(asset, accounts, publicClient));
     } else {
-      plan.push(...await planErc1155Asset(asset, accounts, publicClient));
+      const [items, metadata] = await Promise.all([
+        asset.standard === "erc721"
+          ? planErc721Asset(asset, accounts, publicClient)
+          : planErc1155Asset(asset, accounts, publicClient),
+        readNftMetadata(asset.contractAddress)
+      ]);
+      plan.push(...items.map((item) => ({ ...item, metadata })));
     }
   }
   return plan;

@@ -34,6 +34,15 @@ export type NftContractInspection = {
 
 export type NftContractInspectionClient = Pick<PublicClient, "getBlockNumber" | "readContract">;
 
+export type NftContractMetadata = {
+  contractAddress: Address;
+  decimals: 0;
+  name: string;
+  symbol: string;
+};
+
+export type NftContractMetadataReader = (contractAddress: Address) => Promise<NftContractMetadata>;
+
 function safeMessage(error: unknown, fallback: string) {
   const candidate = error && typeof error === "object"
     ? error as { message?: unknown; shortMessage?: unknown }
@@ -53,6 +62,42 @@ function safeMessage(error: unknown, fallback: string) {
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) : "";
+}
+
+/** Display metadata is optional for both NFT standards and never gates ownership checks. */
+export async function readNftContractMetadata({
+  contractAddress,
+  publicClient,
+  blockNumber
+}: {
+  contractAddress: Address;
+  publicClient: Pick<PublicClient, "readContract">;
+  blockNumber?: bigint;
+}): Promise<NftContractMetadata> {
+  const [nameResult, symbolResult] = await Promise.allSettled([
+    publicClient.readContract({ abi: inspectionAbi, address: contractAddress, blockNumber, functionName: "name" }),
+    publicClient.readContract({ abi: inspectionAbi, address: contractAddress, blockNumber, functionName: "symbol" })
+  ]);
+  return {
+    contractAddress,
+    decimals: 0,
+    name: nameResult.status === "fulfilled" ? cleanText(nameResult.value) : "",
+    symbol: symbolResult.status === "fulfilled" ? cleanText(symbolResult.value) : ""
+  };
+}
+
+/** Share contract reads within one scan, including concurrent wallets and multiple token IDs. */
+export function createNftContractMetadataReader(publicClient: Pick<PublicClient, "readContract">): NftContractMetadataReader {
+  const pending = new Map<string, Promise<NftContractMetadata>>();
+  return (contractAddress) => {
+    const key = contractAddress.toLowerCase();
+    let metadata = pending.get(key);
+    if (!metadata) {
+      metadata = readNftContractMetadata({ contractAddress, publicClient });
+      pending.set(key, metadata);
+    }
+    return metadata;
+  };
 }
 
 export async function inspectNftContract({
@@ -115,18 +160,15 @@ export async function inspectNftContract({
     issues.push("合约未声明 ERC721 或 ERC1155 接口");
   }
 
-  const [nameResult, symbolResult] = await Promise.allSettled([
-    publicClient.readContract({ abi: inspectionAbi, address, blockNumber: snapshotBlock, functionName: "name" }),
-    publicClient.readContract({ abi: inspectionAbi, address, blockNumber: snapshotBlock, functionName: "symbol" })
-  ]);
+  const metadata = await readNftContractMetadata({ contractAddress: address, publicClient, blockNumber: snapshotBlock });
 
   return {
     address,
     enumerable: standard === "erc721" && supportsEnumerable === true,
     issues,
-    name: nameResult.status === "fulfilled" ? cleanText(nameResult.value) : "",
+    name: metadata.name,
     snapshotBlock,
     standard,
-    symbol: symbolResult.status === "fulfilled" ? cleanText(symbolResult.value) : ""
+    symbol: metadata.symbol
   };
 }

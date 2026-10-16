@@ -34,6 +34,14 @@ function setup(initialAddresses = "") {
 }
 
 describe("recipient wallet import", () => {
+  it("shows a real newline in the address paste guidance", async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole("button", { name: "导入收款钱包" }));
+    const draft = screen.getByRole("textbox", { name: "粘贴地址或清单" });
+    expect(draft.getAttribute("placeholder")).toContain("地址,金额\n也可以");
+    expect(draft.getAttribute("placeholder")).not.toContain("\\n");
+  });
+
   it.each(["", " \r\n\t\r\n"])("explains empty file imports and preserves the current list (%j)", async (text) => {
     const { upload, result } = setup(one);
     const originalResult = result();
