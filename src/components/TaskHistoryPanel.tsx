@@ -27,12 +27,15 @@ export function TaskHistoryPanel({ history, network, rpcEndpoint, busy = false }
   return <section id="task-history-review" tabIndex={-1}><ReviewPanel className="task-history" title="可恢复任务记录" autoOpen={history.records.some(record => !record.acknowledgedAt && record.results.some(result => result.uncertain))} summary={`最近 ${history.records.length} 轮 · ${history.storageAvailable === false ? '浏览器存储不可用，仅当前页面可查看' : '刷新后仍可查看'}`}>
     <p className="hint">记录仅包含公开地址、金额和交易哈希。查询只读取链上结果，不会签名或重新发送。</p>
     <div className="task-history__list">{history.records.map(record => {
-      const counts = getCollectionResultCounts(record.results);
+      const distribution = record.toolId === "evm-distribution" || record.toolId === "sol-distribution";
+      const counts = getCollectionResultCounts(distribution ? record.results.filter(result => result.resultKind !== "approval") : record.results);
+      const approvals = record.results.filter(result => result.resultKind === "approval").length;
+      const allCounts = getCollectionResultCounts(record.results);
       const matching = network.kind === record.network.kind && network.id === record.network.id && network.chainId === record.network.chainId;
       return <div className="task-history__round" key={record.id}>
         <div className="task-history__description"><strong>{record.label} · {record.network.label}</strong>
-          <span>{new Date(record.createdAt).toLocaleString('zh-CN')} · 完成 {counts.success} · 失败 {counts.error} · 待核对 {counts.uncertain}</span>
-          {record.targetAddress ? <code>接收地址 {record.targetAddress}</code> : null}
+          <span>{new Date(record.createdAt).toLocaleString('zh-CN')} · 完成 {counts.success} · 失败 {allCounts.error} · 待核对 {allCounts.uncertain}{approvals ? ` · 授权 ${approvals}` : ""}</span>
+          {record.senderAddress && distribution ? <code>发送钱包 {record.senderAddress}</code> : record.targetAddress ? <code>接收地址 {record.targetAddress}</code> : null}
         </div>
         <div className="task-history__actions">
           <ExecutionLogDialog title={`${record.label} · ${record.network.label}`} triggerLabel="查看记录"><CollectionResults results={record.results} exportFilename={`${record.toolId}-${record.id}.csv`} /></ExecutionLogDialog>
@@ -40,8 +43,8 @@ export function TaskHistoryPanel({ history, network, rpcEndpoint, busy = false }
             title={matching ? '通过当前网络 RPC 查询交易回执' : `请先切换到 ${record.network.label}`}
             onClick={() => void refresh(record)}>{querying === record.id ? '查询中…' : '继续查询交易状态'}</Button> : null}
           {!matching ? <span className="hint">切换到 {record.network.label} 后可查询</span> : null}
-          {counts.uncertain && !record.acknowledgedAt ? <ConfirmActionDialog triggerLabel="已人工核对链上结果" triggerSize="sm" triggerVariant="outline" title="已核对这轮交易的链上结果？" description="确认你已通过钱包记录、交易哈希和收款地址核对结果；这不会重试或撤销交易。" confirmLabel="确认已核对" disabled={busy || Boolean(querying)} onConfirm={() => history.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() })} /> : null}
-          <ConfirmActionDialog triggerLabel="删除记录" triggerSize="sm" triggerVariant="ghost" title="删除这轮任务记录？" description="删除浏览器中的公开记录，链上交易不受影响。" confirmLabel="删除记录" disabled={busy || Boolean(querying) || Boolean(counts.uncertain && !record.acknowledgedAt)} onConfirm={() => history.deleteRecord(record.id)} />
+          {allCounts.uncertain && !record.acknowledgedAt ? <ConfirmActionDialog triggerLabel="已人工核对链上结果" triggerSize="sm" triggerVariant="outline" title="已核对这轮交易的链上结果？" description="确认你已通过钱包记录、交易哈希和收款地址核对结果；这不会重试或撤销交易。" confirmLabel="确认已核对" disabled={busy || Boolean(querying)} onConfirm={() => history.updateRecord({ ...record, acknowledgedAt: new Date().toISOString() })} /> : null}
+          <ConfirmActionDialog triggerLabel="删除记录" triggerSize="sm" triggerVariant="ghost" title="删除这轮任务记录？" description="删除浏览器中的公开记录，链上交易不受影响。" confirmLabel="删除记录" disabled={busy || Boolean(querying) || Boolean(allCounts.uncertain && !record.acknowledgedAt)} onConfirm={() => history.deleteRecord(record.id)} />
         </div>
         {notice?.id === record.id ? <p className="hint" role="status">{notice.text}</p> : null}
       </div>;

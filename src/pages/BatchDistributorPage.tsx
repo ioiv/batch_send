@@ -107,7 +107,7 @@ function transactionStatusLabel(status: SolanaDistributionTransaction["status"])
 
 function solanaHistoryResults(transactions: SolanaDistributionTransaction[], networkId: SolanaNetworkId, sender?: string): CollectionDisplayResult[] {
   return transactions.flatMap((transaction) => transaction.rows.map((row) => ({
-    address: row.address,
+    address: row.address, resultKind: "distribution",
     chainId: `solana:${networkId}`, networkId, sourceAddress: sender, targetAddress: row.address, tokenStandard: "native",
     amount: row.amountRaw,
     asset: "SOL",

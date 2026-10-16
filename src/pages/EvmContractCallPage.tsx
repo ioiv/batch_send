@@ -13,7 +13,7 @@ import { SecretKeyInput, SourceWalletHelp, type SecretKeyInputHandle, type Walle
 import { ToolPageLayout, type WorkbenchStatus } from "../components/ToolPageLayout";
 import { ActionBar, AdvancedSettings, ExecutionProgress, WorkbenchPanel, WorkbenchSection, WorkbenchSummary } from "../components/WorkbenchPrimitives";
 import { EvmContractCallResults } from "../components/EvmContractCallResults";
-import { focusWorkflowField } from "../components/WorkflowFeedback";
+import { focusWorkflowField, WorkflowFeedback } from "../components/WorkflowFeedback";
 import { getEvmDistributionNetworks, getPreferredEvmDistributionNetwork } from "../lib/evm";
 import {
   disposeEvmContractCallBatch, executeEvmContractCallBatch, fillEvmCalldataTemplate,
@@ -48,6 +48,24 @@ function issueTarget(message: string) {
   if (/随机数|随机整数/.test(message)) return "contract-call-id-min";
   if (/金额/.test(message)) return "contract-call-amount";
   return "contract-call-rpc";
+}
+
+function issueSummary(target: string) {
+  const labels: Record<string, string> = {
+    "source-wallet-import": "来源钱包",
+    "contract-call-to": "合约地址",
+    "contract-call-data": "调用数据",
+    "contract-call-rpc": "RPC 节点",
+    "contract-call-amount": "附带金额",
+    "contract-call-amount-min": "附带金额",
+    "contract-call-id-min": "随机整数范围",
+    "contract-call-concurrency": "同时执行钱包数",
+    "contract-call-delay-min": "任务间隔",
+    "contract-call-gas-limit": "Gas Limit",
+    "contract-call-gas-price": "Gas Price"
+  };
+  const label = labels[target] || "调用设置";
+  return `请修正${/^[a-z]/i.test(label) ? " " : ""}${label}`;
 }
 
 function formatAmount(wei: bigint) {
@@ -174,6 +192,7 @@ export function EvmContractCallPage() {
     let target = issueTarget(message);
     if (target === "contract-call-amount" && amountMode === "random") target = "contract-call-amount-min";
     if (!editing) { setNotice(message); return; }
+    if (target === "source-wallet-import") setWalletCompact(false);
     setIssue({ message, target });
     focusWorkflowField(target);
   };
@@ -306,7 +325,7 @@ export function EvmContractCallPage() {
       <div hidden={!editing}>
         <WorkbenchPanel segmented title="调用设置" footer={<ActionBar
           summary={<WorkbenchSummary items={[{ label: "已选钱包", value: walletCount }, { label: "网络", value: selectedNetwork ? `${selectedNetwork.label} · ${selectedNetwork.chainId}` : "自动识别" }]} />}
-          feedback={issue ? <p className="contract-call-notice contract-call-notice--error" role="status">{issue.message}</p> : checking ? <p className="contract-call-notice" role="status">正在检查网络与目标合约…</p> : writingBlocked ? <p className="contract-call-notice" role="status">上一轮有交易待核对，请先查看上一轮结果。</p> : undefined}
+          feedback={issue ? <WorkflowFeedback requirement={{ message: issueSummary(issue.target), targetId: issue.target, actionLabel: "定位问题" }} /> : checking ? <p className="contract-call-notice" role="status">正在检查网络与目标合约…</p> : writingBlocked ? <p className="contract-call-notice" role="status">上一轮有交易待核对，请先查看上一轮结果。</p> : undefined}
         >
           {checking ? <Button type="button" variant="outline" onClick={invalidate}>取消检查</Button> : null}
           {lastRound ? <Button type="button" variant="outline" disabled={locked || checking} onClick={() => { setRows(lastRound.rows); resultConfig.current = lastRound.config; setResultNetwork(lastRound.network); setEditing(false); setReady(false); setNotice(""); focusResults(); }}>查看上一轮结果</Button> : null}

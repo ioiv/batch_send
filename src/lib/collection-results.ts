@@ -12,6 +12,11 @@ export type CollectionDisplayResult = {
   chainId?: number | string;
   networkId?: string;
   sourceAddress?: string;
+  /** The address field is a recipient for distribution, a sender for collection. */
+  resultKind?: "collection" | "distribution" | "approval";
+  /** Actual transaction destination, separate from the asset contract and recipient. */
+  executionContractAddress?: string;
+  spenderAddress?: string;
   targetAddress?: string;
   contractAddress?: string;
   tokenStandard?: string;
@@ -104,6 +109,10 @@ export function filterCollectionResults(
 
     return [
       result.address,
+      result.sourceAddress,
+      result.targetAddress,
+      result.executionContractAddress,
+      result.spenderAddress,
       result.amount,
       result.asset,
       result.hash,
@@ -142,6 +151,10 @@ export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
   ]);
 
   if (includePhase) { header.push("phase"); rows.forEach((row, index) => row.push(results[index].phase || "")); }
+  if (results.some(result => result.resultKind || result.executionContractAddress || result.spenderAddress)) {
+    header.push("result_kind", "execution_contract_address", "spender_address");
+    rows.forEach((row, index) => row.push(results[index].resultKind || "", results[index].executionContractAddress || "", results[index].spenderAddress || ""));
+  }
   return [header, ...rows]
     .map((row) => row.map((cell) => escapeCsvCell(cell)).join(","))
     .join("\r\n");

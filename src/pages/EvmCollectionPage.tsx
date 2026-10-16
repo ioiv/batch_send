@@ -23,6 +23,7 @@ import { HelpTooltip } from "../components/HelpTooltip";
 import { EvmGasBadge, EvmGasSettings } from "../components/EvmGasControl";
 import { CollectionResults } from "../components/CollectionResults";
 import { CollectionAssetReview, type CollectionAssetReviewItem } from "../components/CollectionAssetReview";
+import { CopyButton } from "../components/CopyButton";
 import { NftAssetInput } from "../components/NftAssetInput";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import {
@@ -1839,6 +1840,7 @@ export function EvmCollectionPage({
           sourceAddress: item.address || "地址未知",
           sourceLabel: item.label,
           standard: item.asset.standard === "native" ? "原生币" : item.asset.standard,
+          status: item.status,
           symbol: item.asset.standard === "native" ? selectedNetwork.nativeCurrency.symbol : item.metadata?.symbol || inspection?.symbol,
           tokenId: "tokenId" in item.asset ? item.asset.tokenId.toString() : undefined
         };
@@ -2217,37 +2219,42 @@ export function EvmCollectionPage({
               triggerSize="lg"
               confirmLabel="确认并开始归集"
               confirmDisabled={confirmationPreview.status !== "ready"}
+              contentClassName="collection-confirm-dialog"
               onOpenChange={(open) => {
                 if (open) void readConfirmationPreview();
                 else confirmationRequestRef.current += 1;
               }}
               description={(
-                <div className="summary-list">
-                  <div><span>网络</span><strong>{selectedNetwork.label}</strong></div>
-                  <div><span>目标地址</span><strong className="mono">{targetAddress || "—"}</strong></div>
-                  <div><span>来源钱包</span><strong>{sourceKeyLineCount} 个已选择</strong></div>
-                  <div>
-                    <span>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</span>
-                    <strong>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</strong>
-                  </div>
-                  <div><span>归集数量</span><strong>{amountSummary}</strong></div>
-                  <div><span>配置总量</span><strong>{plannedTotal}</strong></div>
-                  <div role="status">{confirmationPreview.message}</div>
-                  {confirmationPreview.readAt ? <div><span>{standard === "native" ? "余额读取时间" : "估计数量读取时间"}</span><strong>{confirmationPreview.readAt}</strong></div> : null}
+                <div className="collection-confirmation">
+                  <dl className="collection-confirmation__context">
+                    <div><dt>网络</dt><dd>{selectedNetwork.label}</dd></div>
+                    <div><dt>来源钱包</dt><dd>{sourceKeyLineCount} 个已选择</dd></div>
+                    <div className="collection-confirmation__target"><dt>目标地址</dt><dd><code>{targetAddress || "—"}</code>{targetAddress ? <CopyButton label="复制目标地址" value={targetAddress} /> : null}</dd></div>
+                  </dl>
+                  <div className="collection-confirmation__status" role="status">{confirmationPreview.message}</div>
                   {confirmationPreview.items.length ? <CollectionAssetReview items={confirmationPreview.items} /> : null}
                   {confirmationPreview.status === "error" ? <Button onClick={() => void readConfirmationPreview()} type="button" variant="outline">重新读取估计数量</Button> : null}
-                  {configuredTokenTotals.length ? <section aria-label="各 Token 配置合计" className="summary-list max-h-40 overflow-y-auto">
-                    {configuredTokenTotals.map((total) => <div key={total.key}><span>{total.label}</span><strong>{total.amount}</strong></div>)}
-                  </section> : null}
-                  <div><span>并发</span><strong>{concurrency}</strong></div>
-                  <div><span>随机延迟</span><strong>{minimumDelay}–{maximumDelay} 秒</strong></div>
-                  <div><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></div>
+                  {confirmationPreview.readAt ? <p className="collection-confirmation__read-at"><span>{standard === "native" ? "余额读取时间" : "估计数量读取时间"}</span> <time>{confirmationPreview.readAt}</time></p> : null}
+                  <details className="collection-confirmation__settings">
+                    <summary>归集规则与费用保护</summary>
+                    <dl className="collection-confirmation__context">
+                      <div><dt>{fixedStandard === "nft" ? "已识别持仓" : "资产项"}</dt><dd>{fixedStandard === "nft" ? `${parsedAssetCount} 个 Token ID` : parsedAssetCount}</dd></div>
+                      <div><dt>归集数量</dt><dd>{amountSummary}</dd></div>
+                      <div><dt>配置总量</dt><dd>{plannedTotal}</dd></div>
+                      <div><dt>并发</dt><dd>{concurrency}</dd></div>
+                      <div><dt>随机延迟</dt><dd>{minimumDelay}–{maximumDelay} 秒</dd></div>
+                    </dl>
+                    {configuredTokenTotals.length ? <section aria-label="各 Token 配置合计" className="summary-list">
+                      {configuredTokenTotals.map((total) => <div key={total.key}><span>{total.label}</span><strong>{total.amount}</strong></div>)}
+                    </section> : null}
+                  </details>
+                  <p className="collection-confirmation__fee"><span>单笔最高网络费</span><strong>{maxFeeAmount} {selectedNetwork.nativeCurrency.symbol}</strong></p>
                   <p className="text-muted-foreground">实际发送数量以提交前的余额和费用检查为准。</p>
                 </div>
               )}
               disabled={!canStart}
               onConfirm={() => executeCollection()}
-              title="确认 EVM 归集？"
+              title={fixedStandard === "nft" ? "确认 NFT 归集？" : "确认代币归集？"}
               triggerLabel="确认并开始归集"
             />
           )}

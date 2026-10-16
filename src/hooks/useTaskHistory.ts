@@ -24,10 +24,14 @@ export function useTaskHistory({ toolId, label, network, targetAddress, results,
     // A receipt queried in the history panel must survive a later pagehide with
     // the workbench's older "confirming" snapshot for the same transaction.
     const merged = snapshot.map(result => {
-      const confirmed = result.hash && previous?.results.find(item => item.hash === result.hash && item.address === result.address && item.asset === result.asset
-        && (item.status === 'success' || item.status === 'error' && item.uncertain === false));
+      const previousResult = result.hash && previous?.results.find(item => item.hash === result.hash && item.address === result.address && item.asset === result.asset && item.assetKey === result.assetKey);
+      const enriched = previousResult ? { ...result, sourceAddress: result.sourceAddress || previousResult.sourceAddress,
+        targetAddress: result.targetAddress || previousResult.targetAddress, resultKind: result.resultKind || previousResult.resultKind,
+        executionContractAddress: result.executionContractAddress || previousResult.executionContractAddress,
+        spenderAddress: result.spenderAddress || previousResult.spenderAddress } : result;
+      const confirmed = previousResult && (previousResult.status === 'success' || previousResult.status === 'error' && previousResult.uncertain === false) ? previousResult : undefined;
       return confirmed && (result.uncertain || result.status === 'confirming')
-        ? { ...result, status: confirmed.status, uncertain: false, message: confirmed.message } : result;
+        ? { ...enriched, status: confirmed.status, uncertain: false, message: confirmed.message } : enriched;
     });
     const newSubmission = merged.some((result, index) => {
       if (!result.uncertain && !['submitting', 'confirming'].includes(result.status)) return false;
@@ -93,9 +97,15 @@ export function useTaskHistory({ toolId, label, network, targetAddress, results,
           // update the receipt for an identical hash, preserving new hashes/rows.
           const incoming = item.hash && safe.results.find(candidate => candidate.hash === item.hash && candidate.address === item.address && candidate.asset === item.asset && candidate.assetKey === item.assetKey);
           if (!incoming) return item;
-          if (incoming.status === 'success' || incoming.status === 'error' && incoming.uncertain === false) return incoming;
-          if (item.status === 'success' || item.status === 'error' && item.uncertain === false) return item;
-          return incoming;
+          // A transaction lookup may restore public context while its receipt is
+          // temporarily unavailable. Keep definitive status and existing context.
+          const publicContext = { sourceAddress: item.sourceAddress || incoming.sourceAddress,
+            targetAddress: item.targetAddress || incoming.targetAddress, resultKind: item.resultKind || incoming.resultKind,
+            executionContractAddress: item.executionContractAddress || incoming.executionContractAddress,
+            spenderAddress: item.spenderAddress || incoming.spenderAddress };
+          if (incoming.status === 'success' || incoming.status === 'error' && incoming.uncertain === false) return { ...incoming, ...publicContext };
+          if (item.status === 'success' || item.status === 'error' && item.uncertain === false) return { ...item, ...publicContext };
+          return { ...incoming, ...publicContext };
         }) } : safe;
       if (record.id === currentRef.current?.id) currentRef.current = merged;
       const saved = saveTaskRecord(merged); setStorageAvailable(saved);

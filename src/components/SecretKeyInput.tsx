@@ -913,7 +913,9 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
             </select>
             <FieldDescription>当前工作表：{workbookSheetNames[selectedWorkbookSheet]}。只导入当前工作表的内容。</FieldDescription>
           </Field> : null}
-          <FieldDescription>自动识别私钥、地址和备注列；支持 Excel 工作表、钱包 JSON 与 Solana 字节数组。助记词和加密 Keystore 请先转换为私钥。</FieldDescription>
+          <FieldDescription>{mode === "evm"
+            ? "支持 EVM 十六进制私钥；文件自动识别私钥、地址和备注列。"
+            : "支持 Solana Base58 私钥与 JSON 字节数组；文件自动识别私钥、地址和备注列。"}</FieldDescription>
           {fileStatus.kind === "error" ? (
             <CompactNotice summary={fileStatus.message} tone="error">{fileStatus.message}</CompactNotice>
           ) : null}
@@ -964,7 +966,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
           <div className="imported-wallet-search">
             <Input aria-label="搜索来源钱包" type="search" placeholder="搜索钱包地址或备注" value={walletQuery} onChange={event => setWalletQuery(event.target.value)} />
             <select aria-label="筛选来源钱包" value={walletFilter} onChange={event => setWalletFilter(event.target.value)}>
-              <option value="all">全部钱包</option><option value="selected">已选择</option><option value="zero">余额为零</option><option value="unread">尚未读取</option><option value="error">失败或待核对</option>
+              <option value="all">全部钱包</option><option value="selected">已选择</option><option value="zero">已查询资产余额均为零</option><option value="unread">尚未读取</option><option value="error">失败或待核对</option>
             </select>
             {walletQuery || walletFilter !== 'all' ? <><span className="hint">匹配 {filteredWallets.length} / {wallets.length}</span>
               <Button disabled={inputLocked || !filteredWallets.length} type="button" size="sm" variant="outline" onClick={() => {
@@ -980,10 +982,11 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
                 disabled={inputLocked || !zeroBalanceWalletIds.length}
                 onClick={selectZeroBalanceWallets}
                 size="sm"
+                title="按已读取的原生币及代币/NFT 余额筛选；未读取或扫描不完整不计入。"
                 type="button"
                 variant="ghost"
               >
-                选中余额为零{balancesKnown ? ` (${zeroBalanceWalletIds.length})` : ""}
+                选中已查询资产余额均为零{balancesKnown ? ` (${zeroBalanceWalletIds.length})` : ""}
               </Button>
               <ConfirmActionDialog
                 confirmLabel={`删除 ${selectedIds.size} 个钱包`}

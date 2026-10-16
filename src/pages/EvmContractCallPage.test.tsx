@@ -218,15 +218,27 @@ describe("EVM contract call workbench", () => {
     expect(row).toContain(addresses[0]);
   });
 
-  it("locates invalid calldata before making a target-check request", async () => {
+  it("shows calldata errors once, links the concise summary and clears both after correction", async () => {
     const user = await setupPage(1);
     const template = screen.getByRole("textbox", { name: "调用数据" });
     fireEvent.change(template, { target: { value: "0x123" } });
     await user.click(reviewButton());
     expect(template).toHaveAttribute("aria-invalid", "true");
+    const detail = "calldata 必须是 0x 开头、完整字节的十六进制；仅支持 {address}、{random}、{randomId}（兼容 {randowId}）";
+    expect(screen.getAllByText(detail)).toHaveLength(1);
+    expect(template).toHaveAccessibleDescription(detail);
+    expect(screen.getByText("请修正调用数据")).toHaveAttribute("role", "status");
+    await user.click(screen.getByRole("button", { name: "定位问题" }));
+    await waitFor(() => expect(template).toHaveFocus());
     expect(core.inspect).not.toHaveBeenCalled();
     expect(core.prepare).not.toHaveBeenCalled();
     expect(core.execute).not.toHaveBeenCalled();
+    fireEvent.change(template, { target: { value: "0x1234" } });
+    expect(template).toHaveAttribute("aria-invalid", "false");
+    expect(template).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText(detail)).not.toBeInTheDocument();
+    expect(screen.queryByText("请修正调用数据")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "定位问题" })).not.toBeInTheDocument();
   });
 
   it("keeps wallets when returning to edit and discards the old plan before reviewing changed selections", async () => {
@@ -290,7 +302,8 @@ describe("EVM contract call workbench", () => {
     const user = await setupPage(1);
     core.inspect.mockRejectedValue(new Error(`节点不可用 ${rpcEndpoint} signer=${secrets[0]}`));
     await user.click(reviewButton());
-    await waitFor(() => expect(screen.getAllByText("节点不可用 [RPC 已隐藏] signer=[敏感数据已隐藏]").some(element => element.getAttribute("role") === "status")).toBe(true));
+    expect(await screen.findByText("节点不可用 [RPC 已隐藏] signer=[敏感数据已隐藏]")).toHaveAttribute("role", "alert");
+    expect(screen.getByText("请修正 RPC 节点")).toHaveAttribute("role", "status");
     expect(document.body.textContent).not.toContain(secrets[0]);
     expect(document.body.textContent).not.toContain(rpcEndpoint);
     expect(reviewButton()).toBeEnabled();

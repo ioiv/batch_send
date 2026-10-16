@@ -495,7 +495,7 @@ describe("SolCollectionPage workbench", () => {
     expect(walletCheckbox).not.toBeChecked();
     expect(screen.getByLabelText(balanceLabel)).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    await user.click(screen.getByRole("button", { name: "选中已查询资产余额均为零 (1)" }));
     expect(walletCheckbox).toBeChecked();
     expect(screen.getByLabelText(balanceLabel)).toBeVisible();
   });

@@ -260,6 +260,7 @@ export function ConfirmActionDialog({
   cancelLabel = "取消",
   confirmLabel,
   confirmDisabled = false,
+  contentClassName,
   description,
   disabled = false,
   hideTrigger = false,
@@ -277,6 +278,7 @@ export function ConfirmActionDialog({
   cancelLabel?: string;
   confirmLabel: string;
   confirmDisabled?: boolean;
+  contentClassName?: string;
   description: ReactNode;
   disabled?: boolean;
   hideTrigger?: boolean;
@@ -315,7 +317,7 @@ export function ConfirmActionDialog({
       >
         {triggerLabel}
       </AlertDialogTrigger> : null}
-      <AlertDialogContent finalFocus={returnFocusId ? () => document.getElementById(returnFocusId) : undefined}>
+      <AlertDialogContent className={contentClassName} finalFocus={returnFocusId ? () => document.getElementById(returnFocusId) : undefined}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription className="confirm-action-description" render={<div />}>{description}</AlertDialogDescription>

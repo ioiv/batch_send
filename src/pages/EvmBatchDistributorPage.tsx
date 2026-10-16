@@ -130,7 +130,7 @@ function isEvmWalletCancellation(error: unknown): boolean {
     || Boolean(candidate.cause && candidate.cause !== error && isEvmWalletCancellation(candidate.cause));
 }
 
-function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, assetMode, assetSymbol, rows, tokenAddress, network, sender }: {
+export function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, assetMode, assetSymbol, rows, tokenAddress, network, sender }: {
   state: DistributionSendState; approvalOnlyConfirmed: boolean; submissionUncertain: boolean;
   assetMode: EvmAssetMode; assetSymbol: string; rows: EvmDistributionRow[]; tokenAddress?: string;
   network: EvmNetworkConfig; sender: string;
@@ -143,7 +143,8 @@ function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, 
   const unresolvedSubmission = sendFailed && (submissionUncertain || state.signatures.length > 0 && !approvalOnlyConfirmed);
   const signingMaySubmit = state.status === "confirming" || state.status === "awaiting-wallet" && (!hasApproval || state.progress.confirmed >= 1);
   const recipients: CollectionDisplayResult[] = rows.map((row) => ({
-    address: row.address, amount: row.amountRaw, asset: assetSymbol, assetKey: tokenAddress,
+    address: row.address, resultKind: "distribution", executionContractAddress: network.disperseContractAddress,
+    amount: row.amountRaw, asset: assetSymbol, assetKey: tokenAddress,
     chainId: network.chainId, networkId: network.id, sourceAddress: sender || undefined, targetAddress: row.address,
     contractAddress: assetMode === "token" ? tokenAddress : undefined, tokenStandard: assetMode === "token" ? "erc20" : "native",
     explorerUrl: distributionHash ? getEvmExplorerUrl(distributionHash, network) || undefined : undefined,
@@ -154,8 +155,9 @@ function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, 
     uncertain: unresolvedSubmission || signingMaySubmit
   }));
   if (hasApproval && state.signatures[0]) recipients.unshift({
-    address: sender, asset: assetSymbol, assetKey: tokenAddress,
-    chainId: network.chainId, networkId: network.id, sourceAddress: sender || undefined, targetAddress: network.disperseContractAddress,
+    address: sender, resultKind: "approval", executionContractAddress: tokenAddress, spenderAddress: network.disperseContractAddress,
+    asset: assetSymbol, assetKey: tokenAddress,
+    chainId: network.chainId, networkId: network.id, sourceAddress: sender || undefined,
     contractAddress: tokenAddress, tokenStandard: "erc20",
     explorerUrl: getEvmExplorerUrl(state.signatures[0], network) || undefined,
     hash: state.signatures[0], label: "Token 授权",

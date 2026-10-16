@@ -145,4 +145,51 @@ describe("CollectionResults", () => {
     await user.click(dialog.getByRole("button", { name: "复制合约地址" }));
     expect(copyText).toHaveBeenCalledWith(contractAddress);
   });
+  it('shows one distribution sender, three recipients and a separate approval with correct direction in details', async () => {
+    const user = userEvent.setup();
+    const sender = `0x${'4'.repeat(40)}`; const execution = `0x${'5'.repeat(40)}`; const token = `0x${'6'.repeat(40)}`;
+    const distribution: CollectionDisplayResult[] = [
+      { address: sender, sourceAddress: sender, resultKind: 'approval', executionContractAddress: token, spenderAddress: execution, asset: 'TKN', label: 'Token 授权', message: '授权已确认', status: 'success' },
+      ...results.map((result, index) => ({ ...result, resultKind: 'distribution' as const, sourceAddress: sender, targetAddress: result.address, executionContractAddress: execution, status: 'success' as const, label: `收款人 ${index + 1}` }))
+    ];
+    render(<CollectionResults exportFilename="distribution.csv" results={distribution} />);
+    const metrics = within(screen.getByLabelText('分发执行统计'));
+    const metric = (label: string) => metrics.getByText(label).parentElement;
+    expect(metric('发送钱包')).toHaveTextContent('1');
+    expect(metric('收款地址')).toHaveTextContent('3');
+    expect(metric('分发项')).toHaveTextContent('3');
+    expect(metric('完成')).toHaveTextContent('3');
+    expect(metric('授权')).toHaveTextContent('1');
+    expect(screen.queryByLabelText('归集目标摘要')).not.toBeInTheDocument();
+    const summary = screen.getByLabelText('分发方向摘要');
+    expect(summary).toHaveTextContent(sender); expect(summary).toHaveTextContent(execution);
+    await user.click(screen.getByRole('button', { name: '查看收款人 1的详情' }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText('发送钱包').parentElement).toHaveTextContent(sender);
+    expect(dialog.getByText('收款地址').parentElement).toHaveTextContent(results[0].address);
+    expect(dialog.getByText('执行合约').parentElement).toHaveTextContent(execution);
+  });
+  it('does not count or display an unknown distribution sender as a recipient', async () => {
+    const user = userEvent.setup();
+    render(<CollectionResults exportFilename="distribution.csv" results={[{ ...results[0], resultKind: 'distribution', targetAddress: results[0].address }]} />);
+    expect(getCollectionResultSourceCount([{ ...results[0], resultKind: 'distribution' }])).toBe(0);
+    expect(screen.getByLabelText('分发方向摘要')).toHaveTextContent('发送钱包未记录');
+    await user.click(screen.getByRole('button', { name: '查看收款人 1的详情' }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText('发送钱包').parentElement).toHaveTextContent('未记录，需查询链上交易核对');
+    expect(dialog.getByText('收款地址').parentElement).toHaveTextContent(results[0].address);
+  });
+
+  it('keeps an uncertain approval visible in review counts when distribution was not submitted', () => {
+    render(<CollectionResults exportFilename="distribution.csv" results={[
+      { ...results[0], resultKind: 'approval', sourceAddress: results[0].address, label: 'Token 授权', hash: transactionHash, status: 'error', uncertain: true },
+      { ...results[1], resultKind: 'distribution', targetAddress: results[1].address, status: 'skipped', uncertain: false }
+    ]} />);
+    const metrics = within(screen.getByLabelText('分发执行统计'));
+    expect(metrics.getByText('完成').parentElement).toHaveTextContent('0');
+    expect(metrics.getByText('待核对').parentElement).toHaveTextContent('1');
+    expect(metrics.getByText('授权').parentElement).toHaveTextContent('1');
+    expect(screen.getByRole('table', { name: '分发结果' })).toHaveTextContent('待核对');
+  });
+
 });

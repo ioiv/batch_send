@@ -63,11 +63,14 @@ vi.mock("../lib/evm", async (importOriginal) => {
 
 import {
   EvmBatchDistributorPage,
+  evmHistoryResults,
   getEvmDistributionSafetyState,
   runEvmDistributionSigningGate
 } from "./EvmBatchDistributorPage";
 import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
 import { EvmRpcSyncPendingError } from "../lib/evm-rpc-sync";
+import { evmNetworks, parseEvmDistribution } from "../lib/evm";
+import { createSendProgress, initialSendState } from "../lib/solana";
 
 const recipient = "0x00000000000000000000000000000000000000b1";
 const secondRecipient = "0x00000000000000000000000000000000000000b2";
@@ -159,6 +162,20 @@ async function prepareReadyTokenDistributionPage() {
   await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
   return user;
 }
+
+describe("distribution result roles", () => {
+  it("captures sender, recipients, execution contract and approval spender as separate public roles", () => {
+    const network = evmNetworks[0];
+    const results = evmHistoryResults({ state: { ...initialSendState, status: "success", progress: createSendProgress(2, 2, 2, 2), signatures: [approvalHash, distributionHash] },
+      approvalOnlyConfirmed: false, submissionUncertain: false, assetMode: "token", assetSymbol: "MOCK", rows: parseEvmDistribution(`${recipient},1\n${secondRecipient},2`).validRows,
+      tokenAddress, network, sender: connectedAccount });
+    expect(results[0]).toMatchObject({ resultKind: "approval", sourceAddress: connectedAccount, spenderAddress: network.disperseContractAddress, executionContractAddress: tokenAddress });
+    expect(results[0].targetAddress).toBeUndefined();
+    expect(results.slice(1).map(result => [result.resultKind, result.sourceAddress, result.targetAddress, result.executionContractAddress])).toEqual([
+      ["distribution", connectedAccount, recipient, network.disperseContractAddress], ["distribution", connectedAccount, secondRecipient, network.disperseContractAddress]
+    ]);
+  });
+});
 
 describe("EvmBatchDistributorPage safety", () => {
   it.each(["native", "token"])("automatically recovers the %s balance after receipt-block lag without showing the old value", async (asset) => {

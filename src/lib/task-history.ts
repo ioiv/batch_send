@@ -8,6 +8,8 @@ export type TaskRecord = {
   label: string;
   network: TaskNetwork;
   targetAddress?: string;
+  senderAddress?: string;
+  executionContractAddress?: string;
   createdAt: string;
   updatedAt: string;
   acknowledgedAt?: string;
@@ -21,6 +23,7 @@ const publicAddress = (value: unknown) => typeof value === 'string' && /^(?:0x[\
 const transactionHash = (value: unknown) => typeof value === 'string' && /^(?:0x[\da-f]{64}|[1-9A-HJ-NP-Za-km-z]{64,88})$/i.test(value) ? value : undefined;
 const statuses = new Set(['pending', 'scanning', 'submitting', 'confirming', 'success', 'skipped', 'error']);
 const tokenStandards = new Set(['native', 'erc20', 'erc721', 'erc1155', 'spl-token', 'token-2022']);
+const distributionTools = new Set(['evm-distribution', 'sol-distribution']);
 const collectionTools = new Set(['evm-token-collection', 'evm-nft-collection', 'sol-collection']);
 const chainId = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0 ? value as number
   : typeof value === 'string' && /^solana:(?:mainnet-beta|devnet|testnet)$/.test(value) ? value : undefined;
@@ -51,14 +54,32 @@ export function sanitizeTaskRecord(value: unknown): TaskRecord | null {
   const record = value as TaskRecord;
   if (!record.network || !['evm', 'solana'].includes(record.network.kind) || !Array.isArray(record.results)) return null;
   if (!record.id || !record.toolId || !record.createdAt || !record.updatedAt) return null;
+  const isDistribution = distributionTools.has(record.toolId);
+  const legacy = record as TaskRecord & { sender?: unknown };
+  const isApproval = (result: CollectionDisplayResult) => isDistribution && (result.resultKind === 'approval' || result.label === 'Token 授权');
+  const uniqueAddress = (values: unknown[]) => {
+    const addresses = values.map(publicAddress).filter(Boolean);
+    const keys = new Set(addresses.map(address => address.startsWith('0x') ? address.toLowerCase() : address));
+    return keys.size === 1 ? addresses[0] : undefined;
+  };
+  // Old distribution rows stored recipients in address. Only an explicit sender
+  // or a known approval row can restore their missing source; never use a recipient.
+  const senderAddress = publicAddress(record.senderAddress) || publicAddress(legacy.sender) || (isDistribution
+    ? uniqueAddress(record.results.flatMap(result => result ? [result.sourceAddress, ...(isApproval(result) ? [result.address] : [])] : [])) : undefined);
+  const executionContractAddress = publicAddress(record.executionContractAddress) || (isDistribution
+    ? uniqueAddress(record.results.flatMap(result => result ? [result.resultKind === 'distribution' ? result.executionContractAddress : undefined, ...(isApproval(result) ? [result.spenderAddress || result.targetAddress] : [])] : [])) : undefined);
   const results = record.results.filter(result => result && statuses.has(result.status)).map(result => {
     const hash = transactionHash(result.hash);
+    const approval = isApproval(result);
     return {
       address: publicAddress(result.address) || '—',
       chainId: chainId(result.chainId) ?? (record.network.kind === 'solana' ? chainId(`solana:${record.network.id}`) : chainId(record.network.chainId)),
       networkId: safeText(result.networkId, 80) || safeText(record.network.id, 80) || undefined,
-      sourceAddress: publicAddress(result.sourceAddress) || (collectionTools.has(record.toolId) ? publicAddress(result.address) : '') || undefined,
-      targetAddress: publicAddress(result.targetAddress) || publicAddress(record.targetAddress) || undefined,
+      resultKind: isDistribution ? approval ? 'approval' : 'distribution' : result.resultKind === 'collection' ? 'collection' : undefined,
+      sourceAddress: publicAddress(result.sourceAddress) || (isDistribution ? senderAddress : collectionTools.has(record.toolId) ? publicAddress(result.address) : '') || undefined,
+      targetAddress: approval ? undefined : publicAddress(result.targetAddress) || (isDistribution ? publicAddress(result.address) : publicAddress(record.targetAddress)) || undefined,
+      executionContractAddress: publicAddress(result.executionContractAddress) || (isDistribution ? approval ? publicAddress(result.contractAddress) : executionContractAddress : undefined) || undefined,
+      spenderAddress: approval ? publicAddress(result.spenderAddress) || publicAddress(result.targetAddress) || executionContractAddress : undefined,
       contractAddress: publicAddress(result.contractAddress) || undefined,
       tokenStandard: tokenStandards.has(result.tokenStandard || '') ? result.tokenStandard : undefined,
       tokenId: typeof result.tokenId === 'string' && /^\d{1,78}$/.test(result.tokenId) ? result.tokenId : undefined,
@@ -80,6 +101,8 @@ export function sanitizeTaskRecord(value: unknown): TaskRecord | null {
     createdAt: safeText(record.createdAt, 40), updatedAt: safeText(record.updatedAt, 40),
     acknowledgedAt: typeof record.acknowledgedAt === 'string' ? safeText(record.acknowledgedAt, 40) : undefined,
     targetAddress: publicAddress(record.targetAddress) || undefined,
+    senderAddress: senderAddress || undefined,
+    executionContractAddress: executionContractAddress || undefined,
     network: { kind: record.network.kind, id: safeText(record.network.id, 80), label: safeText(record.network.label, 100),
       ...(Number.isSafeInteger(record.network.chainId) && record.network.chainId! > 0 ? { chainId: record.network.chainId } : {}),
       ...(explorerBase(record.network.blockExplorerUrl) ? { blockExplorerUrl: explorerBase(record.network.blockExplorerUrl) } : {}) },

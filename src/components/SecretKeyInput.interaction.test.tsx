@@ -293,7 +293,7 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     };
     render(<SecretKeyInput mode="evm" ref={ref} walletAssetOverviews={overviews} />);
     await importWallets(user, secrets.join("\n"));
-    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    await user.click(screen.getByRole("button", { name: "选中已查询资产余额均为零 (1)" }));
     expect(ref.current!.read()).toBe(secrets[0]);
     expect(screen.getByText("已选择 1 / 4")).toBeVisible();
     expect(screen.getAllByText("扫描不完整")).toHaveLength(2);
@@ -528,11 +528,17 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     };
     const { rerender } = render(<SecretKeyInput mode="evm" onDirty={onDirty} ref={inputRef} />);
     await importWallets(user, secrets.join("\n"));
-    expect(screen.getByRole("button", { name: "选中余额为零" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选中已查询资产余额均为零" })).toBeDisabled();
 
     rerender(<SecretKeyInput mode="evm" onDirty={onDirty} ref={inputRef} walletBalances={walletBalances} />);
     onDirty.mockClear();
-    await user.click(screen.getByRole("button", { name: "选中余额为零 (1)" }));
+    const selectZero = screen.getByRole("button", { name: "选中已查询资产余额均为零 (1)" });
+    expect(selectZero).toHaveAttribute("title", "按已读取的原生币及代币/NFT 余额筛选；未读取或扫描不完整不计入。");
+    await user.selectOptions(screen.getByRole("combobox", { name: "筛选来源钱包" }), "zero");
+    expect(screen.getByRole("option", { name: "已查询资产余额均为零" })).toBeInTheDocument();
+    expect(screen.getByText("匹配 1 / 5")).toBeVisible();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    await user.click(selectZero);
 
     expect(screen.getByText("已选择 1 / 5")).toBeVisible();
     expect(inputRef.current?.read()).toBe(secrets[0]);

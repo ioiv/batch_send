@@ -60,6 +60,35 @@ describe('public task history', () => {
     saveTaskRecord(record);
     expect(readTaskHistory(record.toolId)[0].results[0].sourceAddress).toBeUndefined();
   });
+  it('migrates legacy distribution roles using an approval sender without calling recipients sources', () => {
+    const record = makeRecord(); record.toolId = 'evm-distribution'; record.targetAddress = undefined;
+    const sender = `0x${'2'.repeat(40)}`; const execution = `0x${'3'.repeat(40)}`; const token = `0x${'4'.repeat(40)}`;
+    record.results = [{ address: sender, label: 'Token 授权', targetAddress: execution, contractAddress: token, asset: 'TKN', status: 'success', message: '已授权' },
+      ...[5, 6, 7].map(index => ({ address: `0x${String(index).repeat(40)}`, asset: 'TKN', status: 'success' as const, message: '已分发' }))];
+    expect(saveTaskRecord(record)).toBe(true);
+    const migrated = readTaskHistory(record.toolId)[0];
+    expect(migrated.senderAddress).toBe(sender);
+    expect(migrated.results[0]).toMatchObject({ resultKind: 'approval', sourceAddress: sender, spenderAddress: execution, executionContractAddress: token });
+    expect(migrated.results[0].targetAddress).toBeUndefined();
+    expect(migrated.results.slice(1).every(result => result.resultKind === 'distribution' && result.sourceAddress === sender && result.targetAddress === result.address && result.executionContractAddress === execution)).toBe(true);
+    const csv = createCollectionResultsCsv(migrated.results);
+    expect(csv).toContain('result_kind,execution_contract_address,spender_address');
+    expect(csv).toContain(`distribution,${execution},`);
+  });
+  it('uses an explicit legacy sender and leaves ambiguous or absent senders unknown', () => {
+    const sender = `0x${'2'.repeat(40)}`;
+    const record = { ...makeRecord(), toolId: 'evm-distribution', sender };
+    expect(saveTaskRecord(record)).toBe(true);
+    expect(readTaskHistory(record.toolId)[0].results[0].sourceAddress).toBe(sender);
+    delete (record as { sender?: string }).sender;
+    record.results.push({ ...record.results[0], address: `0x${'3'.repeat(40)}` });
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].results.every(result => !result.sourceAddress)).toBe(true);
+    record.results[0].sourceAddress = sender; record.results[1].sourceAddress = `0x${'4'.repeat(40)}`;
+    record.results.push({ ...record.results[0], sourceAddress: undefined });
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].results[2].sourceAddress).toBeUndefined();
+  });
   it('preserves configured custom explorer bases and rejects credential URLs or arbitrary result links', () => {
     const record = makeRecord();
     record.network = { kind: 'evm', id: 'custom-123', label: 'Custom', chainId: 123, blockExplorerUrl: 'https://scan.example.test/explorer/' };

@@ -170,7 +170,7 @@ export function SiteHeader({ currentToolId, action }: SiteHeaderProps) {
         >
           <CollapseIcon />
         </Button>
-        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.2.5</span></p>
+        <p className="site-sidebar__meta"><span>ChainKit</span><span>v1.2.6</span></p>
       </aside>
     </>
   );

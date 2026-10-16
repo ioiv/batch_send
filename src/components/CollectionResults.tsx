@@ -51,6 +51,8 @@ const filterOptions: Array<{ label: string; value: CollectionResultFilter }> = [
 
 function ResultDetails({ result, label }: { result: CollectionDisplayResult; label: string }) {
   const status = getCollectionResultDisplayStatus(result);
+  const distribution = result.resultKind === "distribution" || result.resultKind === "approval";
+  const sourceAddress = result.sourceAddress || (!distribution ? result.address : undefined);
   return <Dialog>
     <DialogTrigger render={<Button size="sm" type="button" variant="outline" />} aria-label={`查看${label}的详情`}>查看详情</DialogTrigger>
     <DialogContent className="result-detail-dialog">
@@ -58,8 +60,10 @@ function ResultDetails({ result, label }: { result: CollectionDisplayResult; lab
         <DialogDescription>{status === "uncertain" ? "交易已提交，请先核对链上结果；此项不会自动重试。" : "完整执行记录与交易信息"}</DialogDescription>
       </DialogHeader>
       <dl className="result-detail-list">
-        <div><dt>来源地址</dt><dd><code>{result.address}</code><CopyButton value={result.address} label="复制地址" /></dd></div>
-        {result.targetAddress ? <div><dt>目标地址</dt><dd><code>{result.targetAddress}</code><CopyButton value={result.targetAddress} label="复制目标地址" /></dd></div> : null}
+        <div><dt>{distribution ? "发送钱包" : "来源地址"}</dt><dd>{sourceAddress ? <><code>{sourceAddress}</code><CopyButton value={sourceAddress} label="复制地址" /></> : "未记录，需查询链上交易核对"}</dd></div>
+        {result.targetAddress ? <div><dt>{distribution ? "收款地址" : "目标地址"}</dt><dd><code>{result.targetAddress}</code><CopyButton value={result.targetAddress} label="复制目标地址" /></dd></div> : null}
+        {result.spenderAddress ? <div><dt>授权对象</dt><dd><code>{result.spenderAddress}</code><CopyButton value={result.spenderAddress} label="复制授权对象" /></dd></div> : null}
+        {result.executionContractAddress ? <div><dt>执行合约</dt><dd><code>{result.executionContractAddress}</code><CopyButton value={result.executionContractAddress} label="复制执行合约" /></dd></div> : null}
         <div><dt>资产</dt><dd>{result.asset}</dd></div>
         {result.tokenStandard ? <div><dt>资产标准</dt><dd>{result.tokenStandard.toUpperCase()}</dd></div> : null}
         {result.contractAddress ? <div><dt>合约 / Mint 地址</dt><dd><code>{result.contractAddress}</code><CopyButton value={result.contractAddress} label="复制合约地址" /></dd></div> : null}
@@ -103,7 +107,8 @@ export function getIndexedCollectionResults(
 export function getCollectionResultSourceCount(results: CollectionDisplayResult[]) {
   return new Set(
     results
-      .map((result) => /^0x[\da-f]{40}$/i.test(result.address.trim()) ? result.address.trim().toLowerCase() : result.address.trim())
+      .map((result) => result.sourceAddress || (result.resultKind === "distribution" || result.resultKind === "approval" ? "" : result.address))
+      .map((address) => /^0x[\da-f]{40}$/i.test(address.trim()) ? address.trim().toLowerCase() : address.trim())
       .filter((address) => Boolean(address) && address !== "—")
   ).size;
 }
@@ -111,9 +116,14 @@ export function getCollectionResultSourceCount(results: CollectionDisplayResult[
 function CollectionResultsBody({ results }: { results: CollectionDisplayResult[] }) {
   const [filter, setFilter] = useState<CollectionResultFilter>("all");
   const [query, setQuery] = useState("");
-  const counts = getCollectionResultCounts(results);
+  const distribution = results.some(result => result.resultKind === "distribution" || result.resultKind === "approval");
+  const transferResults = distribution ? results.filter(result => result.resultKind !== "approval") : results;
+  const counts = getCollectionResultCounts(transferResults);
+  const allCounts = getCollectionResultCounts(results);
+  const recipientCount = new Set(transferResults.flatMap(result => result.targetAddress ? [/^0x/i.test(result.targetAddress) ? result.targetAddress.toLowerCase() : result.targetAddress] : [])).size;
+  const approvalCount = results.filter(result => result.resultKind === "approval").length;
   const sourceCount = getCollectionResultSourceCount(results);
-  const hasActiveResults = counts.active > 0;
+  const hasActiveResults = allCounts.active > 0;
   const previousHasActiveResultsRef = useRef(hasActiveResults);
   const filteredResults = useMemo(
     () => getIndexedCollectionResults(results, filter, query),
@@ -130,13 +140,14 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
 
   return (
     <div className="collection-results-body">
-      <div className="metric-grid" aria-label="归集执行统计">
-        <Metric label="资产项" value={String(counts.total)} />
-        <Metric label="来源钱包" value={String(sourceCount)} />
+      <div className="metric-grid" aria-label={distribution ? "分发执行统计" : "归集执行统计"}>
+        <Metric label={distribution ? "分发项" : "资产项"} value={String(counts.total)} />
+        <Metric label={distribution ? "发送钱包" : "来源钱包"} value={String(sourceCount)} />
+        {distribution ? <><Metric label="收款地址" value={String(recipientCount)} /><Metric label="授权" value={String(approvalCount)} /></> : null}
         <Metric label="完成" value={String(counts.success)} />
         <Metric label="跳过" value={String(counts.skipped)} />
-        <Metric label="失败" value={String(counts.error)} />
-        <Metric label="待核对" value={String(counts.uncertain)} />
+        <Metric label="失败" value={String(allCounts.error)} />
+        <Metric label="待核对" value={String(allCounts.uncertain)} />
       </div>
 
       <div className="collection-result-toolbar">
@@ -158,10 +169,10 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
 
       {filteredResults.length ? (
         <ScrollArea className="collection-result-table">
-          <Table aria-label="归集结果">
+          <Table aria-label={distribution ? "分发结果" : "归集结果"}>
             <TableHeader>
               <TableRow>
-                <TableHead>来源</TableHead>
+                <TableHead>{distribution ? "执行项 / 收款地址" : "来源"}</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>资产</TableHead>
                 <TableHead>数量</TableHead>
@@ -171,13 +182,14 @@ function CollectionResultsBody({ results }: { results: CollectionDisplayResult[]
             </TableHeader>
             <TableBody>
               {filteredResults.map(({ originalIndex, result }) => {
-                const resultLabel = result.label || `来源 ${originalIndex + 1}`;
+                const resultLabel = result.label || `${distribution ? "收款人" : "来源"} ${originalIndex + 1}`;
+                const rowAddress = result.resultKind === "approval" ? result.sourceAddress : distribution ? result.targetAddress : result.sourceAddress || result.address;
                 const displayStatus = getCollectionResultDisplayStatus(result);
                 return (
                   <TableRow data-status={displayStatus} key={originalIndex}>
                     <TableCell className="collection-result-source">
                       <strong>{resultLabel}</strong>
-                      <code className="collection-result-address">{result.address}</code>
+                      <code className="collection-result-address">{rowAddress || "发送钱包未记录"}</code>
                       <span className="collection-result-message">{result.message}</span>
                     </TableCell>
                     <TableCell className="collection-result-status">
@@ -237,7 +249,10 @@ export function CollectionResults({
 }) {
   const titleId = useId();
   const resultSetIdentity = useMemo(() => getCollectionResultSetIdentity(results), [results]);
-  const targetAddresses = useMemo(() => [...new Set(results.flatMap(result => result.targetAddress ? [result.targetAddress] : []))], [results]);
+  const distribution = results.some(result => result.resultKind === "distribution" || result.resultKind === "approval");
+  const sourceAddresses = useMemo(() => [...new Set(results.flatMap(result => result.sourceAddress ? [result.sourceAddress] : []))], [results]);
+  const targetAddresses = useMemo(() => [...new Set(results.flatMap(result => result.resultKind !== "approval" && result.targetAddress ? [result.targetAddress] : []))], [results]);
+  const executionContracts = useMemo(() => [...new Set(results.flatMap(result => result.resultKind === "distribution" && result.executionContractAddress ? [result.executionContractAddress] : []))], [results]);
   const reviewResults = useMemo(
     () => results.filter((result) => ["error", "skipped", "uncertain"].includes(getCollectionResultDisplayStatus(result))),
     [results]
@@ -250,7 +265,11 @@ export function CollectionResults({
         <div>
           <Heading className="panel-title" id={titleId}>{title}</Heading>
           {description ? <p className="sr-only">{description}</p> : null}
-          {targetAddresses.length ? <div aria-label="归集目标摘要" className="collection-result-targets">{targetAddresses.map(address => <span key={address}>目标地址 <code>{address}</code><CopyButton label="复制目标地址" value={address} /></span>)}</div> : null}
+          {distribution ? <div aria-label="分发方向摘要" className="collection-result-targets">
+            {sourceAddresses.length ? sourceAddresses.map(address => <span key={address}>发送钱包 <code>{address}</code><CopyButton label="复制发送钱包" value={address} /></span>) : <span>发送钱包未记录，可查询链上交易核对</span>}
+            {executionContracts.map(address => <span key={address}>执行合约 <code>{address}</code><CopyButton label="复制执行合约" value={address} /></span>)}
+            <span>收款地址 {targetAddresses.length} 个</span>
+          </div> : targetAddresses.length ? <div aria-label="归集目标摘要" className="collection-result-targets">{targetAddresses.map(address => <span key={address}>目标地址 <code>{address}</code><CopyButton label="复制目标地址" value={address} /></span>)}</div> : null}
         </div>
         <div className="action-group">
           <Button disabled={!results.length} onClick={() => downloadCollectionResults(results, exportFilename)} type="button" variant="outline">导出全部 CSV</Button>

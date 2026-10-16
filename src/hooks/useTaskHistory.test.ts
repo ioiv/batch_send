@@ -73,6 +73,28 @@ describe('task history lifecycle', () => {
     act(() => window.dispatchEvent(new Event('pagehide')));
     expect(readTaskHistory('evm-distribution')[0].results[0]).toMatchObject({ status: 'success', uncertain: false });
   });
+  it('preserves chain-read distribution context when an older workbench snapshot is captured on pagehide', () => {
+    const mounted = renderHook(() => useTaskHistory({ toolId: 'evm-distribution', label: '批量分发', network, results: pending }));
+    const record = mounted.result.current.records[0];
+    const sender = `0x${'2'.repeat(40)}`; const execution = `0x${'3'.repeat(40)}`;
+    act(() => mounted.result.current.updateRecord({ ...record, results: [{ ...record.results[0], sourceAddress: sender, executionContractAddress: execution, status: 'error', uncertain: true }] }));
+    act(() => window.dispatchEvent(new Event('pagehide')));
+    expect(readTaskHistory('evm-distribution')[0].results[0]).toMatchObject({ sourceAddress: sender, executionContractAddress: execution, targetAddress: pending[0].address });
+  });
+  it.each(['success', 'error'] as const)('preserves a definitive %s while filling missing public context from a transaction lookup without a receipt', (status) => {
+    const original: CollectionDisplayResult[] = [{ ...pending[0], status, uncertain: false, message: '既有链上终态' }];
+    const mounted = renderHook(() => useTaskHistory({ toolId: 'evm-distribution', label: '批量分发', network, results: original }));
+    const record = mounted.result.current.records[0];
+    const sender = `0x${'2'.repeat(40)}`; const execution = `0x${'3'.repeat(40)}`;
+    act(() => mounted.result.current.updateRecord({ ...record, results: [{ ...record.results[0], sourceAddress: sender, executionContractAddress: execution, targetAddress: sender,
+      status: 'error', uncertain: true, message: '暂未取得交易回执' }] }));
+    expect(readTaskHistory('evm-distribution')[0].results[0]).toMatchObject({ sourceAddress: sender, executionContractAddress: execution, targetAddress: pending[0].address, resultKind: 'distribution', status, uncertain: false, message: '既有链上终态' });
+    const enriched = mounted.result.current.records[0];
+    act(() => mounted.result.current.updateRecord({ ...enriched, results: [{ ...enriched.results[0], sourceAddress: execution, executionContractAddress: sender,
+      status: 'error', uncertain: true, message: '暂未取得交易回执' }] }));
+    act(() => window.dispatchEvent(new Event('pagehide')));
+    expect(readTaskHistory('evm-distribution')[0].results[0]).toMatchObject({ sourceAddress: sender, executionContractAddress: execution, targetAddress: pending[0].address, status, uncertain: false, message: '既有链上终态' });
+  });
   it('merges a late receipt query without losing a newer retried transaction', () => {
     const original: CollectionDisplayResult[] = [{ ...pending[0], status: 'error', uncertain: true }, { ...pending[0], hash: undefined, asset: 'USDC', status: 'error', uncertain: false }];
     const mounted = renderHook(({ results }) => useTaskHistory({ toolId: 'evm-distribution', label: '批量分发', network, results }), { initialProps: { results: original } });

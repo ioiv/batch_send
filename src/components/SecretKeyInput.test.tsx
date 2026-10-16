@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { SecretKeyInput } from "./SecretKeyInput";
 
@@ -26,5 +27,15 @@ describe("SecretKeyInput", () => {
     render(<SecretKeyInput disabled mode="solana" />);
     expect(screen.getByRole("button", { name: "导入钱包" })).toBeDisabled();
     expect(document.querySelector('input[type="file"]')).toBeDisabled();
+  });
+
+  it.each(["evm", "solana"] as const)("shows import help relevant to %s wallets", async (mode) => {
+    const user = userEvent.setup();
+    render(<SecretKeyInput mode={mode} />);
+    await user.click(screen.getByRole("button", { name: "导入钱包" }));
+    const dialog = screen.getByRole("dialog", { name: "导入来源钱包" });
+    expect(dialog).toHaveTextContent(mode === "evm" ? "支持 EVM 十六进制私钥" : "支持 Solana Base58 私钥与 JSON 字节数组");
+    expect(dialog).not.toHaveTextContent(mode === "evm" ? "Solana" : "EVM 十六进制私钥");
+    expect(dialog).not.toHaveTextContent("助记词和加密 Keystore 请先转换为私钥");
   });
 });
