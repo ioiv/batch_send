@@ -105,10 +105,31 @@ describe("parseEvmDistribution", () => {
 });
 
 describe("evm network config", () => {
-  it("formats displayed balances to at most 4 decimal places", () => {
+  it("keeps ordinary balances compact without changing their raw precision", () => {
     expect(formatWeiForDisplay(1_234_567_890_000_000_000n, 18)).toBe("1.2345");
     expect(formatWeiForDisplay(1_200_000n, 6)).toBe("1.2");
     expect(formatWeiForDisplay(42n, 0)).toBe("42");
+  });
+
+  it.each([
+    [0n, "0"],
+    [10_000_000_000_000n, "0.00001"],
+    [8_000_000_000_000n, "0.000008"],
+    [20_000_000_000_000n, "0.00002"],
+    [12_345_678_900_000n, "0.00001234"],
+    [10_000_000_000n, "0.00000001"],
+    [9_999_999_999n, "<0.00000001"],
+    [1n, "<0.00000001"]
+  ])("distinguishes zero from small positive 18-decimal balances (%s)", (value, expected) => {
+    expect(formatWeiForDisplay(value, 18)).toBe(expected);
+  });
+
+  it("preserves small token balances at different asset precisions", () => {
+    expect(formatWeiForDisplay(1n, 6)).toBe("0.000001");
+    expect(formatWeiForDisplay(1n, 8)).toBe("0.00000001");
+    expect(formatWeiForDisplay(1n, 255)).toBe("<0.00000001");
+    expect(formatWeiForDisplay(1n, 18, 0)).toBe("<1");
+    expect(formatWeiForDisplay(-1n, 18)).toBe(">-0.00000001");
   });
 
   it("orders mainnet options by current chain heat and keeps testnet last", () => {

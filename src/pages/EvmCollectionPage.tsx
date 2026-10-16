@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  createWalletClient,
   formatUnits,
   getAddress,
   http,
@@ -9,6 +8,7 @@ import {
   zeroAddress,
   type Address
 } from "viem";
+import { createEvmLocalWalletClient } from "../lib/evm-local-wallet";
 import { CompactNotice as Alert, NoticeDetail as AlertDescription, NoticeTitle as AlertTitle } from "@/components/CompactNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -83,6 +83,7 @@ import {
   type EvmNativeCurrency
 } from "../lib/evm";
 import {
+  getEvmCollectionAssetContext,
   getCollectionResultDisplayStatus,
   sanitizeRoundArchiveText,
   type CollectionDisplayResult,
@@ -487,9 +488,15 @@ export function parseErc721CollectionLimit(value: string) {
 
 function planItemToDisplay(
   item: EvmCollectionPlanItem,
-  nativeCurrency: EvmNativeCurrency
+  nativeCurrency: EvmNativeCurrency,
+  chainId: number,
+  targetAddress: string
 ): CollectionDisplayResult {
   return {
+    chainId,
+    sourceAddress: item.address || undefined,
+    targetAddress,
+    ...getEvmCollectionAssetContext(item.asset),
     address: item.address || "—",
     amount: getFormattedAmount(item, nativeCurrency),
     asset: getAssetName(item, nativeCurrency),
@@ -507,9 +514,15 @@ function resultToDisplay(
   item: EvmCollectionPlanItem,
   result: EvmCollectionResult,
   nativeCurrency: EvmNativeCurrency,
-  explorerUrl: (hash: string) => string
+  explorerUrl: (hash: string) => string,
+  chainId: number,
+  targetAddress: string
 ): CollectionDisplayResult {
   return {
+    chainId,
+    sourceAddress: result.address || undefined,
+    targetAddress,
+    ...getEvmCollectionAssetContext(result.asset),
     address: result.address || "—",
     amount: getFormattedAmount(
       { amount: result.amount, asset: result.asset, metadata: item.metadata },
@@ -671,7 +684,7 @@ export function EvmCollectionPage({
     ? (erc20AssetInput.trim() ? "erc20" : "native")
     : nftStandard;
   const currentToolId = fixedStandard === "erc20" ? "evm-token-collection" : "evm-nft-collection";
-  const taskNetwork = { kind: "evm" as const, id: selectedNetwork.id, label: selectedNetwork.label, chainId: selectedNetwork.chainId };
+  const taskNetwork = { kind: "evm" as const, id: selectedNetwork.id, label: selectedNetwork.label, chainId: selectedNetwork.chainId, blockExplorerUrl: selectedNetwork.blockExplorerUrl };
   const taskHistory = useTaskHistory({ toolId: currentToolId, label: "手动归集", network: taskNetwork,
     targetAddress, results, busy: stage === "running" || discoveryRunning, roundKey: roundSequence });
   const commitExecutionResults = (nextResults: CollectionDisplayResult[]) => {
@@ -1813,6 +1826,9 @@ export function EvmCollectionPage({
         : result));
     } else {
       commitExecutionResults(prepared.parsedAccounts.accounts.map((account) => ({
+        chainId: selectedNetwork.chainId,
+        sourceAddress: account.address,
+        targetAddress: target,
         address: account.address,
         amount: "—",
         asset: fixedStandard === "nft" ? nftStandard.toUpperCase() : standard === "native"
@@ -1867,7 +1883,7 @@ export function EvmCollectionPage({
                 nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null
               );
         planRef.current = executionPlan;
-        commitExecutionResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency)));
+        commitExecutionResults(executionPlan.map((item) => planItemToDisplay(item, selectedNetwork.nativeCurrency, selectedNetwork.chainId, target)));
       }
       const chain = toEvmChain(selectedNetwork, effectiveRpcEndpoint);
       const groups = Array.from(executionPlan.reduce((grouped, item) => {
@@ -1886,7 +1902,7 @@ export function EvmCollectionPage({
           await pauseControllerRef.current.waitUntilResumed();
           return executeEvmCollectionPlan({
             gasSettings,
-            getWalletClient: (account) => createWalletClient({
+            getWalletClient: (account) => createEvmLocalWalletClient({
               account,
               chain,
               transport: http(effectiveRpcEndpoint)
@@ -1909,9 +1925,11 @@ export function EvmCollectionPage({
               item,
               result,
               selectedNetwork.nativeCurrency,
-              (hash) => getEvmExplorerUrl(hash, selectedNetwork)
+              (hash) => getEvmExplorerUrl(hash, selectedNetwork),
+              selectedNetwork.chainId,
+              target
             )
-          : current[index] || planItemToDisplay(item, selectedNetwork.nativeCurrency);
+          : current[index] || planItemToDisplay(item, selectedNetwork.nativeCurrency, selectedNetwork.chainId, target);
       }));
       retryPlanRef.current = [
         ...untouchedRetryPlan,

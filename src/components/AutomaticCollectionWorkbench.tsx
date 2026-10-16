@@ -86,7 +86,8 @@ export function AutomaticCollectionWorkbench({ kind, currentToolId, initialConfi
   const locked = busy || importing;
   const config: CollectionModeConfig = { ...initialConfig, networkId, rpcEndpoint, targetAddress,
     automaticDraft: { kind, indexer, maxFee, includeNative, gasChoice: gas.choice, customGasPriceGwei: gas.customGasPriceGwei } };
-  const taskNetwork = { kind, id: networkId, label: kind === 'evm' ? network.label : solanaNetworks.find(item => item.id === networkId)?.label || networkId, ...(kind === 'evm' ? { chainId: network.chainId } : {}) };
+  const taskNetwork = { kind, id: networkId, label: kind === 'evm' ? network.label : solanaNetworks.find(item => item.id === networkId)?.label || networkId,
+    ...(kind === 'evm' ? { chainId: network.chainId, blockExplorerUrl: network.blockExplorerUrl } : {}) };
   const taskHistory = useTaskHistory({ toolId: currentToolId, label: '一键归集', network: taskNetwork, targetAddress,
     results: executionStarted ? results : [], busy: stage === 'running' });
   const targetValid = kind === 'evm'

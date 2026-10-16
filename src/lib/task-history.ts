@@ -1,6 +1,7 @@
 import { sanitizeRoundArchiveText, type CollectionDisplayResult } from './collection-results';
+import { evmNetworks } from './evm';
 
-export type TaskNetwork = { kind: 'evm' | 'solana'; id: string; label: string; chainId?: number };
+export type TaskNetwork = { kind: 'evm' | 'solana'; id: string; label: string; chainId?: number; blockExplorerUrl?: string };
 export type TaskRecord = {
   id: string;
   toolId: string;
@@ -19,6 +20,30 @@ const safeText = (value: unknown, limit = 500) => typeof value === 'string'
 const publicAddress = (value: unknown) => typeof value === 'string' && /^(?:0x[\da-f]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/i.test(value) ? value : '';
 const transactionHash = (value: unknown) => typeof value === 'string' && /^(?:0x[\da-f]{64}|[1-9A-HJ-NP-Za-km-z]{64,88})$/i.test(value) ? value : undefined;
 const statuses = new Set(['pending', 'scanning', 'submitting', 'confirming', 'success', 'skipped', 'error']);
+const tokenStandards = new Set(['native', 'erc20', 'erc721', 'erc1155', 'spl-token', 'token-2022']);
+const collectionTools = new Set(['evm-token-collection', 'evm-nft-collection', 'sol-collection']);
+const chainId = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0 ? value as number
+  : typeof value === 'string' && /^solana:(?:mainnet-beta|devnet|testnet)$/.test(value) ? value : undefined;
+const explorerBase = (value: unknown) => {
+  if (typeof value !== 'string' || value.length > 500) return undefined;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
+      ? url.href.replace(/\/+$/, '') : undefined;
+  } catch { return undefined; }
+};
+
+/** Rebuild public links from the saved network; never preserve an arbitrary URL from a result. */
+export function getTaskResultExplorerUrl(hash: string | undefined, network: TaskNetwork): string | undefined {
+  if (!hash) return undefined;
+  if (network.kind === 'solana') {
+    if (!['mainnet-beta', 'devnet', 'testnet'].includes(network.id)) return undefined;
+    return `https://solscan.io/tx/${hash}${network.id === 'mainnet-beta' ? '' : `?cluster=${network.id}`}`;
+  }
+  const configured = evmNetworks.find(item => item.chainId === network.chainId);
+  const base = explorerBase(network.blockExplorerUrl) || explorerBase(configured?.blockExplorerUrl);
+  return base ? `${base}/tx/${hash}` : undefined;
+}
 
 /** Copy only public fields; never serialize caller objects or signing material. */
 export function sanitizeTaskRecord(value: unknown): TaskRecord | null {
@@ -30,12 +55,20 @@ export function sanitizeTaskRecord(value: unknown): TaskRecord | null {
     const hash = transactionHash(result.hash);
     return {
       address: publicAddress(result.address) || '—',
+      chainId: chainId(result.chainId) ?? (record.network.kind === 'solana' ? chainId(`solana:${record.network.id}`) : chainId(record.network.chainId)),
+      networkId: safeText(result.networkId, 80) || safeText(record.network.id, 80) || undefined,
+      sourceAddress: publicAddress(result.sourceAddress) || (collectionTools.has(record.toolId) ? publicAddress(result.address) : '') || undefined,
+      targetAddress: publicAddress(result.targetAddress) || publicAddress(record.targetAddress) || undefined,
+      contractAddress: publicAddress(result.contractAddress) || undefined,
+      tokenStandard: tokenStandards.has(result.tokenStandard || '') ? result.tokenStandard : undefined,
+      tokenId: typeof result.tokenId === 'string' && /^\d{1,78}$/.test(result.tokenId) ? result.tokenId : undefined,
       asset: safeText(result.asset, 160),
       assetKey: safeText(result.assetKey, 180) || undefined,
       amount: safeText(result.amount, 120) || undefined,
       label: safeText(result.label, 120) || undefined,
       message: safeText(result.message),
       hash,
+      explorerUrl: getTaskResultExplorerUrl(hash, record.network),
       status: result.status,
       uncertain: typeof result.uncertain === 'boolean' ? result.uncertain : undefined,
       retryable: false,
@@ -48,7 +81,8 @@ export function sanitizeTaskRecord(value: unknown): TaskRecord | null {
     acknowledgedAt: typeof record.acknowledgedAt === 'string' ? safeText(record.acknowledgedAt, 40) : undefined,
     targetAddress: publicAddress(record.targetAddress) || undefined,
     network: { kind: record.network.kind, id: safeText(record.network.id, 80), label: safeText(record.network.label, 100),
-      ...(Number.isSafeInteger(record.network.chainId) && record.network.chainId! > 0 ? { chainId: record.network.chainId } : {}) },
+      ...(Number.isSafeInteger(record.network.chainId) && record.network.chainId! > 0 ? { chainId: record.network.chainId } : {}),
+      ...(explorerBase(record.network.blockExplorerUrl) ? { blockExplorerUrl: explorerBase(record.network.blockExplorerUrl) } : {}) },
     results
   };
 }

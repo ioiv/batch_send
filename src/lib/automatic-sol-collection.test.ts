@@ -98,6 +98,10 @@ describe("automatic Solana collection adapter", () => {
     expect(options.mintAddresses).toBeUndefined();
     expect(options.sources.map((item) => item.address)).toEqual([address]);
     expect(wallets[0].tasks.map((task) => task.phase)).toEqual(["token", "native"]);
+    expect(wallets[0].tasks[0].preview).toMatchObject({ chainId: 'solana:devnet', networkId: 'devnet', sourceAddress: address,
+      targetAddress: target.publicKey.toBase58(), contractAddress: mint, tokenStandard: 'spl-token' });
+    expect(wallets[0].tasks[1].preview).toMatchObject({ chainId: 'solana:devnet', sourceAddress: address,
+      targetAddress: target.publicKey.toBase58(), tokenStandard: 'native' });
     expect(collectSolTokenJobs).not.toHaveBeenCalled();
     expect(collectSolFromSources).not.toHaveBeenCalled();
     expect(connectionMethods.sendRawTransaction).not.toHaveBeenCalled();

@@ -100,6 +100,12 @@ export async function prepareAutomaticSolCollection({
       const unavailable = !job || holding.status !== "ready";
       const preview: CollectionDisplayResult = {
         address: source.address,
+        sourceAddress: source.address,
+        targetAddress: destinationAddress,
+        chainId: `solana:${networkId}`,
+        networkId,
+        contractAddress: holding.mintAddress,
+        tokenStandard: holding.program,
         amount: formatWalletAssetAmount(holding.amount, holding.decimals),
         asset: `${assetHolding.kind === "nft" ? "NFT" : "Token"} ${holding.mintAddress}`,
         assetKey: `${holding.programId}:${holding.mintAddress}`,
@@ -142,6 +148,7 @@ export async function prepareAutomaticSolCollection({
     });
     const nativePreview: CollectionDisplayResult = {
       address: source.address, amount: formatWalletAssetAmount(scanned?.nativeBalanceLamports ?? null, 9),
+      sourceAddress: source.address, targetAddress: destinationAddress, chainId: `solana:${networkId}`, networkId, tokenStandard: "native",
       asset: "SOL", assetKey: "native:SOL", executionId: `sol:${source.address}:native`,
       label: source.label, message: "在 Token / NFT 完成后读取最新余额", status: "pending", phase: "native"
     };

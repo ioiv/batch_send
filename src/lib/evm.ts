@@ -574,9 +574,20 @@ export function formatWei(value: bigint, decimals = 18) {
 
 export function formatWeiForDisplay(value: bigint, decimals = 18, maxFractionDigits = 4) {
   const [integer, fraction = ""] = formatWei(value, decimals).split(".");
-  if (maxFractionDigits <= 0 || !fraction) return integer;
+  if (!fraction) return integer;
 
-  const displayFraction = fraction.slice(0, maxFractionDigits).replace(/0+$/, "");
+  const fractionDigits = Math.max(0, Math.trunc(maxFractionDigits));
+  const leadingZeroes = fraction.search(/[1-9]/);
+  const subunit = integer === "0" || integer === "-0";
+  // Show small balances with useful digits, while bounding the length of the label.
+  const displayDigits = subunit && leadingZeroes >= 0 && fractionDigits > 0
+    ? Math.min(leadingZeroes + fractionDigits, Math.max(8, fractionDigits))
+    : fractionDigits;
+  const displayFraction = fraction.slice(0, displayDigits).replace(/0+$/, "");
+  if (value !== 0n && subunit && !displayFraction) {
+    const threshold = displayDigits > 0 ? `0.${"0".repeat(displayDigits - 1)}1` : "1";
+    return value < 0n ? `>-${threshold}` : `<${threshold}`;
+  }
   return displayFraction ? `${integer}.${displayFraction}` : integer;
 }
 

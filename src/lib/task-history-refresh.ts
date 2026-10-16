@@ -1,5 +1,5 @@
 import type { CollectionDisplayResult } from './collection-results';
-import type { TaskNetwork, TaskRecord } from './task-history';
+import { getTaskResultExplorerUrl, type TaskNetwork, type TaskRecord } from './task-history';
 
 export async function refreshTaskTransactions(record: TaskRecord, currentNetwork: TaskNetwork, rpcEndpoint: string): Promise<TaskRecord> {
   if (currentNetwork.kind !== record.network.kind || currentNetwork.id !== record.network.id || currentNetwork.chainId !== record.network.chainId) {
@@ -39,6 +39,7 @@ export async function refreshTaskTransactions(record: TaskRecord, currentNetwork
   }
   return { ...record, updatedAt: new Date().toISOString(), results: record.results.map((result): CollectionDisplayResult => {
     const state = result.hash ? states.get(result.hash) : undefined;
-    return !state ? result : { ...result, status: state.success === true ? 'success' : 'error', uncertain: state.success === undefined, retryable: false, message: state.message };
+    const withExplorer = { ...result, explorerUrl: getTaskResultExplorerUrl(result.hash, record.network) };
+    return !state ? withExplorer : { ...withExplorer, status: state.success === true ? 'success' : 'error', uncertain: state.success === undefined, retryable: false, message: state.message };
   }) };
 }

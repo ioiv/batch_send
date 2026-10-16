@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const solanaMocks = vi.hoisted(() => ({
+  walletAddress: "BPFLoader1111111111111111111111111111111111",
   assertNetwork: vi.fn(),
   batchSignEnabled: false,
   blockhashNonce: 0,
@@ -65,7 +66,7 @@ vi.mock("../lib/solana", async (importOriginal) => {
 
 vi.mock("../hooks/useSolanaWallet", () => ({
   useSolanaWallet: () => ({
-    address: "BPFLoader1111111111111111111111111111111111",
+    address: solanaMocks.walletAddress,
     buttonLabel: "断开钱包",
     connectWallet: vi.fn(),
     connected: true,
@@ -91,6 +92,7 @@ import { readTaskHistory, saveTaskRecord } from "../lib/task-history";
 afterEach(cleanup);
 
 beforeEach(() => {
+  solanaMocks.walletAddress = "BPFLoader1111111111111111111111111111111111";
   window.history.replaceState({}, "", "/sol/");
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -528,9 +530,15 @@ describe("BatchDistributorPage network safety", () => {
     expect(stored).toHaveLength(1);
     expect(stored[0].results.map((result) => result.status)).toEqual(["success", "skipped"]);
     expect(stored[0].results.map((result) => result.amount)).toEqual(["0.1", "0.1"]);
+    expect(stored[0].results[0]).toMatchObject({ sourceAddress: solanaMocks.walletAddress,
+      targetAddress: "11111111111111111111111111111111", chainId: "solana:mainnet-beta", tokenStandard: "native" });
     expect(editor).toBeEnabled();
     expect(screen.queryByRole("button", { name: "返回修改并重新预检" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /交易 1:/ })).toBeVisible();
+    solanaMocks.walletAddress = "Vote111111111111111111111111111111111111111";
+    act(() => { fireEvent(window, new Event("focus")); });
+    act(() => { fireEvent(window, new Event("pagehide")); });
+    expect(readTaskHistory("sol-distribution")[0].results[0].sourceAddress).toBe("BPFLoader1111111111111111111111111111111111");
 
     await user.type(editor, "\nVote111111111111111111111111111111111111111");
     expect(screen.getByText("分发记录")).toBeVisible();

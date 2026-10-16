@@ -1,11 +1,12 @@
-import { createWalletClient, formatUnits, getAddress, http, isAddress, zeroAddress } from 'viem';
+import { formatUnits, getAddress, http, isAddress, zeroAddress } from 'viem';
+import { createEvmLocalWalletClient } from './evm-local-wallet';
 import { createEvmPublicClient, assertEvmRpcNetwork, toEvmChain, getEvmExplorerUrl, isEvmNativeCurrencyEnabled, type EvmNetworkConfig } from './evm';
 import { parseEvmPrivateKeyInput, planEvmCollection, executeEvmCollectionPlan, evmNativeCollectionAsset, type EvmCollectionPlanItem } from './evm-collection';
 import { autoEvmGasSettings, type EvmGasSettings } from './evm-gas';
 import { mapWithCollectionConcurrency } from './collection-execution';
 import { createInventoryBudget, discoverEvmWalletInventory } from './evm-wallet-inventory';
 import { assertAutomaticOperationActive, type AutomaticCollectionScanProgress, type AutomaticCollectionTask, type AutomaticCollectionWallet } from './collection-orchestrator';
-import type { CollectionDisplayResult } from './collection-results';
+import { getEvmCollectionAssetContext, type CollectionDisplayResult } from './collection-results';
 
 export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint, targetAddress, indexer, signal, maxFeePerTransactionWei, gasSettings = autoEvmGasSettings, onScanProgress }: {
   keys: string; network: EvmNetworkConfig; rpcEndpoint: string; targetAddress: string; indexer: string; signal: AbortSignal;
@@ -38,7 +39,9 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
       const symbol = isNative ? network.nativeCurrency.symbol : item.metadata?.symbol || (asset.standard === 'erc20' ? `${asset.contractAddress.slice(0, 6)}…${asset.contractAddress.slice(-4)}` : `${asset.standard.toUpperCase()} #${asset.tokenId}`);
       const id = `${source.address.toLowerCase()}:${asset.key}`;
       const phase = isNative ? 'native' : asset.standard === 'erc20' ? 'token' : 'nft';
-      const preview: CollectionDisplayResult = { address: source.address, label: source.label, asset: symbol, assetKey: asset.key, executionId: id, phase,
+      const preview: CollectionDisplayResult = { address: source.address, sourceAddress: source.address,
+        chainId: network.chainId, networkId: network.id, targetAddress, ...getEvmCollectionAssetContext(asset),
+        label: source.label, asset: symbol, assetKey: asset.key, executionId: id, phase,
         amount: decimals === null || item.status === 'failed' ? undefined : formatUnits(item.amount, decimals),
         message: item.message, status: item.status === 'failed' ? 'error' : item.status === 'skipped' ? 'skipped' : 'pending' };
       tasks.push({ id, phase, preview, holding: isNative ? undefined : {
@@ -50,12 +53,8 @@ export async function prepareAutomaticEvmCollection({ keys, network, rpcEndpoint
         assertAutomaticOperationActive(signal);
         const [result] = await executeEvmCollectionPlan({ plan: [{ ...liveItem, address: source.address, label: source.label }], publicClient: client, targetAddress, maxFeePerTransactionWei, gasSettings, pauseControl: control,
           getWalletClient: account => {
-            const wallet = createWalletClient({ account, chain: toEvmChain(network, rpcEndpoint), transport: http(rpcEndpoint) });
             const beforeSend = async () => { await control.waitUntilResumed(); await assertEvmRpcNetwork(client, network); assertAutomaticOperationActive(signal); };
-            return {
-              async sendTransaction(request) { await beforeSend(); return wallet.sendTransaction(request as never); },
-              async writeContract(request) { await beforeSend(); return wallet.writeContract(request as never); }
-            };
+            return createEvmLocalWalletClient({ account, chain: toEvmChain(network, rpcEndpoint), transport: http(rpcEndpoint), beforeSign: beforeSend });
           },
           onProgress(event) { progress({ ...preview, hash: event.hash || undefined, explorerUrl: event.hash ? getEvmExplorerUrl(event.hash, network) : undefined,
             amount: decimals === null ? undefined : formatUnits(event.amount, decimals), message: event.message,

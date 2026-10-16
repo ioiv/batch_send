@@ -8,6 +8,14 @@ export type CollectionResultStatus =
   | "error";
 
 export type CollectionDisplayResult = {
+  /** Public execution context captured from the actual plan, never the asset label. */
+  chainId?: number | string;
+  networkId?: string;
+  sourceAddress?: string;
+  targetAddress?: string;
+  contractAddress?: string;
+  tokenStandard?: string;
+  tokenId?: string;
   phase?: "token" | "nft" | "native";
   address: string;
   amount?: string;
@@ -22,6 +30,18 @@ export type CollectionDisplayResult = {
   status: CollectionResultStatus;
   uncertain?: boolean;
 };
+
+export function getEvmCollectionAssetContext(asset: {
+  standard: string;
+  contractAddress?: string;
+  tokenId?: bigint | string;
+}): Pick<CollectionDisplayResult, 'contractAddress' | 'tokenStandard' | 'tokenId'> {
+  return {
+    tokenStandard: asset.standard,
+    ...('contractAddress' in asset ? { contractAddress: asset.contractAddress } : {}),
+    ...(asset.tokenId !== undefined ? { tokenId: asset.tokenId.toString() } : {})
+  };
+}
 
 export type CollectionResultDisplayStatus = CollectionResultStatus | "uncertain";
 
@@ -103,7 +123,7 @@ function escapeCsvCell(value: string) {
 
 export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
   const includePhase = results.some(result => result.phase);
-  const header = ["label", "address", "asset", "amount", "status", "message", "transaction_hash", "explorer_url"];
+  const header = ["label", "address", "asset", "amount", "status", "message", "transaction_hash", "explorer_url", "chain_id", "source_address", "target_address", "contract_address", "token_standard", "token_id"];
   const rows = results.map((result) => [
     result.label || "",
     result.address,
@@ -112,7 +132,13 @@ export function createCollectionResultsCsv(results: CollectionDisplayResult[]) {
     getCollectionResultDisplayStatus(result),
     result.message,
     result.hash || "",
-    result.explorerUrl || ""
+    result.explorerUrl || "",
+    result.chainId?.toString() || "",
+    result.sourceAddress || "",
+    result.targetAddress || "",
+    result.contractAddress || "",
+    result.tokenStandard || "",
+    result.tokenId || ""
   ]);
 
   if (includePhase) { header.push("phase"); rows.forEach((row, index) => row.push(results[index].phase || "")); }

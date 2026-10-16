@@ -105,9 +105,10 @@ function transactionStatusLabel(status: SolanaDistributionTransaction["status"])
   return status === "confirmed" ? "已确认" : status === "failed" ? "失败（未转出）" : status === "pending" ? "待核对" : "未提交";
 }
 
-function solanaHistoryResults(transactions: SolanaDistributionTransaction[], networkId: SolanaNetworkId): CollectionDisplayResult[] {
+function solanaHistoryResults(transactions: SolanaDistributionTransaction[], networkId: SolanaNetworkId, sender?: string): CollectionDisplayResult[] {
   return transactions.flatMap((transaction) => transaction.rows.map((row) => ({
     address: row.address,
+    chainId: `solana:${networkId}`, networkId, sourceAddress: sender, targetAddress: row.address, tokenStandard: "native",
     amount: row.amountRaw,
     asset: "SOL",
     explorerUrl: transaction.signature ? getExplorerUrl(transaction.signature, networkId) : undefined,
@@ -196,6 +197,7 @@ export function BatchDistributorPage() {
   const generatorRef = useRef<DistributionListGeneratorHandle>(null);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
+  const roundSenderRef = useRef<string | undefined>(undefined);
   const previousWalletRef = useRef("");
   const terminalArchivedRef = useRef(false);
   const resetForEditRef = useRef<() => void>(() => {});
@@ -241,7 +243,7 @@ export function BatchDistributorPage() {
         : "未连接";
   const showFinalSummary = confirmVisible && sendState.status === "idle" && preflightState.status === "success";
   const taskNetwork = useMemo(() => ({ kind: "solana" as const, id: networkId, label: selectedNetwork.label }), [networkId, selectedNetwork.label]);
-  const historyResults = useMemo(() => sendState.status === "idle" ? [] : solanaHistoryResults(transactionResults, networkId), [networkId, sendState.status, transactionResults]);
+  const historyResults = useMemo(() => sendState.status === "idle" ? [] : solanaHistoryResults(transactionResults, networkId, roundSenderRef.current), [networkId, sendState.status, transactionResults]);
   const taskHistory = useTaskHistory({ toolId: "sol-distribution", label: "SOL 批量分发", network: taskNetwork, results: historyResults, busy: sending || preflighting, roundKey: roundSequence });
   const readyToSend = wallet.connected && Boolean(wallet.provider) && rpcEndpointValid && generatedListReady && parsed.validRows.length > 0 && parsed.invalid === 0 && !preflighting && !sending && !sendComplete && !sendFailed && !listImporting && !taskHistory.needsRecoveryReview && !archivedRound?.requiresAcknowledgement;
   useEffect(() => {
@@ -436,6 +438,7 @@ export function BatchDistributorPage() {
   const sendDistribution = async () => {
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !wallet.provider || !wallet.address || !showFinalSummary || sendState.status !== "idle") return;
     if (taskHistory.checkRecoveryReview()) return;
+    roundSenderRef.current = wallet.address;
     sendOperationRef.current = true;
 
     const sendOptions: SendOptions = {
@@ -454,10 +457,10 @@ export function BatchDistributorPage() {
         transactionIndex === index ? { ...transaction, ...update } : transaction
       ));
       setTransactionResults(transactionResultsSnapshot);
-      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
+      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId, roundSenderRef.current));
     };
     setTransactionResults(transactionResultsSnapshot);
-    taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
+    taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId, roundSenderRef.current));
 
     setSendState({
       message: "正在计算最少交易数量",
@@ -473,7 +476,7 @@ export function BatchDistributorPage() {
       const chunks = planTransferChunks(parsed.validRows, wallet.address, planningBlockhash.blockhash);
       transactionResultsSnapshot = chunks.map((rows) => ({ rows: [...rows], status: "not-submitted" }));
       setTransactionResults(transactionResultsSnapshot);
-      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId));
+      taskHistory.captureResults(solanaHistoryResults(transactionResultsSnapshot, networkId, roundSenderRef.current));
       const transactions = chunks.map((chunk) => createTransferTransaction(wallet.address, chunk, planningBlockhash.blockhash));
       plannedTransactionCount = transactions.length;
       const progress = () => createSendProgress(plannedTransactionCount, signedCount, signatures.length, confirmedCount);

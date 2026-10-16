@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CollectionPauseController } from './collection-execution';
 import { prepareAutomaticEvmCollection } from './automatic-evm-collection';
 import type { EvmCollectionPlanItem } from './evm-collection';
+import { executeAutomaticCollection } from './collection-orchestrator';
+import { createCollectionResultsCsv, type CollectionDisplayResult } from './collection-results';
 
 const mocks = vi.hoisted(() => ({ inventory: vi.fn(), plan: vi.fn(), execute: vi.fn(), network: vi.fn(), send: vi.fn(), write: vi.fn() }));
 vi.mock('viem', async original => ({ ...await original<typeof import('viem')>(), createWalletClient: () => ({ sendTransaction: mocks.send, writeContract: mocks.write }) }));
@@ -33,6 +35,52 @@ describe('automatic EVM collection adapter', () => {
     const wallets = await prepareAutomaticEvmCollection({ keys: 'test-only-placeholder', network, rpcEndpoint: network.rpcEndpoint, targetAddress: target, indexer: 'https://eth.blockscout.com', signal: new AbortController().signal, maxFeePerTransactionWei: 1n, onScanProgress });
     expect(onScanProgress).toHaveBeenCalledWith({ completed: 1, total: 1, wallet: wallets[0] });
     expect(mocks.execute).not.toHaveBeenCalled();
+  });
+  it('exports complete NFT identities through progress, shared ERC1155 hashes, skips and different networks', async () => {
+    const assets = [
+      nft,
+      { ...nft, contractAddress: token.contractAddress, key: 'other-contract:same-id' },
+      { ...nft, standard: 'erc1155' as const, key: 'erc1155:first' },
+      { ...nft, standard: 'erc1155' as const, tokenId: nft.tokenId + 1n, key: 'erc1155:second' }
+    ];
+    mocks.inventory.mockResolvedValue({ assets, complete: true, issues: [] });
+    mocks.execute.mockImplementation(async ({ plan, onProgress }) => {
+      const current = plan[0];
+      const hash = `0x${(current.asset.standard === 'erc1155' ? 'b' : 'a').repeat(64)}`;
+      const result = { ...current, amount: current.asset.standard === 'erc1155' ? 3n : 1n, hash, retryable: false, status: 'success', message: '归集成功' };
+      onProgress({ ...result, stage: 'confirming' });
+      return [result];
+    });
+    const signal = new AbortController().signal;
+    const wallets = await prepare(signal);
+    const progress: CollectionDisplayResult[] = [];
+    const results = await executeAutomaticCollection({ wallets, includeNative: false, signal,
+      pauseControl: new CollectionPauseController(), onResult: (_, result) => progress.push(result) });
+    for (const result of [...progress, ...results]) {
+      expect(result).toMatchObject({ chainId: 1, networkId: 'ethereum', sourceAddress: source, targetAddress: target });
+      expect(result.contractAddress).toBeTruthy();
+      expect(result.tokenId).toMatch(/^\d+$/);
+    }
+    const csv = createCollectionResultsCsv(results).split('\r\n').map(row => row.split(','));
+    const rows = csv.slice(1).map(values => Object.fromEntries(csv[0].map((column, index) => [column, values[index]])));
+    expect(rows.map(row => [row.contract_address, row.token_standard, row.token_id, row.amount])).toEqual([
+      [nft.contractAddress, 'erc721', nft.tokenId.toString(), '1'],
+      [token.contractAddress, 'erc721', nft.tokenId.toString(), '1'],
+      [nft.contractAddress, 'erc1155', nft.tokenId.toString(), '3'],
+      [nft.contractAddress, 'erc1155', (nft.tokenId + 1n).toString(), '3']
+    ]);
+    expect(rows.every(row => row.chain_id === '1' && row.source_address === source && row.target_address === target)).toBe(true);
+    expect(rows[2].transaction_hash).toBe(rows[3].transaction_hash);
+    expect(rows.every(row => row.explorer_url === `https://example.com/tx/${row.transaction_hash}`)).toBe(true);
+
+    const baseNetwork = { ...network, id: 'baseSepolia' as const, chainId: 84532, label: 'Base Sepolia', blockExplorerUrl: 'https://sepolia.basescan.org' };
+    const otherWallets = await prepareAutomaticEvmCollection({ keys: 'test-only-placeholder', network: baseNetwork,
+      rpcEndpoint: network.rpcEndpoint, targetAddress: target, indexer: 'https://base-sepolia.blockscout.com', signal, maxFeePerTransactionWei: 1n });
+    const skipped = await executeAutomaticCollection({ wallets: otherWallets, includeNative: false, selectedTaskIds: new Set(),
+      signal, pauseControl: new CollectionPauseController() });
+    expect(skipped).toHaveLength(4);
+    expect(skipped.every(result => result.chainId === 84532 && result.status === 'skipped' && result.targetAddress === target)).toBe(true);
+    expect(skipped[0]).toMatchObject({ contractAddress: nft.contractAddress, tokenId: nft.tokenId.toString(), tokenStandard: 'erc721' });
   });
   it('failed ownership reads retain their source and unknown quantity rather than claiming no assets', async () => {
     mocks.plan.mockImplementation(async ({ assets }) => [{ ...item(assets[0]), account: null, address: null, amount: 0n, status: 'failed', message: '读取失败' }]);
@@ -73,9 +121,9 @@ describe('automatic EVM collection adapter', () => {
     mocks.execute.mockImplementation(async ({ getWalletClient, plan }) => {
       const client = getWalletClient(plan[0].account);
       if (reason === 'abort') abort.abort(); else mocks.network.mockRejectedValue(new Error('网络变更'));
-      await client.sendTransaction({}); return [];
+      await client.sendTransaction({ gas: 21_000n, gasPrice: 1n }); return [];
     });
-    await expect(wallet.tasks[0].execute(vi.fn(), new CollectionPauseController())).rejects.toThrow();
+    await expect(wallet.tasks[0].execute(vi.fn(), new CollectionPauseController())).rejects.toThrow(reason === 'abort' ? '操作已停止' : '网络变更');
     expect(mocks.send).not.toHaveBeenCalled(); expect(mocks.write).not.toHaveBeenCalled();
   });
 });

@@ -81,6 +81,22 @@ type BalanceLookupState = {
   valueWei: bigint | null;
 };
 
+function EvmBalanceValue({ className, decimals, showSymbol = false, symbol, valueWei }: {
+  className?: string;
+  decimals: number;
+  showSymbol?: boolean;
+  symbol: string;
+  valueWei: bigint;
+}) {
+  const fullBalance = `${formatWei(valueWei, decimals)} ${symbol}`;
+  return (
+    <strong className={className} title={fullBalance}>
+      {formatWeiForDisplay(valueWei, decimals)}{showSymbol ? ` ${symbol}` : ""}
+      <HelpTooltip label={`${symbol} 完整余额`}>{fullBalance}</HelpTooltip>
+    </strong>
+  );
+}
+
 type EvmDistributionPreflightState = {
   message: string;
   result: EvmDistributionPreflightResult | null;
@@ -120,6 +136,8 @@ function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, 
   const signingMaySubmit = state.status === "confirming" || state.status === "awaiting-wallet" && (!hasApproval || state.progress.confirmed >= 1);
   const recipients: CollectionDisplayResult[] = rows.map((row) => ({
     address: row.address, amount: row.amountRaw, asset: assetSymbol, assetKey: tokenAddress,
+    chainId: network.chainId, networkId: network.id, sourceAddress: sender || undefined, targetAddress: row.address,
+    contractAddress: assetMode === "token" ? tokenAddress : undefined, tokenStandard: assetMode === "token" ? "erc20" : "native",
     explorerUrl: distributionHash ? getEvmExplorerUrl(distributionHash, network) || undefined : undefined,
     hash: distributionHash, label: "分发",
     message: sendComplete ? "分发已确认" : approvalOnlyConfirmed ? "授权已完成，分发未提交" : unresolvedSubmission ? "分发结果待核对" : sendFailed ? "分发未提交" : distributionHash ? "分发已提交，等待确认" : "分发未提交",
@@ -129,6 +147,8 @@ function evmHistoryResults({ state, approvalOnlyConfirmed, submissionUncertain, 
   }));
   if (hasApproval && state.signatures[0]) recipients.unshift({
     address: sender, asset: assetSymbol, assetKey: tokenAddress,
+    chainId: network.chainId, networkId: network.id, sourceAddress: sender || undefined, targetAddress: network.disperseContractAddress,
+    contractAddress: tokenAddress, tokenStandard: "erc20",
     explorerUrl: getEvmExplorerUrl(state.signatures[0], network) || undefined,
     hash: state.signatures[0], label: "Token 授权",
     message: state.progress.confirmed >= 1 ? "授权已确认" : "授权状态待核对", retryable: false,
@@ -252,6 +272,7 @@ export function EvmBatchDistributorPage() {
   const generatorRef = useRef<DistributionListGeneratorHandle>(null);
   const preflightEpochRef = useRef(0);
   const sendOperationRef = useRef(false);
+  const roundSenderRef = useRef<string>("");
   const previousWalletRef = useRef("");
   const terminalArchivedRef = useRef(false);
   const resetForEditRef = useRef<() => void>(() => {});
@@ -320,17 +341,17 @@ export function EvmBatchDistributorPage() {
     signatureCount: sendState.signatures.length
   });
   const unresolvedSubmission = safetyState.unresolvedSubmission;
-  const taskNetwork = useMemo(() => ({ kind: "evm" as const, id: selectedNetwork.id, label: selectedNetwork.label, chainId: selectedNetwork.chainId }), [selectedNetwork.id, selectedNetwork.label, selectedNetwork.chainId]);
+  const taskNetwork = useMemo(() => ({ kind: "evm" as const, id: selectedNetwork.id, label: selectedNetwork.label, chainId: selectedNetwork.chainId, blockExplorerUrl: selectedNetwork.blockExplorerUrl }), [selectedNetwork.id, selectedNetwork.label, selectedNetwork.chainId, selectedNetwork.blockExplorerUrl]);
   const historyResults = useMemo(() => evmHistoryResults({
     state: sendState, approvalOnlyConfirmed, submissionUncertain, assetMode, assetSymbol,
-    rows: parsed.validRows, tokenAddress: tokenDetails?.address, network: selectedNetwork, sender: wallet.address
-  }), [approvalOnlyConfirmed, submissionUncertain, assetMode, assetSymbol, parsed.validRows, selectedNetwork, sendState, tokenDetails?.address, wallet.address]);
+    rows: parsed.validRows, tokenAddress: tokenDetails?.address, network: selectedNetwork, sender: roundSenderRef.current
+  }), [approvalOnlyConfirmed, submissionUncertain, assetMode, assetSymbol, parsed.validRows, selectedNetwork, sendState, tokenDetails?.address]);
   const taskHistory = useTaskHistory({ toolId: "evm-distribution", label: "EVM 批量分发", network: taskNetwork, results: historyResults, busy: sending || preflighting, roundKey: roundSequence });
   const publishSendState = (state: DistributionSendState, policy = historyPolicyRef.current) => {
     sendSnapshotRef.current = state;
     historyPolicyRef.current = policy;
     taskHistory.captureResults(evmHistoryResults({ state, ...policy, assetMode, assetSymbol,
-      rows: parsed.validRows, tokenAddress: tokenDetails?.address, network: selectedNetwork, sender: wallet.address }));
+      rows: parsed.validRows, tokenAddress: tokenDetails?.address, network: selectedNetwork, sender: roundSenderRef.current }));
     setSendState(state);
   };
   useEffect(() => {
@@ -827,6 +848,7 @@ export function EvmBatchDistributorPage() {
     const gasSettings = gas.gasSettings;
     if (sendOperationRef.current || listImportingRef.current || !readyToSend || !walletProvider || !wallet.address || !showFinalSummary || sendState.status !== "idle" || !gasSettings) return;
     if (taskHistory.checkRecoveryReview()) return;
+    roundSenderRef.current = wallet.address;
     sendOperationRef.current = true;
     let observedSignatures: string[] = [];
     let observedProgress = createSendProgress(1);
@@ -1107,7 +1129,7 @@ export function EvmBatchDistributorPage() {
             <DistributionSummary
               details={preflightState.result ? (
                 <div className="summary-list">
-                  <div><span>资产余额</span><strong>{formatWei(preflightState.result.assetBalanceWei, assetDecimals)} {assetSymbol}</strong></div>
+                  <div><span>资产余额</span><EvmBalanceValue decimals={assetDecimals} showSymbol symbol={assetSymbol} valueWei={preflightState.result.assetBalanceWei} /></div>
                   <div><span>授权 / 交易</span><strong>{preflightState.result.needsApproval ? "1" : "0"} / {preflightState.result.totalTransactions}</strong></div>
                 </div>
               ) : undefined}
@@ -1155,7 +1177,7 @@ export function EvmBatchDistributorPage() {
                     <div><span>资产</span><strong>{assetMode === "token" && tokenDetails ? `${tokenDetails.symbol} · ${shortenAddress(tokenDetails.address)}` : assetSymbol}</strong></div>
                     <div><span>收款地址</span><strong>{parsed.validRows.length}</strong></div>
                     <div><span>分发总额</span><strong>{parsed.total} {assetSymbol}</strong></div>
-                    <div><span>资产余额</span><strong>{formatWei(preflightState.result?.assetBalanceWei ?? 0n, assetDecimals)} {assetSymbol}</strong></div>
+                    <div><span>资产余额</span><EvmBalanceValue decimals={assetDecimals} showSymbol symbol={assetSymbol} valueWei={preflightState.result?.assetBalanceWei ?? 0n} /></div>
                     <div><span>发送账户</span><strong className="address" title={wallet.address}>{shortenAddress(wallet.address)}</strong></div>
                     <div><span>{preflightState.result?.feeEstimateBasis === "conservative" ? "保守预估网络费" : "预估网络费"}</span><strong>{formatWei(preflightState.result?.estimatedNetworkFeeWei ?? 0n, selectedNetwork.nativeCurrency.decimals)} {selectedNetwork.nativeCurrency.symbol}</strong></div>
                     <div><span>授权</span><strong>{preflightState.result?.needsApproval ? "1 次 Token 授权" : "无需授权"}</strong></div>
@@ -1311,7 +1333,9 @@ export function EvmBatchDistributorPage() {
                 </TabsList>
                 <TabsContent value="native">
                   <div className="summary-list" aria-label="原生币余额">
-                    <div><span>{selectedNetwork.nativeCurrency.symbol}</span><strong>{nativeBalanceDescription || nativeBalance}</strong></div>
+                    <div><span>{selectedNetwork.nativeCurrency.symbol}</span>{nativeCurrencyEnabled && nativeBalanceLookup.status === "success" && nativeBalanceLookup.valueWei !== null ? (
+                      <EvmBalanceValue decimals={selectedNetwork.nativeCurrency.decimals} symbol={selectedNetwork.nativeCurrency.symbol} valueWei={nativeBalanceLookup.valueWei} />
+                    ) : <strong>{nativeBalanceDescription || nativeBalance}</strong>}</div>
                   </div>
                   {nativeBalanceLookup.status === "error" ? (
                     <CompactNotice role="alert" tone="error"><NoticeTitle>{nativeBalanceLookup.message}</NoticeTitle>
@@ -1342,7 +1366,9 @@ export function EvmBatchDistributorPage() {
                   {tokenDetails ? (
                     <div className="summary-list" aria-label="Token 信息">
                       <div><span>{tokenDetails.name}</span><strong>{tokenDetails.symbol} · {tokenDetails.decimals} decimals</strong></div>
-                      <div><span>钱包余额</span><strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong></div>
+                      <div><span>钱包余额</span>{tokenBalanceLookup.status === "success" && tokenBalanceLookup.valueWei !== null ? (
+                        <EvmBalanceValue className={tokenBalanceClassName} decimals={tokenDetails.decimals} symbol={tokenDetails.symbol} valueWei={tokenBalanceLookup.valueWei} />
+                      ) : <strong className={tokenBalanceClassName} title={tokenBalanceHint || undefined}>{tokenBalanceDescription || tokenBalance}</strong>}</div>
                     </div>
                   ) : null}
                   {tokenLookup.status === "error" ? (

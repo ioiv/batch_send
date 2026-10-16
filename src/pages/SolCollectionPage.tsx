@@ -159,8 +159,13 @@ function parsePercentageBps(value: string) {
   return bps > 0n && bps <= 10_000n ? bps : null;
 }
 
-function itemToDisplay(item: SolCollectionItemResult, networkId: SolanaNetworkId): CollectionDisplayResult {
+function itemToDisplay(item: SolCollectionItemResult, networkId: SolanaNetworkId, targetAddress: string): CollectionDisplayResult {
   return {
+    chainId: `solana:${networkId}`,
+    networkId,
+    sourceAddress: item.address,
+    targetAddress,
+    tokenStandard: "native",
     address: item.address,
     amount: item.transferLamports > 0n ? formatLamports(item.transferLamports) : "0",
     asset: "SOL",
@@ -325,6 +330,12 @@ function solTokenItemToDisplay(
     ? `；预计到账 ${formatSolTokenAmount(item.receivedAmount, job.decimals)}，Token 费 ${formatSolTokenAmount(item.transferFeeAmount, job.decimals)}`
     : "";
   return {
+    chainId: `solana:${networkId}`,
+    networkId,
+    sourceAddress: item.sourceAddress,
+    targetAddress: job.destinationAddress,
+    contractAddress: item.mintAddress,
+    tokenStandard: item.program,
     address: item.sourceAddress,
     amount: formatSolTokenAmount(item.amount, job.decimals),
     asset: solTokenExecutionLabel({
@@ -347,9 +358,17 @@ function solTokenItemToDisplay(
 }
 
 function unavailableSolTokenHoldingToDisplay(
-  holding: SolTokenAssetHolding
+  holding: SolTokenAssetHolding,
+  networkId: SolanaNetworkId,
+  targetAddress: string
 ): CollectionDisplayResult {
   return {
+    chainId: `solana:${networkId}`,
+    networkId,
+    sourceAddress: holding.sourceAddress,
+    targetAddress,
+    contractAddress: holding.mintAddress,
+    tokenStandard: holding.program,
     address: holding.sourceAddress,
     amount: holding.decimals === null
       ? `${holding.amount.toString()} 原始单位`
@@ -930,6 +949,11 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       ? `正在重试 ${sources.length} 个失败钱包`
       : `已确认，正在按并发 ${prepared.executionSettings.concurrency} 执行；余额与费用会在每笔发送前即时读取`);
     const initial = sources.map((source): CollectionDisplayResult => ({
+      chainId: `solana:${networkId}`,
+      networkId,
+      sourceAddress: source.address,
+      targetAddress: normalizedTarget,
+      tokenStandard: "native",
       address: source.address,
       amount: "—",
       asset: "SOL",
@@ -982,7 +1006,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
         reserveLamports: prepared.reserveLamports,
         sources
       });
-      const displayResults = collectionResults.map((item) => itemToDisplay(item, networkId));
+      const displayResults = collectionResults.map((item) => itemToDisplay(item, networkId, normalizedTarget));
       setResults((current) => retryOnly
         ? current.map((result) => displayResults.find((item) => item.address === result.address) || result)
         : displayResults);
@@ -1049,6 +1073,12 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       : `已确认，正在读取 ${prepared.parsedTokenMints.mintAddresses.length} 个 Token 的实时持仓并生成归集计划`);
     if (retryOnly) {
       const initial = jobs.map((job): CollectionDisplayResult => ({
+        chainId: `solana:${networkId}`,
+        networkId,
+        sourceAddress: job.sourceAddress,
+        targetAddress: job.destinationAddress,
+        contractAddress: job.mintAddress,
+        tokenStandard: job.program,
         address: job.sourceAddress,
         amount: formatSolTokenAmount(job.amount, job.decimals),
         asset: solTokenExecutionLabel(job),
@@ -1063,6 +1093,10 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
       )));
     } else {
       commitExecutionResults(prepared.parsedSources.sources.map((source): CollectionDisplayResult => ({
+        chainId: `solana:${networkId}`,
+        networkId,
+        sourceAddress: source.address,
+        targetAddress: normalizedTarget,
         address: source.address,
         amount: "—",
         asset: "SPL Token",
@@ -1102,7 +1136,7 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
         );
         nonExecutableResults = scopedHoldings.holdings
           .filter((holding) => holding.status !== "ready")
-          .map(unavailableSolTokenHoldingToDisplay);
+          .map((holding) => unavailableSolTokenHoldingToDisplay(holding, networkId, normalizedTarget));
         const holdingIds = new Set(scopedHoldings.holdings
           .filter((holding) => holding.status === "ready")
           .map((holding) => holding.id));
@@ -1124,6 +1158,12 @@ export function SolCollectionPage({ onAutomatic, readInitialWallets, initialConf
         commitExecutionResults([
           ...nonExecutableResults,
           ...jobs.map((job): CollectionDisplayResult => ({
+            chainId: `solana:${networkId}`,
+            networkId,
+            sourceAddress: job.sourceAddress,
+            targetAddress: job.destinationAddress,
+            contractAddress: job.mintAddress,
+            tokenStandard: job.program,
             address: job.sourceAddress,
             amount: formatSolTokenAmount(job.amount, job.decimals),
             asset: solTokenExecutionLabel(job),

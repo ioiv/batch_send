@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const pageMocks = vi.hoisted(() => ({
+  walletAddress: "0x00000000000000000000000000000000000000a1",
   ensureNetwork: vi.fn(),
   getLiveGas: vi.fn(),
   getNativeBalance: vi.fn(),
@@ -24,7 +25,7 @@ vi.mock("../lib/task-history-refresh", () => ({ refreshTaskTransactions: pageMoc
 
 vi.mock("../hooks/useEvmWallet", () => ({
   useEvmWallet: () => ({
-    address: "0x00000000000000000000000000000000000000a1",
+    address: pageMocks.walletAddress,
     buttonLabel: "断开钱包",
     chainIdHex: "0x1",
     connectWallet: vi.fn(),
@@ -94,6 +95,7 @@ const preflightResult = {
 afterEach(cleanup);
 
 beforeEach(() => {
+  pageMocks.walletAddress = connectedAccount;
   window.history.replaceState({}, "", "/evm/");
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -155,6 +157,64 @@ async function prepareReadyTokenDistributionPage() {
 }
 
 describe("EvmBatchDistributorPage safety", () => {
+  it.each([
+    [0n, "0", "0"],
+    [10_000_000_000_000n, "0.00001", "0.00001"],
+    [8_000_000_000_000n, "0.000008", "0.000008"],
+    [20_000_000_000_000n, "0.00002", "0.00002"],
+    [1n, "<0.00000001", "0.000000000000000001"]
+  ])("shows WETH balance %s with its exact value available", async (valueWei, display, exact) => {
+    pageMocks.getTokenBalance.mockResolvedValue(valueWei);
+    pageMocks.getTokenDetails.mockResolvedValue({ address: tokenAddress, decimals: 18, name: "Wrapped Ether", symbol: "WETH" });
+    const user = userEvent.setup();
+    render(createElement(EvmBatchDistributorPage));
+    await user.click(screen.getByRole("tab", { name: "Token" }));
+    await user.type(screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
+    const tokenInfo = await screen.findByLabelText("Token 信息");
+    const balance = await within(tokenInfo).findByTitle(`${exact} WETH`);
+    expect(balance).toHaveTextContent(display);
+    if (valueWei > 0n) expect(balance.textContent).not.toBe("0");
+    await user.click(within(tokenInfo).getByRole("button", { name: "说明：WETH 完整余额" }));
+    expect(await screen.findByRole("dialog", { name: "WETH 完整余额" })).toHaveTextContent(`${exact} WETH`);
+  });
+
+  it("uses the same precise balance in the main view and confirmation, then refreshes after sending", async () => {
+    const initialBalance = 10_000_000_000_001n;
+    const remainingBalance = 8_000_000_000_001n;
+    pageMocks.getTokenBalance.mockResolvedValueOnce(initialBalance).mockResolvedValue(remainingBalance);
+    pageMocks.getTokenDetails.mockResolvedValue({ address: tokenAddress, decimals: 18, name: "Wrapped Ether", symbol: "WETH" });
+    pageMocks.preflight.mockResolvedValue({ ...preflightResult, assetBalanceWei: initialBalance });
+    const user = userEvent.setup();
+    render(createElement(EvmBatchDistributorPage));
+    await user.click(screen.getByRole("tab", { name: "Token" }));
+    await user.type(screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
+    const tokenInfo = await screen.findByLabelText("Token 信息");
+    expect(await within(tokenInfo).findByTitle("0.000010000000000001 WETH")).toHaveTextContent("0.00001");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每个地址的金额（WETH）" }), { target: { value: "0.000002" } });
+    await user.type(getRecipientEditor(), recipient);
+    await user.click(screen.getByRole("button", { name: "开始分发" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
+    const confirmationBalance = within(dialog).getByTitle("0.000010000000000001 WETH");
+    expect(confirmationBalance).toHaveTextContent("0.00001 WETH");
+    await user.click(within(confirmationBalance).getByRole("button", { name: "说明：WETH 完整余额" }));
+    expect(await screen.findByRole("dialog", { name: "WETH 完整余额" })).toHaveTextContent("0.000010000000000001 WETH");
+    await user.keyboard("{Escape}");
+    await user.click(within(dialog).getByRole("button", { name: "签名并分发" }));
+    expect(await screen.findByText("分发完成")).toBeVisible();
+    expect(await within(tokenInfo).findByTitle("0.000008000000000001 WETH")).toHaveTextContent("0.000008");
+    expect(pageMocks.getTokenBalance).toHaveBeenCalledTimes(2);
+    expect(pageMocks.sendToken.mock.calls[0][0].rows).toEqual([
+      expect.objectContaining({ amountRaw: "0.000002", valueWei: 2_000_000_000_000n })
+    ]);
+  });
+
+  it("also preserves a small nonzero native balance and its full value", async () => {
+    pageMocks.getNativeBalance.mockResolvedValue(8_000_000_000_001n);
+    render(createElement(EvmBatchDistributorPage));
+    const balance = await within(screen.getByLabelText("原生币余额")).findByTitle("0.000008000000000001 ETH");
+    expect(balance).toHaveTextContent("0.000008");
+  });
+
   it("imports recipient columns in either order and signs every original 18-decimal amount", async () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
@@ -642,6 +702,13 @@ describe("EvmBatchDistributorPage safety", () => {
       feeQuote: preflightResult.feeQuote,
       gasSettings: { mode: "auto" }
     }));
+    expect(readTaskHistory("evm-distribution")[0].results[0]).toMatchObject({
+      sourceAddress: connectedAccount, targetAddress: recipient, chainId: 1, tokenStandard: "native"
+    });
+    pageMocks.walletAddress = secondRecipient;
+    act(() => { fireEvent(window, new Event("focus")); });
+    act(() => { fireEvent(window, new Event("pagehide")); });
+    expect(readTaskHistory("evm-distribution")[0].results[0].sourceAddress).toBe(connectedAccount);
   });
 
   it("renders confirmed and uncertain rows when a token distribution partially fails", async () => {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { readTaskHistory, recoverTaskRecord, removeTaskRecord, saveTaskRecord, type TaskRecord } from './task-history';
+import { createCollectionResultsCsv } from './collection-results';
 
 const hash = `0x${'a'.repeat(64)}`;
 const address = `0x${'1'.repeat(40)}`;
@@ -30,6 +31,56 @@ describe('public task history', () => {
     const recovered = recoverTaskRecord(record);
     expect(recovered.results.every(result => result.status === 'error' && result.uncertain && result.retryable === false)).toBe(true);
     expect(recovered.results[1].message).toContain('未记录交易哈希');
+  });
+  it('preserves full NFT context and explorer links through storage and recovery', () => {
+    const record = makeRecord();
+    record.network = { kind: 'evm', id: 'baseSepolia', label: 'Base Sepolia', chainId: 84532 };
+    const contract = `0x${'3'.repeat(40)}`;
+    const target = `0x${'4'.repeat(40)}`;
+    const tokenId = (2n ** 256n - 1n).toString();
+    record.targetAddress = target;
+    Object.assign(record.results[0], { contractAddress: contract, tokenStandard: 'erc721', tokenId, amount: '1' });
+    expect(saveTaskRecord(record)).toBe(true);
+    const result = recoverTaskRecord(readTaskHistory(record.toolId)[0]).results[0];
+    expect(result).toMatchObject({ chainId: 84532, sourceAddress: address, targetAddress: target, contractAddress: contract,
+      tokenStandard: 'erc721', tokenId, amount: '1', hash, explorerUrl: `https://sepolia.basescan.org/tx/${hash}` });
+    expect(createCollectionResultsCsv([result])).toContain(`84532,${address},${target},${contract},erc721,${tokenId}`);
+  });
+  it('fills only known legacy context and leaves missing asset identifiers empty', () => {
+    const record = makeRecord(); record.results[0].asset = 'ERC721 #1 · 0x24…3A17';
+    saveTaskRecord(record);
+    const result = readTaskHistory(record.toolId)[0].results[0];
+    expect(result).toMatchObject({ chainId: 1, sourceAddress: address, targetAddress: address, explorerUrl: `https://etherscan.io/tx/${hash}` });
+    expect(result.contractAddress).toBeUndefined();
+    expect(result.tokenId).toBeUndefined();
+    expect(result.tokenStandard).toBeUndefined();
+  });
+  it('does not treat legacy distribution recipients as source wallets', () => {
+    const record = makeRecord(); record.toolId = 'evm-distribution';
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].results[0].sourceAddress).toBeUndefined();
+  });
+  it('preserves configured custom explorer bases and rejects credential URLs or arbitrary result links', () => {
+    const record = makeRecord();
+    record.network = { kind: 'evm', id: 'custom-123', label: 'Custom', chainId: 123, blockExplorerUrl: 'https://scan.example.test/explorer/' };
+    record.results[0].explorerUrl = 'https://rpc.example.test/private-token';
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].results[0].explorerUrl).toBe(`https://scan.example.test/explorer/tx/${hash}`);
+    record.network.blockExplorerUrl = 'https://user:password@rpc.example.test/private-token';
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].network.blockExplorerUrl).toBeUndefined();
+    expect(readTaskHistory(record.toolId)[0].results[0].explorerUrl).toBeUndefined();
+    expect(window.localStorage.getItem('chainkit.public-task-history.v1')).not.toContain('private-token');
+  });
+  it('retains Solana cluster, mint and token program metadata', () => {
+    const mint = 'So11111111111111111111111111111111111111112';
+    const signature = '2'.repeat(88);
+    const record = makeRecord();
+    record.network = { kind: 'solana', id: 'devnet', label: 'Devnet' };
+    Object.assign(record.results[0], { address: mint, hash: signature, contractAddress: mint, tokenStandard: 'token-2022' });
+    saveTaskRecord(record);
+    expect(readTaskHistory(record.toolId)[0].results[0]).toMatchObject({ chainId: 'solana:devnet', contractAddress: mint,
+      tokenStandard: 'token-2022', explorerUrl: `https://solscan.io/tx/${signature}?cluster=devnet` });
   });
   it('retains confirmed successes and failures without turning a chain failure into an unknown result', () => {
     const record = makeRecord();

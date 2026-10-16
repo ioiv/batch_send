@@ -294,7 +294,9 @@ describe("EvmCollectionPage workbench", () => {
     evmMocks.execute.mockImplementationOnce(({ onProgress }) => {
       onProgress({ address: planItem.address, asset: planItem.asset, current: 1, id: planItem.id,
         label: planItem.label, message: "正在提交交易", stage: "submitting", total: 1 });
-      expect(readTaskHistory("evm-token-collection")[0].results[0]).toMatchObject({ status: "submitting" });
+      expect(readTaskHistory("evm-token-collection")[0].results[0]).toMatchObject({ status: "submitting",
+        chainId: 1, sourceAddress: planItem.address, targetAddress, contractAddress: planItem.asset.contractAddress,
+        tokenStandard: planItem.asset.standard });
       fireEvent(window, new Event("pagehide"));
       return pending;
     });
@@ -1098,6 +1100,13 @@ describe("EvmCollectionPage workbench", () => {
       ]
     }));
     expect(evmMocks.execute.mock.calls[0][0].plan).toEqual(erc1155Plan);
+    await waitFor(() => expect(readTaskHistory('evm-nft-collection')[0].results).toHaveLength(2));
+    const storedResults = readTaskHistory('evm-nft-collection')[0].results;
+    storedResults.forEach((result, index) => expect(result).toMatchObject({
+      chainId: 1, sourceAddress: signerAccount.address, targetAddress, contractAddress: tokenAddress,
+      tokenStandard: 'erc1155', tokenId: assets[index].tokenId.toString(),
+      amount: index === 0 ? '4' : '2', hash: transactionHash, explorerUrl: `https://etherscan.io/tx/${transactionHash}`
+    }));
 
     const walletList = screen.getByLabelText("已导入来源钱包");
     expect(await within(walletList).findByText("ERC1155 · 2 个 Token ID")).toBeVisible();

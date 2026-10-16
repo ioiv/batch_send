@@ -4,6 +4,7 @@ import {
   filterCollectionResults,
   getCollectionResultCounts,
   getCollectionResultDisplayStatus,
+  getEvmCollectionAssetContext,
   sanitizeRoundArchiveText,
   shortenTransactionHash,
   type CollectionDisplayResult
@@ -78,7 +79,7 @@ describe("collection result helpers", () => {
         status: "success"
       } as CollectionDisplayResult
     ]);
-    expect(csv.split("\r\n")[0]).toBe("label,address,asset,amount,status,message,transaction_hash,explorer_url");
+    expect(csv.split("\r\n")[0]).toBe("label,address,asset,amount,status,message,transaction_hash,explorer_url,chain_id,source_address,target_address,contract_address,token_standard,token_id");
     expect(csv).toContain('"wallet, one"');
     expect(csv).toContain('"RPC 请求失败\n请重试"');
     expect(csv).toContain('"\'=HYPERLINK(""https://example.test"")"');
@@ -87,6 +88,27 @@ describe("collection result helpers", () => {
     expect(csv).not.toContain("privateKey");
     expect(csv).not.toContain(evmSecretSentinel);
     expect(csv).not.toContain(solSecretSentinel);
+  });
+
+  it("exports complete asset identity, amounts and shared transaction hashes without interpreting labels", () => {
+    const hash = `0x${"ab".repeat(32)}`;
+    const contract = `0x${"4".repeat(40)}`;
+    const otherContract = `0x${"5".repeat(40)}`;
+    const target = `0x${"6".repeat(40)}`;
+    const tokenId = (2n ** 256n - 1n).toString();
+    const rows = [
+      { ...results[0], ...getEvmCollectionAssetContext({ standard: 'erc721', contractAddress: contract, tokenId }), sourceAddress: results[0].address, amount: '1', chainId: 84532, targetAddress: target, hash },
+      { ...results[0], ...getEvmCollectionAssetContext({ standard: 'erc1155', contractAddress: otherContract, tokenId: '1' }), sourceAddress: results[0].address, amount: '3', chainId: 84532, targetAddress: target, hash },
+      { ...results[0], ...getEvmCollectionAssetContext({ standard: 'erc1155', contractAddress: otherContract, tokenId: '2' }), sourceAddress: results[0].address, amount: '7', chainId: 84532, targetAddress: target, hash },
+      { ...results[0], ...getEvmCollectionAssetContext({ standard: 'erc721', contractAddress: contract, tokenId }), sourceAddress: results[0].address, amount: '1', chainId: 1, targetAddress: target, hash }
+    ];
+    const csv = createCollectionResultsCsv(rows);
+    expect(csv).toContain(`84532,${results[0].address},${target},${contract},erc721,${tokenId}`);
+    expect(csv).toContain(`84532,${results[0].address},${target},${otherContract},erc1155,1`);
+    expect(csv).toContain(`84532,${results[0].address},${target},${otherContract},erc1155,2`);
+    expect(csv).toContain(`1,${results[0].address},${target},${contract},erc721,${tokenId}`);
+    expect(csv.match(new RegExp(hash, 'g'))).toHaveLength(4);
+    expect(createCollectionResultsCsv([{ ...results[0], asset: 'ERC721 #99 · 0x123…456' }]).split('\r\n')[1]).toMatch(/,,,,,,$/);
   });
 
   it("filters by terminal state and searches across safe display fields", () => {

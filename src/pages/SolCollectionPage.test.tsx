@@ -226,7 +226,10 @@ describe("SolCollectionPage workbench", () => {
         mintAddress: classicMint, phase: "submitting", signature, sourceAddress: firstSourceAddress,
         sourceTokenAccount: firstTokenAccount, total: 1
       });
-      expect(readTaskHistory("sol-collection")[0].results[0]).toMatchObject({ hash: signature, status: "submitting" });
+      expect(readTaskHistory("sol-collection")[0].results[0]).toMatchObject({ hash: signature, status: "submitting",
+        chainId: 'solana:mainnet-beta', sourceAddress: firstSourceAddress, targetAddress,
+        tokenStandard: mode === 'native' ? 'native' : 'spl-token',
+        ...(mode === 'spl' ? { contractAddress: classicMint } : {}) });
       // Close within the progress callback, before React has committed its state update.
       fireEvent(window, new Event("pagehide"));
       return pending;
