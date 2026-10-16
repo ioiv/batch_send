@@ -1,11 +1,12 @@
 .contract-call-result-body { display: grid; gap: var(--space-md); min-width: 0; }
 .contract-call-result-overview { display: grid; gap: var(--space-sm); min-width: 0; }
-.contract-call-result-summary { display: grid; grid-template-columns: minmax(6rem, .7fr) minmax(8rem, 1fr) minmax(0, 1.5fr); gap: var(--space-md); margin: 0; }
+.contract-call-result-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-md); margin: 0; }
 .contract-call-result-summary > div { display: grid; align-content: start; gap: var(--space-xs); min-width: 0; }
 .contract-call-result-summary dt { color: var(--muted-foreground); font-size: var(--text-caption); }
 .contract-call-result-summary dd { margin: 0; overflow-wrap: anywhere; font-size: var(--text-body); font-weight: 600; font-variant-numeric: tabular-nums; }
 .contract-call-result-summary dd > span:not(.contract-call-result-amount-value) { color: var(--muted-foreground); font-size: var(--text-caption); font-weight: 400; }
 .contract-call-result-total small { display: block; margin-top: var(--space-xs); color: var(--muted-foreground); font-size: var(--text-caption); font-weight: 400; }
+.contract-call-result-total { grid-column: span 2; }
 .contract-call-result-contract { min-width: 0; color: var(--muted-foreground); font-size: var(--text-caption); }
 .contract-call-result-contract > summary { width: fit-content; max-width: 100%; padding-block: var(--space-xs); cursor: pointer; overflow-wrap: anywhere; }
 .contract-call-result-contract > summary code { margin-inline: var(--space-xs); color: var(--foreground); }
@@ -28,6 +29,7 @@
 .contract-call-result-table th:last-child { width: 38%; }
 .contract-call-result-table td { min-width: 0; padding-block: var(--space-sm); vertical-align: top; overflow-wrap: anywhere; white-space: normal; }
 .contract-call-result-wallet strong { display: block; color: var(--foreground); font-size: var(--text-body); font-weight: 500; line-height: 1.6; }
+.contract-call-result-wallet > small { display: block; color: var(--muted-foreground); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .contract-call-result-wallet > code { display: block; margin-top: var(--space-xs); color: var(--muted-foreground); font-size: var(--text-caption); }
 .contract-call-result-amount { font-variant-numeric: tabular-nums; }
 .contract-call-result-status [data-status="unknown"] { border-color: color-mix(in oklab, var(--warning) 45%, transparent); color: var(--warning); }

@@ -97,6 +97,41 @@ describe("raw EVM calldata templates and preparation", () => {
     expect(exposed).not.toContain("signer");
   });
 
+  it("prepares independent repeated calls after wallet deduplication and fixes every sampled value", () => {
+    const random = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation(array => {
+      (array as Uint8Array).fill((random.mock.calls.length - 1) % 3);
+      return array;
+    });
+    const batch = prepareEvmContractCallBatch(`alpha,${keys[0]}\nduplicate,${keys[0]}\nbeta,${keys[1]}`, config({
+      callsPerWallet: 3,
+      amount: { mode: "random", fixed: "", min: "0", max: "0.000000000000000002" },
+      randomId: { min: "10", max: "12" }
+    }));
+    expect(batch.rows).toHaveLength(6);
+    expect(new Set(batch.rows.map(row => row.id)).size).toBe(6);
+    expect(batch.rows.map(row => [row.walletIndex, row.callIndex, row.callsPerWallet, row.line]))
+      .toEqual([[0, 1, 3, 1], [0, 2, 3, 1], [0, 3, 3, 1], [1, 1, 3, 3], [1, 2, 3, 3], [1, 3, 3, 3]]);
+    expect(new Set(batch.rows.slice(0, 3).map(row => row.amountWei)).size).toBe(3);
+    expect(new Set(batch.rows.slice(0, 3).map(row => row.randomId)).size).toBe(3);
+    batch.rows.forEach(row => {
+      expect(row.calldata).toBe(`0xabcd${row.address.slice(2).toLowerCase().padStart(64, "0")}${word(row.amountWei)}${word(row.randomId)}${word(row.randomId)}`);
+      expect(Object.isFrozen(row)).toBe(true);
+    });
+    disposeEvmContractCallBatch(batch);
+  });
+
+  it.each([0, -1, 1.5, 101, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid per-wallet call counts %s", callsPerWallet => {
+    expect(() => prepareEvmContractCallBatch(keys[0], config({ callsPerWallet }))).toThrow("每钱包执行次数");
+  });
+
+  it("bounds expanded workload before sampling transaction data", () => {
+    const manyKeys = Array.from({ length: 101 }, (_, index) => `0x${(index + 1).toString(16).padStart(64, "0")}`).join("\n");
+    const random = vi.spyOn(globalThis.crypto, "getRandomValues");
+    expect(() => prepareEvmContractCallBatch(manyKeys, config({ callsPerWallet: 100 }))).toThrow("调用总数不能超过");
+    expect(() => prepareEvmContractCallBatch(keys[0], config({ callsPerWallet: 100, calldataTemplate: `0x${"00".repeat(100_000)}` }))).toThrow("调用数据总量过大");
+    expect(random).not.toHaveBeenCalled();
+  });
+
   it("samples inclusively with rejection sampling beyond Number precision", () => {
     const min = 9007199254740993123456789n;
     const rng = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
@@ -152,6 +187,28 @@ describe("read-only contract target inspection", () => {
 });
 
 describe("continuing known unbroadcast calls", () => {
+  it("continues multiple unsent calls from the same wallet without expanding or randomizing them again", async () => {
+    const settings = config({ callsPerWallet: 3 });
+    const original = prepareEvmContractCallBatch(keys.slice(0, 2).join("\n"), settings);
+    const previous: EvmContractCallRow[] = original.rows.map((row, index) => ({
+      ...row, status: index === 1 || index === 5 ? "failed" : index === 2 ? "cancelled" : "submitted",
+      hash: index === 1 || index === 2 || index === 5 ? null : `0x${"a".repeat(64)}`
+    }));
+    disposeEvmContractCallBatch(original);
+    const random = vi.spyOn(globalThis.crypto, "getRandomValues");
+    const retry = retryEvmContractCallBatch(keys.slice(0, 2).reverse().join("\n"), settings, [...previous].reverse());
+    expect(random).not.toHaveBeenCalled();
+    expect(retry.rows.map(row => row.index)).toEqual([1, 2, 5]);
+    retry.rows.forEach(row => expect(row).toEqual({ ...previous[row.index], status: "pending", hash: null, message: expect.any(String) }));
+    const { signedTransactions, fetchImpl } = rpcHarness();
+    const final = await executeEvmContractCallBatch(retry, { fetchImpl });
+    expect(final.every(row => row.status === "submitted")).toBe(true);
+    for (const row of retry.rows) {
+      const tx = signedTransactions.find(transaction => transaction.from === row.address && transaction.nonce === (row.walletIndex === 0 && row.callIndex === 3 ? 8 : 7));
+      expect(tx?.data).toBe(row.calldata);
+      expect(tx?.value).toBe(row.amountWei);
+    }
+  });
   it("preserves sampled transaction data, labels and identity while matching reordered keys by address", async () => {
     const settings = config({
       amount: { mode: "random", fixed: "", min: "0.001", max: "0.002" },
@@ -200,12 +257,80 @@ describe("continuing known unbroadcast calls", () => {
     expect(() => retryEvmContractCallBatch("", config(), failed)).toThrow("缺少私钥");
     expect(() => retryEvmContractCallBatch(keys[0], config(), [{ ...original.rows[0], status: "unknown" }])).toThrow("没有可继续");
     expect(() => retryEvmContractCallBatch(keys[0], config(), [{ ...failed[0], hash: `0x${"3".repeat(64)}` }])).toThrow("没有可继续");
-    expect(() => retryEvmContractCallBatch(keys[0], config(), [failed[0], failed[0]])).toThrow("重复钱包或记录");
+    expect(() => retryEvmContractCallBatch(keys[0], config(), [failed[0], failed[0]])).toThrow("重复调用或记录");
     disposeEvmContractCallBatch(original);
   });
 });
 
 describe("offline signing and raw RPC broadcast", () => {
+  it("serializes each wallet's calls with increasing nonces despite stale pending RPC values", async () => {
+    vi.useFakeTimers();
+    const active = new Map<string, number>();
+    let peak = 0;
+    const { signedTransactions, fetchImpl } = rpcHarness(async request => {
+      if (request.method !== "eth_sendRawTransaction") return;
+      const tx = Transaction.from(request.params[0] as string);
+      const address = tx.from!;
+      expect(active.get(address) || 0).toBe(0);
+      active.set(address, 1);
+      peak = Math.max(peak, [...active.values()].reduce((sum, count) => sum + count, 0));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active.set(address, 0);
+    });
+    const batch = prepareEvmContractCallBatch(keys.slice(0, 2).join("\n"), config({ callsPerWallet: 3, taskNum: 2 }));
+    const run = executeEvmContractCallBatch(batch, { fetchImpl });
+    await vi.runAllTimersAsync();
+    const rows = await run;
+    expect(rows.every(row => row.status === "submitted")).toBe(true);
+    expect(new Set(rows.map(row => row.hash)).size).toBe(6);
+    for (const address of new Set(batch.rows.map(row => row.address))) {
+      expect(signedTransactions.filter(tx => tx.from === address).map(tx => tx.nonce)).toEqual([7, 8, 9]);
+    }
+    expect(peak).toBe(2);
+  });
+
+  it.each(["estimate failure", "broadcast uncertain"])("stops a wallet's later calls after %s while other wallets continue", async failure => {
+    const firstAddress = new Wallet(keys[0]).address;
+    const { requests, fetchImpl } = rpcHarness(request => {
+      if (failure === "estimate failure" && request.method === "eth_estimateGas" && (request.params[0] as { from: string }).from === firstAddress) {
+        return errorResponse(request, "execution reverted");
+      }
+      if (failure === "broadcast uncertain" && request.method === "eth_sendRawTransaction" && Transaction.from(request.params[0] as string).from === firstAddress) {
+        return errorResponse(request, "nonce too low");
+      }
+    });
+    const batch = prepareEvmContractCallBatch(keys.slice(0, 2).join("\n"), config({ callsPerWallet: 3 }));
+    const rows = await executeEvmContractCallBatch(batch, { fetchImpl });
+    expect(rows.map(row => row.status)).toEqual([failure === "estimate failure" ? "failed" : "unknown", "cancelled", "cancelled", "submitted", "submitted", "submitted"]);
+    expect(rows.slice(1, 3).every(row => row.hash === null && row.message.includes("后续调用未发送"))).toBe(true);
+    expect(requests.filter(request => request.method === "eth_sendRawTransaction")).toHaveLength(failure === "estimate failure" ? 3 : 4);
+  });
+
+  it("applies the task interval between calls within one wallet without delaying after the last call", async () => {
+    vi.useFakeTimers();
+    const starts: number[] = [];
+    const { fetchImpl } = rpcHarness(request => { if (request.method === "eth_getTransactionCount") starts.push(Date.now()); });
+    const batch = prepareEvmContractCallBatch(keys[0], config({ callsPerWallet: 3, delay: { mode: "fixed", minMs: 100, maxMs: 100 } }));
+    const start = Date.now();
+    const run = executeEvmContractCallBatch(batch, { fetchImpl });
+    await vi.runAllTimersAsync();
+    expect((await run).every(row => row.status === "submitted")).toBe(true);
+    expect(starts.map(time => time - start)).toEqual([0, 100, 200]);
+    expect(Date.now() - start).toBe(200);
+  });
+
+  it("stops the remaining calls of the current wallet when a broadcast is interrupted", async () => {
+    const abort = new AbortController();
+    const { requests, fetchImpl } = rpcHarness(request => {
+      if (request.method === "eth_sendRawTransaction") { abort.abort(); return new Promise(() => {}); }
+    });
+    const batch = prepareEvmContractCallBatch(keys[0], config({ callsPerWallet: 3 }));
+    const rows = await executeEvmContractCallBatch(batch, { fetchImpl, signal: abort.signal });
+    expect(rows.map(row => row.status)).toEqual(["unknown", "cancelled", "cancelled"]);
+    expect(rows[0].hash).toMatch(/^0x[\da-f]{64}$/);
+    expect(rows.slice(1).every(row => row.hash === null)).toBe(true);
+    expect(requests.filter(request => request.method === "eth_sendRawTransaction")).toHaveLength(1);
+  });
   it("fails every unbroadcast wallet if the RPC network differs from the prepared network", async () => {
     const batch = prepareEvmContractCallBatch(keys.slice(0, 2).join("\n"), config({ expectedChainId: 137 }));
     const { requests, signedTransactions, fetchImpl } = rpcHarness();

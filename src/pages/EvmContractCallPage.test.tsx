@@ -30,19 +30,22 @@ function makeBatch(input: string, config: EvmContractCallConfig): EvmContractCal
   if (!input.trim()) throw new Error("请至少导入一个有效的 EVM 私钥");
   return {
     config,
-    rows: input.split("\n").map((key, index) => ({
-      id: `row-${index}`,
-      index,
-      line: index + 1,
+    rows: input.split("\n").flatMap((key, walletIndex) => Array.from({ length: config.callsPerWallet ?? 1 }, (_, call) => ({
+      id: `row-${walletIndex}-${call + 1}`,
+      index: walletIndex * (config.callsPerWallet ?? 1) + call,
+      walletIndex,
+      callIndex: call + 1,
+      callsPerWallet: config.callsPerWallet ?? 1,
+      line: walletIndex + 1,
       address: privateKeyToAccount(key as `0x${string}`).address,
       label: "",
       status: "pending",
       amountWei: 1_000_000_000_000_000n,
-      randomId: BigInt(index + 7),
-      calldata: `0x12345678${index.toString(16).padStart(64, "0")}`,
+      randomId: BigInt(walletIndex * (config.callsPerWallet ?? 1) + call + 7),
+      calldata: `0x12345678${(walletIndex * (config.callsPerWallet ?? 1) + call).toString(16).padStart(64, "0")}`,
       hash: null,
       message: "待执行"
-    }))
+    })))
   };
 }
 
@@ -80,7 +83,7 @@ async function setupPage(count = 2) {
   fireEvent.change(screen.getByRole("textbox", { name: "RPC 节点" }), { target: { value: rpcEndpoint } });
   fireEvent.change(screen.getByRole("textbox", { name: "调用数据" }), { target: { value: calldataTemplate } });
   await user.click(screen.getByRole("tab", { name: "固定金额" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "每钱包固定金额" }), { target: { value: "0.001" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "每笔固定金额" }), { target: { value: "0.001" } });
   return user;
 }
 
@@ -108,21 +111,91 @@ async function reviewCalls(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("EVM contract call workbench", () => {
+  it("reviews wallet counts separately from repeated calls and invalidates the plan when the count changes", async () => {
+    const user = await setupPage();
+    const count = screen.getByRole("spinbutton", { name: "每钱包执行次数" });
+    expect(count).toHaveValue(1);
+    fireEvent.change(count, { target: { value: "3" } });
+    const batch = await reviewCalls(user);
+    expect(batch.config.callsPerWallet).toBe(3);
+    expect(batch.rows).toHaveLength(6);
+    expect(sendButton()).toHaveAccessibleName("确认发送 6 笔");
+    const metrics = document.querySelector(".contract-call-result-summary")!;
+    expect(metrics).toHaveTextContent("钱包数2 个");
+    expect(metrics).toHaveTextContent("每钱包计划次数3 次");
+    expect(metrics).toHaveTextContent("本次调用6 笔");
+    expect(metrics).toHaveTextContent("0.006 ETH");
+    await user.click(screen.getByRole("button", { name: "查看全部 6 笔" }));
+    expect(within(resultTable()).getAllByRole("row")).toHaveLength(7);
+    expect(within(resultTable()).getAllByText("第 3 / 3 次")).toHaveLength(2);
+    await user.click(screen.getByLabelText("查看钱包 1第 2 次的调用详情"));
+    expect(await screen.findByText(batch.rows[1].randomId.toString(), { selector: "code" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "返回修改" }));
+    expect(core.dispose).toHaveBeenCalledWith(batch);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包执行次数" }), { target: { value: "2" } });
+    const changed = await reviewCalls(user);
+    expect(changed.rows).toHaveLength(4);
+    expect(sendButton()).toHaveAccessibleName("确认发送 4 笔");
+    expect(core.execute).not.toHaveBeenCalled();
+  });
+
+  it("locates an invalid execution count before any RPC inspection", async () => {
+    const user = await setupPage(1);
+    const count = screen.getByRole("spinbutton", { name: "每钱包执行次数" });
+    fireEvent.change(count, { target: { value: "0" } });
+    await user.click(reviewButton());
+    expect(count).toHaveAttribute("aria-invalid", "true");
+    expect(count).toHaveAccessibleDescription("每钱包执行次数必须是 1 到 100 的整数");
+    expect(screen.getByText("请修正每钱包执行次数")).toHaveAttribute("role", "status");
+    expect(core.inspect).not.toHaveBeenCalled();
+    expect(core.prepare).not.toHaveBeenCalled();
+    fireEvent.change(count, { target: { value: "2" } });
+    expect(count).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText("请修正每钱包执行次数")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes failed retries from unsent continuations and merges them into the full round", async () => {
+    const user = await setupPage();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包执行次数" }), { target: { value: "3" } });
+    const batch = await reviewCalls(user);
+    const finalRows = batch.rows.map((row, index): EvmContractCallRow => ({
+      ...row, status: index % 3 === 1 ? "failed" : index % 3 === 2 ? "cancelled" : "submitted",
+      hash: index % 3 === 0 ? transactionHash : null,
+      message: index % 3 === 1 ? "准备失败" : index % 3 === 2 ? "前一次调用未成功提交" : "RPC 已接收"
+    }));
+    core.execute.mockResolvedValueOnce(finalRows);
+    await user.click(sendButton());
+    const retry = await screen.findByRole("button", { name: "重试 2 笔失败并继续 2 笔未发送" });
+    const retryBatch = { config: batch.config, rows: finalRows.filter(row => row.hash === null).map(row => ({ ...row, status: "pending" as const })) };
+    core.retry.mockReturnValueOnce(retryBatch);
+    await user.click(retry);
+    await waitFor(() => expect(sendButton()).toHaveAccessibleName("确认发送 4 笔"));
+    expect(screen.getByText("重试 2 笔失败并继续 2 笔未发送，沿用各笔原金额、随机整数和调用数据。")).toBeVisible();
+    expect(core.retry).toHaveBeenCalledWith(secrets.slice(0, 2).join("\n"), batch.config, finalRows);
+    expect(document.querySelector(".contract-call-result-summary")).toHaveTextContent("钱包数2 个");
+    core.execute.mockResolvedValueOnce(retryBatch.rows.map(row => ({ ...row, status: "submitted", hash: transactionHash })));
+    await user.click(sendButton());
+    expect(await screen.findByText("本轮结束：已提交 6，失败 0，待核对 0，未发送 0。")).toBeVisible();
+    expect(document.querySelector(".contract-call-result-summary")).toHaveTextContent("钱包数2 个");
+    expect(screen.getByRole("button", { name: "已提交，6 笔" })).toBeVisible();
+    expect(core.prepare).toHaveBeenCalledTimes(1);
+  });
+
   it("starts without native value and reveals amount and random-integer controls only when needed", async () => {
     const user = userEvent.setup();
     render(<EvmContractCallPage />);
     expect(screen.getByRole("tab", { name: "不附带金额" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("textbox", { name: "每钱包固定金额" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "每笔固定金额" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/randowId 最小值|随机整数最小值/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "调用数据" }), { target: { value: calldataTemplate } });
     expect(screen.getByLabelText(/randowId 最小值|随机整数最小值/)).toBeVisible();
     fireEvent.change(screen.getByRole("textbox", { name: "调用数据" }), { target: { value: "0x12345678{address}" } });
     expect(screen.queryByLabelText(/randowId 最小值|随机整数最小值/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "固定金额" }));
-    expect(screen.getByRole("textbox", { name: "每钱包固定金额" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "每笔固定金额" })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "随机金额" }));
-    expect(screen.getByRole("textbox", { name: "最小金额" })).toBeVisible();
-    expect(screen.getByRole("textbox", { name: "最大金额" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "每笔最小金额" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "每笔最大金额" })).toBeVisible();
     expect(core.prepare).not.toHaveBeenCalled();
     expect(core.inspect).not.toHaveBeenCalled();
   });
@@ -199,6 +272,7 @@ describe("EVM contract call workbench", () => {
     });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     const user = await setupPage(1);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包执行次数" }), { target: { value: "2" } });
     core.prepare.mockImplementationOnce((input: string, config: EvmContractCallConfig) => {
       const batch = makeBatch(input, config);
       return { ...batch, rows: batch.rows.map(row => ({ ...row, randomId: 9007199254740993123456789n })) };
@@ -211,11 +285,14 @@ describe("EVM contract call workbench", () => {
       reader.onerror = () => reject(reader.error);
       reader.readAsText(createObjectURL.mock.calls[0][0] as Blob);
     });
-    const [header, row] = csv.split("\r\n");
+    const [header, row, secondRow] = csv.split("\r\n");
     expect(header).toContain('"value (wei)","randomId","状态"');
     expect(header).not.toContain("randowId");
     expect(row.split(",")[5]).toBe('"9007199254740993123456789"');
     expect(row).toContain(addresses[0]);
+    expect(header).toContain('"网络","备注","钱包序号","执行序号","每钱包执行次数"');
+    expect(row.split(",").slice(-3)).toEqual(['"1"', '"1"', '"2"']);
+    expect(secondRow.split(",").slice(-3)).toEqual(['"1"', '"2"', '"2"']);
   });
 
   it("shows calldata errors once, links the concise summary and clears both after correction", async () => {
@@ -352,21 +429,22 @@ describe("EVM contract call workbench", () => {
     expect(core.execute).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["submitted", "unknown"] as const)("continues only unsent wallets, preserves prior results and acknowledges only new uncertain outcomes (%s)", async retryStatus => {
+  it.each(["submitted", "unknown"] as const)("retries only eligible calls, preserves prior results and acknowledges only new uncertain outcomes (%s)", async retryStatus => {
     const user = await setupPage(3);
     const batch = await reviewCalls(user);
     const finalRows: EvmContractCallRow[] = [
       { ...batch.rows[0], status: "submitted", hash: transactionHash, message: "RPC 已接收" },
-      { ...batch.rows[1], status: "cancelled", message: "已停止后续任务" },
+      { ...batch.rows[1], status: retryStatus === "submitted" ? "failed" : "cancelled", message: "尚未广播" },
       { ...batch.rows[2], status: "unknown", hash: uncertainHash, message: "请核对" }
     ];
     core.execute.mockResolvedValueOnce(finalRows);
     await user.click(sendButton());
     const retryBatch: EvmContractCallBatch = { config: batch.config, rows: [{ ...finalRows[1], status: "pending" }] };
     core.retry.mockReturnValue(retryBatch);
-    expect(await screen.findByRole("button", { name: "仅继续 1 个未发送钱包" })).toBeDisabled();
+    const retryLabel = retryStatus === "submitted" ? "重试 1 笔失败" : "继续 1 笔未发送";
+    expect(await screen.findByRole("button", { name: retryLabel })).toBeDisabled();
     await user.click(screen.getByRole("checkbox", { name: "我已核对待核对交易的链上结果" }));
-    await user.click(await screen.findByRole("button", { name: "仅继续 1 个未发送钱包" }));
+    await user.click(await screen.findByRole("button", { name: retryLabel }));
     expect(core.retry).toHaveBeenCalledExactlyOnceWith(secrets.join("\n"), batch.config, finalRows);
     await waitFor(() => expect(sendButton()).toBeEnabled());
     expect(core.prepare).toHaveBeenCalledTimes(1);
@@ -396,7 +474,7 @@ describe("EVM contract call workbench", () => {
       { ...batch.rows[2], status: "unknown", hash: uncertainHash, message: "请核对" }
     ]);
     await user.click(sendButton());
-    const retry = await screen.findByRole("button", { name: "仅继续 1 个未发送钱包" });
+    const retry = await screen.findByRole("button", { name: "继续 1 笔未发送" });
     expect(retry).toBeDisabled();
     await user.click(retry);
     expect(core.retry).not.toHaveBeenCalled();
@@ -411,7 +489,7 @@ describe("EVM contract call workbench", () => {
     const acknowledgement = screen.getByRole("checkbox", { name: "我已核对待核对交易的链上结果" });
     expect(acknowledgement).not.toBeChecked();
     await user.click(acknowledgement);
-    expect(screen.getByRole("button", { name: "仅继续 1 个未发送钱包" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "继续 1 笔未发送" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "开始新一轮" }));
     expect(reviewButton()).toBeEnabled();
     await reviewCalls(user);
@@ -429,7 +507,7 @@ describe("EVM contract call workbench", () => {
     ]);
     await user.click(sendButton());
     await waitFor(() => expect(screen.getByRole("button", { name: "开始新一轮" })).toBeEnabled());
-    expect(screen.queryByRole("button", { name: /^仅继续/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^(?:重试|继续) \d+ 笔/ })).not.toBeInTheDocument();
     expect(core.retry).not.toHaveBeenCalled();
   });
 

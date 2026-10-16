@@ -4,6 +4,7 @@
 .contract-call-wallet-summary code { color: var(--muted-foreground); overflow-wrap: anywhere; }
 .contract-call-acknowledgment { display: flex; align-items: flex-start; gap: var(--space-sm); font-size: var(--text-caption); }
 .contract-call-template { min-height: 6rem; overflow-wrap: anywhere; }
+.contract-call-workspace .contract-call-count { width: 12rem; max-width: 100%; }
 .contract-call-notice { margin: 0; font-size: var(--text-caption); overflow-wrap: anywhere; }
 .contract-call-notice--error { color: var(--destructive); }
 .contract-call-editor-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); }

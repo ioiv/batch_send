@@ -18,6 +18,7 @@ import { getEvmDistributionNetworks, getPreferredEvmDistributionNetwork } from "
 import {
   disposeEvmContractCallBatch, executeEvmContractCallBatch, fillEvmCalldataTemplate,
   inspectEvmContractCallTarget, prepareEvmContractCallBatch, retryEvmContractCallBatch,
+  maximumEvmContractCalls, maximumEvmContractCallsPerWallet,
   validateEvmContractCallConfig, type EvmContractCallBatch, type EvmContractCallConfig, type EvmContractCallRow
 } from "../lib/evm-contract-call";
 import "./evm-contract-call.css";
@@ -38,6 +39,7 @@ function noticeMessage(error: unknown) {
 }
 
 function issueTarget(message: string) {
+  if (/执行次数|调用总数|调用数据总量/.test(message)) return "contract-call-count";
   if (/私钥|钱包|密钥/.test(message)) return "source-wallet-import";
   if (/合约地址|零地址|未部署|合约代码|目标地址/.test(message)) return "contract-call-to";
   if (/calldata|模板|占位符/.test(message)) return "contract-call-data";
@@ -60,6 +62,7 @@ function issueSummary(target: string) {
     "contract-call-amount-min": "附带金额",
     "contract-call-id-min": "随机整数范围",
     "contract-call-concurrency": "同时执行钱包数",
+    "contract-call-count": "每钱包执行次数",
     "contract-call-delay-min": "任务间隔",
     "contract-call-gas-limit": "Gas Limit",
     "contract-call-gas-price": "Gas Price"
@@ -80,8 +83,8 @@ function downloadResults(rows: readonly EvmContractCallRow[], config: EvmContrac
     return `"${(/^(?:[=+@\-\t\r\n]|\s+[=+@-])/.test(raw) ? `'${raw}` : raw).replace(/"/g, '""')}"`;
   };
   const csv = [
-    ["序号", "钱包地址", "合约地址", "原生币金额", "value (wei)", "randomId", "状态", "交易哈希", "说明", "calldata", "网络", "备注"],
-    ...rows.map(row => [row.index + 1, row.address, config.contractAddress, formatAmount(row.amountWei), row.amountWei, row.randomId, statusLabels[row.status], row.hash, row.message, row.calldata, network.label, row.label])
+    ["序号", "钱包地址", "合约地址", "原生币金额", "value (wei)", "randomId", "状态", "交易哈希", "说明", "calldata", "网络", "备注", "钱包序号", "执行序号", "每钱包执行次数"],
+    ...rows.map(row => [row.index + 1, row.address, config.contractAddress, formatAmount(row.amountWei), row.amountWei, row.randomId, statusLabels[row.status], row.hash, row.message, row.calldata, network.label, row.label, row.walletIndex + 1, row.callIndex, row.callsPerWallet])
   ].map(row => row.map(cell).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
@@ -113,6 +116,7 @@ export function EvmContractCallPage() {
   const [randomIdMin, setRandomIdMin] = useState("0");
   const [randomIdMax, setRandomIdMax] = useState("1000000");
   const [taskNum, setTaskNum] = useState("3");
+  const [callsPerWallet, setCallsPerWallet] = useState("1");
   const [delayMode, setDelayMode] = useState<"fixed" | "random">("fixed");
   const [delayMin, setDelayMin] = useState("0");
   const [delayMax, setDelayMax] = useState("1000");
@@ -206,6 +210,7 @@ export function EvmContractCallPage() {
     contractAddress, calldataTemplate, rpcEndpoint, expectedChainId: selectedNetwork?.chainId,
     amount: { mode: amountMode === "random" ? "random" : "fixed", fixed: amountMode === "none" ? "0" : fixedAmount, min: amountMin, max: amountMax },
     randomId: { min: usesRandomId ? randomIdMin : "0", max: usesRandomId ? randomIdMax : "0" },
+    callsPerWallet: callsPerWallet.trim() ? Number(callsPerWallet) : Number.NaN,
     taskNum: taskNum.trim() ? Number(taskNum) : Number.NaN,
     delay: { mode: delayMode, minMs: delayMin.trim() ? Number(delayMin) : Number.NaN, maxMs: delayMode === "fixed" ? Number(delayMin) : delayMax.trim() ? Number(delayMax) : Number.NaN },
     gasLimit: gasLimit.trim() || undefined, gasPriceGwei: gasPriceGwei.trim() || undefined
@@ -223,6 +228,9 @@ export function EvmContractCallPage() {
       if (!keyInput.current?.read().trim()) throw new Error("请至少导入并选择一个有效的钱包");
       const config = previous ? { ...previous.config } : makeConfig();
       validateEvmContractCallConfig(config);
+      if (!previous && walletCount * (config.callsPerWallet ?? 1) > maximumEvmContractCalls) {
+        throw new Error(`调用总数不能超过 ${maximumEvmContractCalls} 笔，请减少钱包数或每钱包执行次数`);
+      }
       const { chainId } = await inspectEvmContractCallTarget(config, { signal: abort.signal });
       if (!mounted.current || abort.signal.aborted || checkRevision !== revision.current) return;
       const pinnedConfig = { ...config, expectedChainId: chainId };
@@ -235,7 +243,7 @@ export function EvmContractCallPage() {
       continuingRound.current = previous;
       setResultNetwork(network); setRows(batch.rows.map(row => ({ ...row })));
       setReady(true); setEditing(false); setIssue(null);
-      setNotice(previous ? "仅继续明确未发送钱包，沿用原金额、随机整数和调用数据。" : "网络与目标合约已核对。金额和调用数据已固定，确认后本地签名发送。");
+      setNotice(previous ? `${retryActionLabel}，沿用各笔原金额、随机整数和调用数据。` : "网络与目标合约已核对。每笔金额和调用数据已固定；同一钱包依次发送。");
       focusResults();
     } catch (error) {
       if (mounted.current && !abort.signal.aborted && checkRevision === revision.current) showIssue(error);
@@ -253,7 +261,7 @@ export function EvmContractCallPage() {
     controller.current = abort;
     const isCurrentExecution = () => mounted.current && controller.current === abort && revision.current === executionRevision;
     setReady(false); setRunning(true); setStopping(false); setIssue(null);
-    setNotice("正在逐钱包本地签名并提交交易，请保持页面打开。");
+    setNotice("正在逐笔本地签名并提交交易，同一钱包依次发送，请保持页面打开。");
     try {
       const finalRows = await executeEvmContractCallBatch(batch, {
         signal: abort.signal,
@@ -308,15 +316,32 @@ export function EvmContractCallPage() {
   const unknown = rows.some(row => row.status === "unknown");
   const failed = rows.some(row => row.status === "failed");
   const cancelled = rows.filter(row => row.status === "cancelled").length;
-  const retryCount = lastRound?.rows.filter(row => (row.status === "failed" || row.status === "cancelled") && row.hash === null).length || 0;
+  const retryRows = lastRound?.rows.filter(row => (row.status === "failed" || row.status === "cancelled") && row.hash === null) || [];
+  const retryCount = retryRows.length;
+  const retryFailedCount = retryRows.filter(row => row.status === "failed").length;
+  const retryUnsentCount = retryCount - retryFailedCount;
+  const retryActionLabel = [
+    retryFailedCount ? `重试 ${retryFailedCount} 笔失败` : "",
+    retryUnsentCount ? `继续 ${retryUnsentCount} 笔未发送` : ""
+  ].filter(Boolean).join("并");
   const status: WorkbenchStatus = checking ? "preflight" : running ? "running" : editing ? issue ? "error" : "editing" : ready ? "ready" : unknown ? "uncertain" : failed ? "error" : "success";
   const statusLabel = checking ? "检查网络与合约" : running ? stopping ? "正在停止" : `提交中 ${completed} / ${rows.length}` : editing ? issue ? "需要完善" : undefined : ready ? "待核对" : unknown ? "有交易待核对" : failed ? "部分调用失败" : cancelled === rows.length ? "已停止" : "提交结束";
-  const walletStatuses = useMemo(() => Object.fromEntries(rows.map(row => [row.address.toLowerCase(), [{
-    asset: "合约调用", amount: `${formatAmount(row.amountWei)} ${resultNetwork.symbol}`,
-    status: row.status === "submitted" ? "confirming" : row.status === "unknown" ? "uncertain" : row.status === "failed" ? "error" : row.status === "cancelled" ? "skipped" : row.status === "sending" || row.status === "signing" ? "submitting" : "pending",
-    message: row.message, hash: row.hash || undefined,
-    explorerUrl: row.hash && resultNetwork.explorer ? `${resultNetwork.explorer.replace(/\/$/, "")}/tx/${row.hash}` : undefined
-  } satisfies WalletExecutionItem]])), [rows, resultNetwork]);
+  const walletStatuses = useMemo(() => {
+    const statuses: Record<string, WalletExecutionItem[]> = {};
+    rows.forEach(row => {
+      const key = row.address.toLowerCase();
+      (statuses[key] ||= []).push({
+        asset: row.callsPerWallet > 1 ? `合约调用 · 第 ${row.callIndex} / ${row.callsPerWallet} 次` : "合约调用", amount: `${formatAmount(row.amountWei)} ${resultNetwork.symbol}`,
+        status: row.status === "submitted" ? "confirming" : row.status === "unknown" ? "uncertain" : row.status === "failed" ? "error" : row.status === "cancelled" ? "skipped" : row.status === "sending" || row.status === "signing" ? "submitting" : "pending",
+        message: row.message, hash: row.hash || undefined,
+        explorerUrl: row.hash && resultNetwork.explorer ? `${resultNetwork.explorer.replace(/\/$/, "")}/tx/${row.hash}` : undefined
+      });
+    });
+    return statuses;
+  }, [rows, resultNetwork]);
+  const configuredCalls = Number(callsPerWallet);
+  const validCallCount = Boolean(callsPerWallet.trim()) && Number.isInteger(configuredCalls) && configuredCalls >= 1 && configuredCalls <= maximumEvmContractCallsPerWallet;
+  const plannedCallCount = validCallCount ? walletCount * configuredCalls : null;
   const settingsSummary = `同时执行 ${taskNum || "—"} 个钱包 · ${delayMin === "0" && delayMode === "fixed" ? "无间隔" : delayMode === "random" ? "随机间隔" : `${delayMin} ms 间隔`} · Gas ${gasLimit || gasPriceGwei ? "手动" : "自动"}`;
   const advancedIssue = Boolean(issue && /concurrency|delay|gas/.test(issue.target));
 
@@ -324,7 +349,7 @@ export function EvmContractCallPage() {
     <div className="workspace contract-call-workspace">
       <div hidden={!editing}>
         <WorkbenchPanel segmented title="调用设置" footer={<ActionBar
-          summary={<WorkbenchSummary items={[{ label: "已选钱包", value: walletCount }, { label: "网络", value: selectedNetwork ? `${selectedNetwork.label} · ${selectedNetwork.chainId}` : "自动识别" }]} />}
+          summary={<WorkbenchSummary items={[{ label: "已选钱包", value: walletCount }, { label: "每钱包执行", value: validCallCount ? `${configuredCalls} 次` : "—" }, { label: "总调用", value: plannedCallCount === null ? "—" : `${plannedCallCount} 笔` }, { label: "网络", value: selectedNetwork ? `${selectedNetwork.label} · ${selectedNetwork.chainId}` : "自动识别" }]} />}
           feedback={issue ? <WorkflowFeedback requirement={{ message: issueSummary(issue.target), targetId: issue.target, actionLabel: "定位问题" }} /> : checking ? <p className="contract-call-notice" role="status">正在检查网络与目标合约…</p> : writingBlocked ? <p className="contract-call-notice" role="status">上一轮有交易待核对，请先查看上一轮结果。</p> : undefined}
         >
           {checking ? <Button type="button" variant="outline" onClick={invalidate}>取消检查</Button> : null}
@@ -363,16 +388,20 @@ export function EvmContractCallPage() {
                   <Textarea ref={templateInput} id="contract-call-data" className="contract-call-template mono" autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="粘贴 0x 开头的调用数据，或插入占位符" disabled={locked} value={calldataTemplate} onChange={event => update(setCalldataTemplate, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-data"))} aria-describedby={errorFor("contract-call-data") ? "contract-call-data-error" : undefined} />{fieldError("contract-call-data")}
                   {sample ? <details className="contract-call-sample"><summary>查看首个钱包替换示例{amountMode === "random" || usesRandomId ? "（范围下限）" : ""}</summary><code>{sample}</code></details> : null}
                 </Field>
-                <Field className="config-grid__full"><FieldLabel>附带原生币{selectedNetwork ? `（${selectedNetwork.nativeCurrency.symbol}）` : ""}</FieldLabel>
+                <Field className="config-grid__full"><FieldLabel htmlFor="contract-call-count">每钱包执行次数</FieldLabel>
+                  <Input id="contract-call-count" className="contract-call-count" type="number" inputMode="numeric" min="1" max={maximumEvmContractCallsPerWallet} step="1" disabled={locked} value={callsPerWallet} onChange={event => update(setCallsPerWallet, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-count"))} aria-describedby={errorFor("contract-call-count") ? "contract-call-count-error" : "contract-call-count-help"} />
+                  <FieldDescription id="contract-call-count-help">同一钱包依次执行，每次单独支付金额和网络费；每钱包最多 {maximumEvmContractCallsPerWallet} 次。</FieldDescription>{fieldError("contract-call-count")}
+                </Field>
+                <Field className="config-grid__full"><FieldLabel>每笔附带原生币{selectedNetwork ? `（${selectedNetwork.nativeCurrency.symbol}）` : ""}</FieldLabel>
                   <Tabs value={amountMode} onValueChange={value => { invalidate(); setAmountMode(value as typeof amountMode); }}><TabsList aria-label="交易金额模式">
                     <TabsTrigger value="none" disabled={locked}>不附带金额</TabsTrigger><TabsTrigger value="fixed" disabled={locked}>固定金额</TabsTrigger><TabsTrigger value="random" disabled={locked}>随机金额</TabsTrigger>
                   </TabsList></Tabs>
                   {amountMode !== "none" && calldataTemplate.includes("{random}") ? <FieldDescription>此金额同时用于交易 value 和模板中的 {"{random}"}。</FieldDescription> : null}
                 </Field>
-                {amountMode === "fixed" ? <Field className="config-grid__full"><FieldLabel htmlFor="contract-call-amount">每钱包固定金额</FieldLabel><Input id="contract-call-amount" inputMode="decimal" disabled={locked} value={fixedAmount} onChange={event => update(setFixedAmount, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-amount"))} />{fieldError("contract-call-amount")}</Field> : null}
+                {amountMode === "fixed" ? <Field className="config-grid__full"><FieldLabel htmlFor="contract-call-amount">每笔固定金额</FieldLabel><Input id="contract-call-amount" inputMode="decimal" disabled={locked} value={fixedAmount} onChange={event => update(setFixedAmount, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-amount"))} />{fieldError("contract-call-amount")}</Field> : null}
                 {amountMode === "random" ? <>
-                  <Field><FieldLabel htmlFor="contract-call-amount-min">最小金额</FieldLabel><Input id="contract-call-amount-min" inputMode="decimal" disabled={locked} value={amountMin} onChange={event => update(setAmountMin, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-amount-min"))} />{fieldError("contract-call-amount-min")}</Field>
-                  <Field><FieldLabel htmlFor="contract-call-amount-max">最大金额</FieldLabel><Input id="contract-call-amount-max" inputMode="decimal" disabled={locked} value={amountMax} onChange={event => update(setAmountMax, event.target.value)} /></Field>
+                  <Field><FieldLabel htmlFor="contract-call-amount-min">每笔最小金额</FieldLabel><Input id="contract-call-amount-min" inputMode="decimal" disabled={locked} value={amountMin} onChange={event => update(setAmountMin, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-amount-min"))} />{fieldError("contract-call-amount-min")}</Field>
+                  <Field><FieldLabel htmlFor="contract-call-amount-max">每笔最大金额</FieldLabel><Input id="contract-call-amount-max" inputMode="decimal" disabled={locked} value={amountMax} onChange={event => update(setAmountMax, event.target.value)} /></Field>
                 </> : null}
                 {usesRandomId ? <>
                   <Field><FieldLabel htmlFor="contract-call-id-min">随机整数最小值</FieldLabel><Input id="contract-call-id-min" inputMode="numeric" disabled={locked} value={randomIdMin} onChange={event => update(setRandomIdMin, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-id-min"))} />{fieldError("contract-call-id-min")}</Field>
@@ -386,7 +415,7 @@ export function EvmContractCallPage() {
                     {delayMode === "random" ? <Field><FieldLabel htmlFor="contract-call-delay-max">最大间隔（毫秒）</FieldLabel><Input id="contract-call-delay-max" type="number" min="0" max="300000" step="1" disabled={locked} value={delayMax} onChange={event => update(setDelayMax, event.target.value)} /></Field> : null}
                     <Field><FieldLabel htmlFor="contract-call-gas-limit">Gas Limit</FieldLabel><Input id="contract-call-gas-limit" placeholder="自动估算 + 20%" inputMode="numeric" disabled={locked} value={gasLimit} onChange={event => update(setGasLimit, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-gas-limit"))} />{fieldError("contract-call-gas-limit")}</Field>
                     <Field><FieldLabel htmlFor="contract-call-gas-price">Gas Price（Gwei）</FieldLabel><Input id="contract-call-gas-price" placeholder="自动获取" inputMode="decimal" disabled={locked} value={gasPriceGwei} onChange={event => update(setGasPriceGwei, event.target.value)} aria-invalid={Boolean(errorFor("contract-call-gas-price"))} />{fieldError("contract-call-gas-price")}</Field>
-                    <FieldDescription className="config-grid__full">间隔按每个执行线程计算；Gas 留空即可自动估算。</FieldDescription>
+                    <FieldDescription className="config-grid__full">间隔按每个执行线程计算，包含同一钱包的多次调用；Gas 留空即可自动估算。</FieldDescription>
                   </div>
                 </AdvancedSettings></div>
               </div>
@@ -395,7 +424,7 @@ export function EvmContractCallPage() {
         </WorkbenchPanel>
       </div>
       {!editing && rows.length && resultConfig.current ? <div ref={resultAnchor} tabIndex={-1} className="contract-call-result-anchor">
-        <EvmContractCallResults rows={rows} contractAddress={resultConfig.current.contractAddress} networkLabel={resultNetwork.label} nativeSymbol={resultNetwork.symbol} explorerBaseUrl={resultNetwork.explorer} phase={ready ? "review" : running ? "running" : "result"} notice={notice}
+        <EvmContractCallResults rows={rows} callsPerWallet={resultConfig.current.callsPerWallet} contractAddress={resultConfig.current.contractAddress} networkLabel={resultNetwork.label} nativeSymbol={resultNetwork.symbol} explorerBaseUrl={resultNetwork.explorer} phase={ready ? "review" : running ? "running" : "result"} notice={notice}
           onExport={() => downloadResults(rows, resultConfig.current!, resultNetwork)}
           footer={<ActionBar feedback={!ready && !running && lastRound?.rows.some(row => row.status === "unknown") ? <label className="contract-call-acknowledgment"><Checkbox checked={uncertainAcknowledged} onCheckedChange={value => setUncertainAcknowledged(value === true)} /><span>我已核对待核对交易的链上结果</span></label> : undefined}>
             {running ? <><ExecutionProgress current={completed} total={rows.length} label="提交进度" /><Button disabled={stopping} onClick={() => { setStopping(true); controller.current?.abort(); }} type="button" variant="outline">{stopping ? "正在停止" : "停止后续任务"}</Button></> : ready ? <>
@@ -403,7 +432,7 @@ export function EvmContractCallPage() {
             </> : <>
               <Button disabled={checking || locked} onClick={returnToEdit} type="button" variant={retryCount > 0 ? "outline" : "default"}>开始新一轮</Button>
               {checking ? <Button type="button" variant="outline" onClick={invalidate}>取消检查</Button> : null}
-              {retryCount > 0 ? <Button disabled={checking || locked || writingBlocked} onClick={() => void check(true)} type="button">{checking ? "检查中…" : `仅继续 ${retryCount} 个未发送钱包`}</Button> : null}
+              {retryCount > 0 ? <Button disabled={checking || locked || writingBlocked} onClick={() => void check(true)} type="button">{checking ? "检查中…" : retryActionLabel}</Button> : null}
             </>}
           </ActionBar>} />
       </div> : null}

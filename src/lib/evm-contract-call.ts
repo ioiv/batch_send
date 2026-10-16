@@ -11,8 +11,10 @@ export type EvmContractCallConfig = {
   /** Amounts use native currency units with exactly 18 supported decimal places. */
   amount: { mode: "fixed" | "random"; fixed: string; min: string; max: string };
   randomId: { min: string; max: string };
+  /** Independent calls per wallet; omitted configurations retain one call. */
+  callsPerWallet?: number;
   taskNum: number;
-  /** A worker waits after a task before taking the next wallet. */
+  /** A wallet worker waits between calls, including before its next wallet. */
   delay: { mode: "fixed" | "random"; minMs: number; maxMs: number };
   /** Blank means estimate separately for each wallet, then add a 20% buffer. */
   gasLimit?: string;
@@ -28,6 +30,9 @@ export type EvmContractCallStatus =
 export type EvmContractCallRow = {
   id: string;
   index: number;
+  walletIndex: number;
+  callIndex: number;
+  callsPerWallet: number;
   line: number;
   address: string;
   label: string;
@@ -60,6 +65,7 @@ type NormalizedConfig = {
   amountMax: bigint;
   idMin: bigint;
   idMax: bigint;
+  callsPerWallet: number;
   taskNum: number;
   delayMin: number;
   delayMax: number;
@@ -72,6 +78,9 @@ const privateBatches = new WeakMap<EvmContractCallBatch, PrivateBatch>();
 const maximumUint256 = (1n << 256n) - 1n;
 const maximumDelayMs = 300_000;
 const maximumTemplateCharacters = 256 * 1024;
+export const maximumEvmContractCallsPerWallet = 100;
+export const maximumEvmContractCalls = 10_000;
+const maximumBatchCalldataCharacters = 16 * 1024 * 1024;
 const hashPattern = /^0x[0-9a-fA-F]{64}$/;
 
 function invalid(message: string): never { throw new Error(message); }
@@ -122,6 +131,10 @@ function normalizeConfig(config: EvmContractCallConfig): NormalizedConfig {
     invalid("Chain ID 必须是大于 0 的安全整数");
   }
   if (!Number.isInteger(config.taskNum) || config.taskNum < 1 || config.taskNum > 20) invalid("线程数必须是 1 到 20 的整数");
+  const callsPerWallet = config.callsPerWallet === undefined ? 1 : config.callsPerWallet;
+  if (!Number.isInteger(callsPerWallet) || callsPerWallet < 1 || callsPerWallet > maximumEvmContractCallsPerWallet) {
+    invalid(`每钱包执行次数必须是 1 到 ${maximumEvmContractCallsPerWallet} 的整数`);
+  }
   if (!["fixed", "random"].includes(config.amount.mode)) invalid("金额模式无效");
   if (!["fixed", "random"].includes(config.delay.mode)) invalid("延迟模式无效");
   const amountMin = decimalAmount(config.amount.mode === "fixed" ? config.amount.fixed : config.amount.min, 18, "金额");
@@ -140,13 +153,18 @@ function normalizeConfig(config: EvmContractCallConfig): NormalizedConfig {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) invalid("RPC 超时必须在 1 到 120000 毫秒之间");
   return {
     contractAddress, template, rpcEndpoint: config.rpcEndpoint.trim(), expectedChainId: config.expectedChainId, amountMin, amountMax, idMin, idMax,
-    taskNum: config.taskNum, delayMin, delayMax, timeoutMs,
+    callsPerWallet, taskNum: config.taskNum, delayMin, delayMax, timeoutMs,
     gasLimit: config.gasLimit?.trim() ? unsignedInteger(config.gasLimit, "Gas Limit", true) : undefined,
     gasPrice: config.gasPriceGwei?.trim() ? decimalAmount(config.gasPriceGwei, 9, "Gas Price") : undefined
   };
 }
 
 export function validateEvmContractCallConfig(config: EvmContractCallConfig): void { normalizeConfig(config); }
+
+function validateCallWorkload(callCount: number, calldataCharacters: number) {
+  if (callCount > maximumEvmContractCalls) invalid(`调用总数不能超过 ${maximumEvmContractCalls} 笔，请减少钱包数或每钱包执行次数`);
+  if (calldataCharacters > maximumBatchCalldataCharacters) invalid("调用数据总量过大，请减少钱包数、每钱包执行次数或调用数据长度");
+}
 
 /** Unbiased, cryptographically secure, inclusive integer sampling, without Number conversion. */
 export function randomEvmContractCallInteger(min: bigint, max: bigint): bigint {
@@ -202,7 +220,7 @@ function createEvmContractCallBatch(config: EvmContractCallConfig, normalized: N
   // Public snapshots cannot be mutated to change the transactions that were previewed.
   const batch: EvmContractCallBatch = Object.freeze({
     rows: Object.freeze(rows.map((row) => Object.freeze({ ...row }))),
-    config: Object.freeze({ ...config, amount: Object.freeze({ ...config.amount }), randomId: Object.freeze({ ...config.randomId }), delay: Object.freeze({ ...config.delay }) })
+    config: Object.freeze({ ...config, callsPerWallet: normalized.callsPerWallet, amount: Object.freeze({ ...config.amount }), randomId: Object.freeze({ ...config.randomId }), delay: Object.freeze({ ...config.delay }) })
   });
   const delays = rows.map(() => Number(randomEvmContractCallInteger(BigInt(normalized.delayMin), BigInt(normalized.delayMax))));
   privateBatches.set(batch, { signers, config: normalized, rows, delays, started: false });
@@ -213,17 +231,22 @@ export function prepareEvmContractCallBatch(privateKeyInput: string, config: Evm
   const normalized = normalizeConfig(config);
   const { accounts, signers } = readEvmContractCallWallets(privateKeyInput);
   if (!accounts.length) invalid("请至少导入一个有效的 EVM 私钥");
-  const rows = accounts.map((account, index): EvmContractCallRow => {
+  const callCount = accounts.length * normalized.callsPerWallet;
+  const expandedLength = normalized.template.replace(/\{(?:address|random|randomId|randowId)\}/g, "0".repeat(64)).length;
+  validateCallWorkload(callCount, callCount * expandedLength);
+  const rows = accounts.flatMap((account, walletIndex) => Array.from({ length: normalized.callsPerWallet }, (_, call): EvmContractCallRow => {
     const amountWei = randomEvmContractCallInteger(normalized.amountMin, normalized.amountMax);
     const randomId = randomEvmContractCallInteger(normalized.idMin, normalized.idMax);
     return {
-      id: `contract-call-${account.line}`, index, line: account.line, address: signers[index].address,
+      id: `contract-call-${account.line}-${call + 1}`, index: walletIndex * normalized.callsPerWallet + call,
+      walletIndex, callIndex: call + 1, callsPerWallet: normalized.callsPerWallet,
+      line: account.line, address: signers[walletIndex].address,
       label: account.label, amountWei, randomId,
-      calldata: fillEvmCalldataTemplate({ template: normalized.template, address: signers[index].address, amountWei, randomId }),
+      calldata: fillEvmCalldataTemplate({ template: normalized.template, address: signers[walletIndex].address, amountWei, randomId }),
       status: "pending", hash: null, message: "已准备，等待发送"
     };
-  });
-  return createEvmContractCallBatch(config, normalized, signers, rows);
+  }));
+  return createEvmContractCallBatch(config, normalized, rows.map(row => signers[row.walletIndex]), rows);
 }
 
 /** Continue only calls known not to have been broadcast, preserving their prepared transaction data. */
@@ -237,27 +260,31 @@ export function retryEvmContractCallBatch(
   if (!eligible.length) invalid("没有可继续的未广播调用；已提交或待核对项不能直接重发");
   const { signers: importedSigners } = readEvmContractCallWallets(privateKeyInput);
   const signerByAddress = new Map(importedSigners.map(signer => [signer.address.toLowerCase(), signer]));
-  const signers: Wallet[] = [];
-  const seenAddresses = new Set<string>();
+  const seenCalls = new Set<string>();
   const seenIds = new Set<string>();
+  validateCallWorkload(eligible.length, eligible.reduce((sum, row) => sum + (typeof row.calldata === "string" ? row.calldata.length : 0), 0));
   const rows = eligible.map((previous): EvmContractCallRow => {
     let address: string;
     try { address = getAddress(previous.address).toLowerCase(); }
     catch { return invalid("待继续项的钱包地址无效，请核对原始结果"); }
-    if (seenAddresses.has(address) || seenIds.has(previous.id)) invalid("待继续项包含重复钱包或记录，请核对原始结果");
-    seenAddresses.add(address); seenIds.add(previous.id);
+    if (!Number.isInteger(previous.callIndex) || previous.callIndex < 1 || previous.callIndex > normalized.callsPerWallet
+      || previous.callsPerWallet !== normalized.callsPerWallet) invalid("待继续项的执行次数或序号无效，请核对原始结果");
+    const callKey = `${address}:${previous.callIndex}`;
+    if (seenCalls.has(callKey) || seenIds.has(previous.id)) invalid("待继续项包含重复调用或记录，请核对原始结果");
+    seenCalls.add(callKey); seenIds.add(previous.id);
     const signer = signerByAddress.get(address);
-    if (!signer) invalid(`钱包 ${previous.index + 1} 缺少私钥，请重新导入后继续`);
+    if (!signer) invalid(`钱包 ${previous.walletIndex + 1} 缺少私钥，请重新导入后继续`);
     if (typeof previous.amountWei !== "bigint" || previous.amountWei < 0n || previous.amountWei > maximumUint256
       || typeof previous.randomId !== "bigint" || previous.randomId < 0n || previous.randomId > maximumUint256
       || typeof previous.calldata !== "string" || previous.calldata.length > maximumTemplateCharacters
       || !/^0x(?:[0-9a-fA-F]{2})*$/.test(previous.calldata)) {
       invalid("待继续项的原始调用数据无效，请核对原始结果");
     }
-    signers.push(signer);
     return { ...previous, status: "pending", hash: null, message: "已保留原调用参数，等待继续发送" };
-  });
-  return createEvmContractCallBatch(config, normalized, signers, rows);
+  }).sort((left, right) => left.walletIndex - right.walletIndex || left.callIndex - right.callIndex);
+  // Match each call after sorting; imported wallet order may differ from the preview.
+  const orderedSigners = rows.map(row => signerByAddress.get(row.address.toLowerCase())!);
+  return createEvmContractCallBatch(config, normalized, orderedSigners, rows);
 }
 
 export function disposeEvmContractCallBatch(batch: EvmContractCallBatch): void { privateBatches.delete(batch); }
@@ -404,9 +431,10 @@ export async function executeEvmContractCallBatch(
     privateBatches.delete(batch);
     return rows;
   }
-  const worker = queue<number>(async (index) => {
+  const runCall = async (index: number, nextNonce?: bigint): Promise<bigint | undefined> => {
     const row = rows[index];
     let broadcasting = false;
+    let nonce: bigint | undefined;
     try {
       if (signal?.aborted) { stopped(row); return; }
       emit(row, "preparing", "正在读取待处理 Nonce 和 Gas");
@@ -420,11 +448,12 @@ export async function executeEvmContractCallBatch(
           return buffered;
         })
       ]);
-      if (nonceValue > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcFailure("Nonce 超出允许范围", "rejected");
+      nonce = nextNonce !== undefined && nextNonce > nonceValue ? nextNonce : nonceValue;
+      if (nonce > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcFailure("Nonce 超出允许范围", "rejected");
       if (signal?.aborted) { stopped(row); return; }
       emit(row, "signing", "正在本地离线签名");
       const raw = await signers[index].signTransaction({
-        type: 0, chainId, nonce: Number(nonceValue), to: config.contractAddress,
+        type: 0, chainId, nonce: Number(nonce), to: config.contractAddress,
         data: row.calldata, value: row.amountWei, gasLimit: estimatedGas, gasPrice
       });
       if (signal?.aborted) { stopped(row); return; }
@@ -438,9 +467,11 @@ export async function executeEvmContractCallBatch(
         throw new RpcFailure("RPC 未返回匹配的交易哈希", "uncertain");
       }
       emit(row, "submitted", "已提交 RPC，等待链上确认");
+      return nonce + 1n;
     } catch (error) {
       if (broadcasting && error instanceof RpcFailure && error.alreadyKnown) {
         emit(row, "submitted", "交易已被 RPC 接收，等待链上确认");
+        return nonce! + 1n;
       } else if (broadcasting && (!(error instanceof RpcFailure) || error.kind !== "rejected")) {
         emit(row, "unknown", "广播结果不确定，请用交易哈希核对，勿直接重发");
       } else if (signal?.aborted || (error instanceof RpcFailure && error.kind === "cancelled")) {
@@ -449,13 +480,33 @@ export async function executeEvmContractCallBatch(
         if (!broadcasting) row.hash = null;
         emit(row, "failed", error instanceof RpcFailure ? error.message : "本地签名或交易准备失败");
       }
-    } finally {
-      if (!signal?.aborted && worker.length() > 0) {
-        await pause(delays[index], signal);
+    }
+    return undefined;
+  };
+  const walletCalls = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    const key = row.address.toLowerCase();
+    const indices = walletCalls.get(key) || [];
+    indices.push(index);
+    walletCalls.set(key, indices);
+  });
+  const worker = queue<{ indices: number[] }>(async ({ indices }) => {
+    let nextNonce: bigint | undefined;
+    for (let position = 0; position < indices.length; position++) {
+      const index = indices[position];
+      nextNonce = await runCall(index, nextNonce);
+      if (nextNonce === undefined) {
+        const reason = signal?.aborted ? "已停止，未广播交易"
+          : rows[index].status === "unknown" ? "前一次调用待核对，该钱包后续调用未发送"
+          : "前一次调用未成功提交，该钱包后续调用未发送";
+        indices.slice(position + 1).forEach(remaining => emit(rows[remaining], "cancelled", reason));
+        if (!signal?.aborted && worker.length() > 0) await pause(delays[index], signal);
+        break;
       }
+      if (!signal?.aborted && (position + 1 < indices.length || worker.length() > 0)) await pause(delays[index], signal);
     }
   }, config.taskNum);
-  for (let index = 0; index < rows.length; index++) worker.push(index);
+  for (const indices of walletCalls.values()) worker.push({ indices });
   await worker.drain();
   privateBatches.delete(batch);
   return rows;

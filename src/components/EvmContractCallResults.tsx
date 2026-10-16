@@ -10,6 +10,7 @@ import type { EvmContractCallRow } from "@/lib/evm-contract-call";
 
 export type EvmContractCallResultsProps = {
   rows: readonly EvmContractCallRow[];
+  callsPerWallet?: number;
   contractAddress: string;
   networkLabel: string;
   nativeSymbol: string;
@@ -106,6 +107,7 @@ function RowDetails({ row, walletLabel }: { row: EvmContractCallRow; walletLabel
     {open ? <div className="contract-call-result-details-content">
       <dl className="contract-call-result-detail-list">
         <div><dt>钱包地址</dt><dd><code>{row.address}</code><CopyButton label="复制地址" value={row.address} /></dd></div>
+        <div><dt>执行序号</dt><dd>第 {row.callIndex} / {row.callsPerWallet} 次</dd></div>
         <div><dt>附带金额（wei）</dt><dd><code>{row.amountWei.toString()}</code><CopyButton label="复制 wei 金额" value={row.amountWei.toString()} /></dd></div>
         <div><dt>随机 ID</dt><dd><code>{row.randomId.toString()}</code><CopyButton label="复制随机 ID" value={row.randomId.toString()} /></dd></div>
         {row.hash ? <div><dt>交易哈希</dt><dd><code>{row.hash}</code><CopyButton label="复制交易哈希" value={row.hash} /></dd></div> : null}
@@ -118,6 +120,7 @@ function RowDetails({ row, walletLabel }: { row: EvmContractCallRow; walletLabel
 
 export function EvmContractCallResults({
   rows,
+  callsPerWallet,
   contractAddress,
   networkLabel,
   nativeSymbol,
@@ -140,6 +143,8 @@ export function EvmContractCallResults({
   const symbol = nativeSymbol || "原生币";
   const explorer = useMemo(() => getExplorerBaseUrl(explorerBaseUrl), [explorerBaseUrl]);
   const totalAmount = useMemo(() => rows.reduce((total, row) => total + row.amountWei, 0n), [rows]);
+  const walletCount = useMemo(() => new Set(rows.map(row => row.address.toLowerCase())).size, [rows]);
+  const plannedCallsPerWallet = callsPerWallet ?? rows[0]?.callsPerWallet ?? 1;
   const counts = useMemo(() => {
     const result: Record<ResultFilter, number> = { all: rows.length, failed: 0, unknown: 0, submitted: 0, unsent: 0 };
     rows.forEach(row => {
@@ -175,7 +180,9 @@ export function EvmContractCallResults({
     <div className="contract-call-result-body">
       <div className="contract-call-result-overview">
         <dl className="contract-call-result-summary">
-          <div><dt>钱包数</dt><dd>{rows.length.toLocaleString()} <span>个</span></dd></div>
+          <div><dt>钱包数</dt><dd>{walletCount.toLocaleString()} <span>个</span></dd></div>
+          <div><dt>每钱包计划次数</dt><dd>{plannedCallsPerWallet} <span>次</span></dd></div>
+          <div><dt>本次调用</dt><dd>{rows.length.toLocaleString()} <span>笔</span></dd></div>
           <div><dt>网络</dt><dd>{networkLabel || "自定义网络"}</dd></div>
           <div className="contract-call-result-total"><dt>附带金额合计</dt><dd><span className="contract-call-result-amount-value">{formatAmount(totalAmount)}</span> {symbol}<small>不含网络费</small></dd></div>
         </dl>
@@ -216,16 +223,17 @@ export function EvmContractCallResults({
         <Table aria-label="合约批量调用结果">
           <TableHeader><TableRow><TableHead scope="col">钱包</TableHead><TableHead scope="col">附带金额（{symbol}）</TableHead><TableHead scope="col">状态</TableHead><TableHead scope="col">交易 / 详情</TableHead></TableRow></TableHeader>
           <TableBody>{visibleRows.map(row => {
-            const walletLabel = row.label || `钱包 ${row.index + 1}`;
+            const walletLabel = row.label || `钱包 ${row.walletIndex + 1}`;
+            const callLabel = row.callsPerWallet > 1 ? `${walletLabel}第 ${row.callIndex} 次` : walletLabel;
             const needsAttention = row.status === "failed" || row.status === "unknown";
             return <TableRow className="contract-call-result-row" data-status={row.status} key={row.id}>
-              <TableCell className="contract-call-result-wallet"><strong>{walletLabel}</strong><code title={row.address}>{shorten(row.address)}</code></TableCell>
+              <TableCell className="contract-call-result-wallet"><strong>{walletLabel}</strong>{row.callsPerWallet > 1 ? <small>第 {row.callIndex} / {row.callsPerWallet} 次</small> : null}<code title={row.address}>{shorten(row.address)}</code></TableCell>
               <TableCell className="contract-call-result-amount" data-label={`附带金额（${symbol}）`}>{formatAmount(row.amountWei)}</TableCell>
               <TableCell className="contract-call-result-status"><Badge data-status={row.status} variant={row.status === "failed" ? "destructive" : "outline"}>{statusLabels[row.status]}</Badge></TableCell>
               <TableCell className="contract-call-result-transaction">
-                {row.hash ? explorer ? <a aria-label={`在区块浏览器查看${walletLabel}的交易`} className="contract-call-result-hash" href={`${explorer}/tx/${encodeURIComponent(row.hash)}`} rel="noopener noreferrer" target="_blank" title={row.hash}>{shorten(row.hash, 10, 6)} ↗</a> : <code className="contract-call-result-hash" title={row.hash}>{shorten(row.hash, 10, 6)}</code> : null}
+                {row.hash ? explorer ? <a aria-label={`在区块浏览器查看${callLabel}的交易`} className="contract-call-result-hash" href={`${explorer}/tx/${encodeURIComponent(row.hash)}`} rel="noopener noreferrer" target="_blank" title={row.hash}>{shorten(row.hash, 10, 6)} ↗</a> : <code className="contract-call-result-hash" title={row.hash}>{shorten(row.hash, 10, 6)}</code> : null}
                 {needsAttention && row.message ? <p className="contract-call-result-message">{row.message}</p> : null}
-                <RowDetails row={row} walletLabel={walletLabel} />
+                <RowDetails row={row} walletLabel={callLabel} />
               </TableCell>
             </TableRow>;
           })}</TableBody>

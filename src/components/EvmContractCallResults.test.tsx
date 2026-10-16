@@ -12,6 +12,9 @@ function makeRows(): EvmContractCallRow[] {
   return Array.from({ length: 60 }, (_, index) => ({
     id: `public-call-${index + 1}`,
     index,
+    walletIndex: index,
+    callIndex: 1,
+    callsPerWallet: 1,
     line: index + 1,
     address: `0x${(index + 1).toString(16).padStart(40, "0")}`,
     label: `来源钱包 ${index + 1}`,

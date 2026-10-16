@@ -1083,7 +1083,7 @@ describe("EvmCollectionPage workbench", () => {
     expect([...walletBalances.querySelectorAll("small")].map((item) => item.textContent)).toEqual(["ETH"]);
     expect(within(walletRow).getByLabelText(`${signerAccount.address} 代币与 NFT 概览`)).toHaveTextContent("NFT 1 项 / 1 件");
     expect(screen.queryByRole("table", { name: /待归集资产清单/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/共有 1 个可归集 ERC721/)).toHaveAttribute("role", "status");
+    expect(screen.getByText(/识别到 1 个 ERC721/)).toHaveAttribute("role", "status");
     expect(screen.getByRole("button", { name: "说明：归集数量说明" }).querySelector("svg")).not.toBeNull();
     expect(screen.queryByText(/归集全部：归集所有已识别的 ERC721/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "再次识别" })).toBeEnabled();
@@ -1149,7 +1149,7 @@ describe("EvmCollectionPage workbench", () => {
     const secondRow = within(walletList).getByTitle(secondSignerAccount.address).closest('[role="listitem"]') as HTMLElement;
     expect(await within(firstRow).findByText("NFT 1 项 / 1 件")).toBeVisible();
     expect(within(secondRow).getByText("NFT 2 项 / 2 件")).toBeVisible();
-    expect(screen.getByText(/共有 3 个可归集 ERC721/)).toBeVisible();
+    expect(screen.getByText(/识别到 3 个 ERC721/)).toBeVisible();
     expandSettings("执行节奏");
     const concurrencyInput = screen.getByRole("spinbutton", { name: "并发钱包数" });
     expect(concurrencyInput).toBeEnabled();
@@ -1223,7 +1223,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(within(secondRow).getByText("2")).toBeVisible();
     expect(within(secondRow).getByText("ETH")).toBeVisible();
     expect(within(secondRow).getByText("NFT 1 项 / 1 件")).toBeVisible();
-    expect(screen.getByText(/共有 2 个可归集 ERC721/)).toBeVisible();
+    expect(screen.getByText(/识别到 2 个 ERC721/)).toBeVisible();
   });
 
   it("persists and restores the OpenSea key while passing it to ordinary ERC721 discovery", async () => {
@@ -1337,7 +1337,7 @@ describe("EvmCollectionPage workbench", () => {
     });
     await discoverNft();
 
-    expect(await screen.findByText(/共有 1 个 ERC1155 Token ID，合计 4 份/)).toBeVisible();
+    expect(await screen.findByText(/识别到 1 个 ERC1155 Token ID，合计 4 份/)).toBeVisible();
     expect(evmMocks.discoverCandidates).toHaveBeenCalledWith(expect.objectContaining({
       standard: "erc1155"
     }));
@@ -1574,7 +1574,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(await within(screen.getByLabelText("已导入来源钱包")).findByText("无资产")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("3")).toBeVisible();
     expect(within(screen.getByLabelText("已导入来源钱包")).getByText("ETH")).toBeVisible();
-    expect(screen.getByText(/当前没有该合约的可归集 ERC721/)).toHaveAttribute("role", "status");
+    expect(screen.getByText(/识别到 0 个 ERC721/)).toHaveAttribute("role", "status");
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
@@ -2032,7 +2032,7 @@ describe("EvmCollectionPage workbench", () => {
     ]);
 
     const user = await discoverNft();
-    await screen.findByText(/共有 2 个可归集 ERC721/);
+    await screen.findByText(/识别到 2 个 ERC721/);
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
     await screen.findByText(/归集完成：1 项确认成功，1 项失败/);
@@ -2091,7 +2091,7 @@ describe("EvmCollectionPage workbench", () => {
     }]);
 
     const user = await discoverNft();
-    await screen.findByText(/共有 1 个可归集 ERC721/);
+    await screen.findByText(/识别到 1 个 ERC721/);
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
     await screen.findByText(/归集完成：1 项确认成功/);
@@ -2108,7 +2108,7 @@ describe("EvmCollectionPage workbench", () => {
 
   it("keeps identified Token ID when only the RPC endpoint changes", async () => {
     const user = await discoverNft();
-    await screen.findByText(/共有 1 个可归集 ERC721/);
+    await screen.findByText(/识别到 1 个 ERC721/);
     await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
 
     expandSettings("修改 RPC");

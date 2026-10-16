@@ -1349,6 +1349,8 @@ export function EvmCollectionPage({
     const recognizedTotal = discovery.assets.length;
     const recognizedUnits = [...holdingsByOwner.values()].reduce((sum, summary) => sum + summary.units, 0n);
     const standardLabel = discovery.standard.toUpperCase();
+    const recognizedSummary = `识别到 ${recognizedTotal} 个 ${standardLabel}`
+      + (discovery.standard === "erc1155" ? ` Token ID，合计 ${recognizedUnits} 份` : "");
 
     planRef.current = [];
     retryPlanRef.current = [];
@@ -1371,9 +1373,7 @@ export function EvmCollectionPage({
       });
     }
     setAddressBalances({
-      message: discovery.standard === "erc1155"
-        ? `已识别 ${recognizedTotal} 个可归集 ERC1155 Token ID，共 ${recognizedUnits} 份`
-        : `已识别 ${recognizedTotal} 个可归集 ERC721`,
+      message: recognizedSummary,
       rows: selectedAccounts.map((account) => {
         const accountKey = account.address.toLowerCase();
         const nativeBalance = discovery.nativeBalances[accountKey] || {
@@ -1412,19 +1412,14 @@ export function EvmCollectionPage({
     setDiscoveryComplete(true);
     setDiscoveryIssues(Array.from(new Set(nextInventory.issues.map((issue) => issue.message))));
     if (discovery.complete) {
-      const inventoryCount = discovery.assets.length;
-      setDiscoveryMessage(inventoryCount
-        ? discovery.standard === "erc1155"
-          ? `持仓识别完成：${selectedAccounts.length} 个已选钱包中共有 ${recognizedTotal} 个 ERC1155 Token ID，合计 ${recognizedUnits} 份`
-          : `持仓识别完成：${selectedAccounts.length} 个已选钱包中共有 ${recognizedTotal} 个可归集 ERC721`
-        : `持仓识别完成：已选钱包当前没有该合约的可归集 ${standardLabel}`);
+      setDiscoveryMessage(`持仓识别完成：${selectedAccounts.length} 个已选钱包中${recognizedSummary}`);
     } else {
       setDiscoveryMessage(
         nextInventory.added
-          ? `已识别 ${recognizedTotal} 个经链上验证的 ${standardLabel}${discovery.standard === "erc1155" ? ` Token ID，合计 ${recognizedUnits} 份` : ""}`
+          ? `${recognizedSummary}，均已通过链上验证`
             + (nextInventory.duplicates ? `，跳过 ${nextInventory.duplicates} 个重复项` : "")
             + "；当前结果可能未覆盖完整持仓"
-          : `部分识别完成；没有新增的可归集 ${standardLabel}`
+          : `部分识别完成；未识别到新增的 ${standardLabel}`
       );
     }
     return true;
@@ -2581,7 +2576,7 @@ export function EvmCollectionPage({
                         autoOpen={Boolean(pendingTokenScan || pendingDiscovery || discoveryIssues.length)}
                         stateKey={`${Boolean(pendingTokenScan)}:${Boolean(pendingDiscovery)}:${discoveryIssues.length}`}
                         title="持仓识别"
-                        summary={discoveryMessage ? <span aria-live="polite" className="nft-discovery-card__status" role="status">{discoveryMessage}</span> : discoveryComplete ? <Badge variant="outline">{parsedAssetCount} 个 {nftStandard.toUpperCase()} Token ID</Badge> : "扫描后查看持仓明细"}
+                        summary={discoveryMessage ? <span aria-live="polite" className="nft-discovery-card__status" role="status">{discoveryMessage}</span> : discoveryComplete ? <Badge variant="outline">识别到 {parsedAssetCount} 个 {nftStandard.toUpperCase()}{nftStandard === "erc1155" ? " Token ID" : ""}</Badge> : "扫描后查看持仓明细"}
                         actions={(
                           <Button
                             disabled={!discoveryRunning && (controlsLocked || !discoveryContractIsValid || !discoverySourceReady)}
