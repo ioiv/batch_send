@@ -41,7 +41,7 @@ type ContractParameters = {
 
 function makePublicClient(options: {
   estimateGas?: () => Promise<bigint>;
-  getBalance?: () => Promise<bigint>;
+  getBalance?: (parameters: { address: Address }) => Promise<bigint>;
   getGasPrice?: () => Promise<bigint>;
   readContract?: (parameters: ContractParameters) => Promise<unknown>;
   simulateContract?: (parameters: ContractParameters) => Promise<{ request: unknown; result?: unknown }>;
@@ -328,6 +328,85 @@ describe("readErc20Metadata", () => {
 });
 
 describe("planEvmCollection", () => {
+  it.each(["native", "erc20", "erc1155"] as const)("excludes target %s balances before reading while preserving the default source list", async (standard) => {
+    const accounts = parseAccounts();
+    const asset = getSingleAsset(standard === "native" ? "" : standard === "erc20" ? tokenAddress : `${nftAddress},42`, standard);
+    const balances = new Map(accounts.map((account, index) => [account.address.toLowerCase(), BigInt(index + 1) * 10n]));
+    const { client, getBalance, readContract } = makePublicClient({
+      getBalance: async ({ address }) => balances.get(address.toLowerCase())!,
+      readContract: async ({ args, functionName }) => {
+        if (functionName === "name") return "Example Asset";
+        if (functionName === "symbol") return "EXT";
+        if (functionName === "decimals") return 18;
+        return balances.get((args![0] as Address).toLowerCase());
+      }
+    });
+    const getBalanceReadAddresses = () => standard === "native"
+      ? getBalance.mock.calls.map(([request]) => request.address)
+      : readContract.mock.calls.filter(([request]) => request.functionName === "balanceOf").map(([request]) => request.args![0]);
+
+    const defaultPlan = await planEvmCollection({ accounts, assets: [asset], publicClient: client });
+
+    expect(defaultPlan.map((item) => item.address)).toEqual(accounts.map((account) => account.address));
+    expect(defaultPlan.map((item) => item.amount)).toEqual([10n, 20n, 30n]);
+    expect(getBalanceReadAddresses()).toEqual(accounts.map((account) => account.address));
+    getBalance.mockClear();
+    readContract.mockClear();
+
+    const plan = await planEvmCollection({
+      accounts,
+      assets: [asset],
+      publicClient: client,
+      targetAddress: `  ${accounts[0].address.toUpperCase().replace("0X", "0x")}  `
+    });
+
+    expect(plan).toEqual(defaultPlan.slice(1));
+    expect(getBalanceReadAddresses()).toEqual(accounts.slice(1).map((account) => account.address));
+  });
+
+  it.each(["imported", "external"] as const)("omits NFTs owned by an %s target while retaining real sources, unrelated owners, and unreadable ownership", async (targetKind) => {
+    const accounts = parseAccounts();
+    const target = targetKind === "imported" ? accounts[0].address : externalOwner;
+    const assets = parseEvmCollectionAssets(Array.from({ length: 6 }, (_, index) => `${nftAddress},${index + 1}`).join("\n"), "erc721").validAssets;
+    const { client } = makePublicClient({
+      readContract: async ({ args, functionName }) => {
+        if (functionName === "name") return "Example Collectibles";
+        if (functionName === "symbol") return "NFT";
+        switch (args![0]) {
+          case 1n: return target.toLowerCase();
+          case 2n: return accounts[1].address;
+          case 3n: return targetAddress;
+          case 4n: throw new Error("ownerOf unavailable");
+          case 5n: return "unknown owner";
+          case 6n: return accounts[2].address;
+          default: throw new Error("Unexpected Token ID");
+        }
+      }
+    });
+
+    const defaultPlan = await planEvmCollection({ accounts, assets, publicClient: client });
+    const plan = await planEvmCollection({
+      accounts,
+      assets,
+      publicClient: client,
+      targetAddress: ` ${target.toUpperCase().replace("0X", "0x")} `
+    });
+
+    expect(defaultPlan[0]).toMatchObject({
+      address: getAddress(target),
+      amount: 1n,
+      status: targetKind === "imported" ? "ready" : "skipped"
+    });
+    expect(plan).toEqual(defaultPlan.slice(1));
+    expect(plan.map((item) => ({ address: item.address, amount: item.amount, status: item.status }))).toEqual([
+      { address: accounts[1].address, amount: 1n, status: "ready" },
+      { address: getAddress(targetAddress), amount: 1n, status: "skipped" },
+      { address: null, amount: 0n, status: "failed" },
+      { address: null, amount: 0n, status: "failed" },
+      { address: accounts[2].address, amount: 1n, status: "ready" }
+    ]);
+  });
+
   it("plans native balances and skips empty source wallets", async () => {
     const accounts = parseAccounts([privateKeyOne, privateKeyTwo]);
     const asset = getSingleAsset("", "native");

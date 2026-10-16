@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { CompactNotice } from "@/components/CompactNotice";
+import { NftInventoryReview } from "@/components/NftInventoryReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
@@ -319,6 +320,18 @@ export function NftAssetInput({
           {issues.slice(0, 5).map((issue, index) => <li key={`${issue.code}-${issue.line || issue.item || index}`}>{issue.message}</li>)}
           </ul>
         </FieldError>
+      ) : null}
+      {mode === "manual" && !(autoOnly && autoDiscoveryPanel) ? (
+        <NftInventoryReview
+          assetInput={value}
+          disabled={controlsDisabled}
+          onChange={(nextValue) => {
+            setIssues([]);
+            setMessage("");
+            onChange(nextValue);
+          }}
+          standard={standard}
+        />
       ) : null}
     </section>
   );

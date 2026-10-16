@@ -838,30 +838,35 @@ export async function planEvmCollection({
   accounts,
   assets,
   publicClient,
-  readNftMetadata = createNftContractMetadataReader(publicClient)
+  readNftMetadata = createNftContractMetadataReader(publicClient),
+  targetAddress
 }: {
   accounts: readonly EvmCollectionAccount[];
   assets: readonly EvmCollectionAsset[];
   publicClient: EvmCollectionPublicClient;
   readNftMetadata?: NftContractMetadataReader;
+  targetAddress?: string;
 }): Promise<EvmCollectionPlanItem[]> {
+  const targetKey = targetAddress?.trim().toLowerCase();
+  const sourceAccounts = accounts.filter((account) => account.address.toLowerCase() !== targetKey);
   const plan: EvmCollectionPlanItem[] = [];
   for (const asset of assets) {
     if (asset.standard === "native") {
-      plan.push(...await planNativeAsset(asset, accounts, publicClient));
+      plan.push(...await planNativeAsset(asset, sourceAccounts, publicClient));
     } else if (asset.standard === "erc20") {
-      plan.push(...await planErc20Asset(asset, accounts, publicClient));
+      plan.push(...await planErc20Asset(asset, sourceAccounts, publicClient));
     } else {
       const [items, metadata] = await Promise.all([
         asset.standard === "erc721"
-          ? planErc721Asset(asset, accounts, publicClient)
-          : planErc1155Asset(asset, accounts, publicClient),
+          ? planErc721Asset(asset, sourceAccounts, publicClient)
+          : planErc1155Asset(asset, sourceAccounts, publicClient),
         readNftMetadata(asset.contractAddress)
       ]);
       plan.push(...items.map((item) => ({ ...item, metadata })));
     }
   }
-  return plan;
+  // ownerOf can still identify the target even after its signing account is excluded.
+  return plan.filter((item) => !targetKey || item.address?.toLowerCase() !== targetKey);
 }
 
 function resultFromPlanItem(

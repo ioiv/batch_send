@@ -270,13 +270,38 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     unmount();
     expect(store.value).toBe("");
     const readInitialWallets = vi.fn(() => snapshot);
-    const mounted = render(<SecretKeyInput mode="evm" ref={ref} readInitialWallets={readInitialWallets} />);
+    const onSelectedAddressesChange = vi.fn();
+    const mounted = render(<SecretKeyInput mode="evm" onSelectedAddressesChange={onSelectedAddressesChange} ref={ref} readInitialWallets={readInitialWallets} />);
     expect(screen.getByText("已选择 1 / 2")).toBeVisible();
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([addresses[0].toLowerCase()]);
     expect(ref.current!.read()).toBe(secrets[0]);
     expect(ref.current!.handoff().keys).toBe(secrets.join("\n"));
-    mounted.rerender(<SecretKeyInput mode="evm" ref={ref} readInitialWallets={readInitialWallets} />);
+    mounted.rerender(<SecretKeyInput mode="evm" onSelectedAddressesChange={onSelectedAddressesChange} ref={ref} readInitialWallets={readInitialWallets} />);
     expect(readInitialWallets).toHaveBeenCalledTimes(1);
     expect(storageWrite).not.toHaveBeenCalled();
+  });
+
+  it("reports changed selected addresses when the selected wallet count stays the same", async () => {
+    const user = userEvent.setup();
+    const secrets = ["77", "78"].map((byte) => (`0x${byte.repeat(32)}`) as `0x${string}`);
+    const ids = secrets.map((secret) => privateKeyToAccount(secret).address.toLowerCase());
+    const onLineCountChange = vi.fn();
+    const onSelectedAddressesChange = vi.fn();
+    render(<SecretKeyInput
+      mode="evm"
+      onLineCountChange={onLineCountChange}
+      onSelectedAddressesChange={onSelectedAddressesChange}
+      readInitialWallets={() => ({ keys: secrets.join("\n"), selectedIds: [ids[0]] })}
+      walletBalances={{ [ids[1]]: [{ amount: "0", symbol: "ETH", zero: true }] }}
+    />);
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([ids[0]]);
+    expect(onLineCountChange).toHaveBeenLastCalledWith(1);
+
+    await user.click(screen.getByRole("button", { name: "选中已查询资产余额均为零 (1)" }));
+
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([ids[1]]);
+    expect(onLineCountChange).toHaveBeenLastCalledWith(1);
+    expect(screen.getByText("已选择 1 / 2")).toBeVisible();
   });
 
   it("never selects incomplete scans or positive native dust as zero balances", async () => {
@@ -303,7 +328,8 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
     const user = userEvent.setup();
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     const inputRef = createRef<SecretKeyInputHandle>();
-    render(<SecretKeyInput mode="evm" ref={inputRef} />);
+    const onSelectedAddressesChange = vi.fn();
+    render(<SecretKeyInput mode="evm" onSelectedAddressesChange={onSelectedAddressesChange} ref={inputRef} />);
 
     const sentinel = (`0x${"11".repeat(32)}`) as `0x${string}`;
     const address = privateKeyToAccount(sentinel).address;
@@ -311,24 +337,30 @@ describe("SecretKeyInput DOM-only lifecycle", () => {
 
     expect(screen.getByText(address.slice(0, 8) + "…" + address.slice(-8))).toBeVisible();
     expect(inputRef.current?.read()).toBe(sentinel);
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([address.toLowerCase()]);
     expect(storageWrite).not.toHaveBeenCalled();
 
     const checkbox = screen.getByRole("checkbox", { name: new RegExp(address, "i") });
     await user.click(checkbox);
     expect(inputRef.current?.read()).toBe("");
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([]);
     await user.click(checkbox);
     expect(inputRef.current?.read()).toBe(sentinel);
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([address.toLowerCase()]);
 
     const removeButton = screen.getByRole("button", { name: new RegExp(`删除.*${address}`, "i") });
     expect(removeButton).toHaveClass("imported-wallet-remove");
     await user.click(removeButton);
     expect(inputRef.current?.read()).toBe("");
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([]);
     expect(screen.queryByLabelText("已导入来源钱包")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入钱包" })).toBeVisible();
 
     await importWallets(user, sentinel);
-    inputRef.current?.clear();
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([address.toLowerCase()]);
+    act(() => inputRef.current?.clear());
     expect(inputRef.current?.read()).toBe("");
+    expect(onSelectedAddressesChange).toHaveBeenLastCalledWith([]);
     expect(document.querySelector<HTMLTextAreaElement>(".secret-dom-store")).toHaveValue("");
   });
 

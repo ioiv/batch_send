@@ -621,7 +621,7 @@ export function EvmCollectionPage({
   const [discoveryContract, setDiscoveryContract] = useState(initialDraft?.discoveryContract ?? "");
   const [openSeaApiKey, setOpenSeaApiKey] = useState(getStoredOpenSeaApiKey);
   const [openSeaKeyVisible, setOpenSeaKeyVisible] = useState(false);
-  const [sourceKeyLineCount, setSourceKeyLineCount] = useState(0);
+  const [selectedSourceAddresses, setSelectedSourceAddresses] = useState<string[]>([]);
   const [discoveryIssues, setDiscoveryIssues] = useState<string[]>([]);
   const [discoveryMessage, setDiscoveryMessage] = useState("");
   const [contractInspection, setContractInspection] = useState<NftContractInspection | null>(null);
@@ -760,6 +760,10 @@ export function EvmCollectionPage({
     tokenRecognition.items.map((item) => [item.address.toLowerCase(), item] as const)
   ), [tokenRecognition.items]);
   const targetIsValid = isAddress(targetAddress.trim()) && getAddress(targetAddress.trim()) !== zeroAddress;
+  const sourceKeyLineCount = selectedSourceAddresses.length;
+  const collectionSourceCount = selectedSourceAddresses.filter(
+    (address) => address.toLowerCase() !== targetAddress.trim().toLowerCase()
+  ).length;
   const discoveryContractIsValid = isAddress(discoveryContract.trim())
     && getAddress(discoveryContract.trim()) !== zeroAddress;
   const sourceKeysReady = sourceKeyLineCount > 0;
@@ -1241,6 +1245,12 @@ export function EvmCollectionPage({
 
     const parsedAccounts = parseEvmPrivateKeyInput(keyInputRef.current?.read() || "");
     if (!parsedAccounts.accounts.length) nextIssues.push("请勾选至少一个有效的来源钱包");
+    const collectionAccounts = parsedAccounts.accounts.filter(
+      (account) => account.address.toLowerCase() !== targetAddress.trim().toLowerCase()
+    );
+    if (parsedAccounts.accounts.length && !collectionAccounts.length) {
+      nextIssues.push("请至少选择一个与目标地址不同的来源钱包");
+    }
     parsedAccounts.issues.forEach((issue) => nextIssues.push(`密钥第 ${issue.line} 行：${issue.message}`));
 
     const parsedAssets = parseEvmCollectionAssets(assetInput, standard);
@@ -1249,7 +1259,7 @@ export function EvmCollectionPage({
       if (row.status !== "valid") nextIssues.push(`资产第 ${row.line} 行：${row.problems.join("；")}`);
     });
     nextIssues.push(...validateEvmCollectionWorkload({
-      accountCount: parsedAccounts.accounts.length,
+      accountCount: collectionAccounts.length,
       assetCount: parsedAssets.validAssets.length,
       standard
     }));
@@ -1270,7 +1280,7 @@ export function EvmCollectionPage({
     }
     const executionSettings = getExecutionSettings();
     if (!executionSettings) nextIssues.push("并发需要为 1–20，随机延迟需要为 0–300 秒且最大值不小于最小值");
-    return { executionSettings, nextIssues, parsedAccounts, parsedAssets };
+    return { collectionAccounts, executionSettings, nextIssues, parsedAccounts, parsedAssets };
   };
 
   const addDiscoveredAssets = (discovery: PendingNftDiscovery, allowPartial = false) => {
@@ -1798,11 +1808,12 @@ export function EvmCollectionPage({
       if (prepared.nextIssues.length) throw new Error(prepared.nextIssues.join("；"));
       const publicClient = createEvmPublicClient(selectedNetwork, effectiveRpcEndpoint);
       await assertEvmRpcNetwork(publicClient, selectedNetwork);
-      const ownershipPlan = await planEvmCollection({ accounts: prepared.parsedAccounts.accounts, assets: prepared.parsedAssets.validAssets, publicClient });
+      const ownershipPlan = await planEvmCollection({ accounts: prepared.collectionAccounts,
+        assets: prepared.parsedAssets.validAssets, publicClient, targetAddress: targetAddress.trim() });
       const previewPlan = fixedStandard === "erc20"
         ? applyEvmAmountPolicy(ownershipPlan, selectedNetwork.nativeCurrency.decimals, { fixedAmount, mode: amountMode, percentageAmount, randomMaximum, randomMinimum })
         : nftStandard === "erc1155" ? ownershipPlan : [
-          ...selectErc721CollectionPlan(ownershipPlan, prepared.parsedAccounts.accounts,
+          ...selectErc721CollectionPlan(ownershipPlan, prepared.collectionAccounts,
             nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null),
           ...ownershipPlan.filter(item => item.status === "failed")
         ];
@@ -1902,7 +1913,7 @@ export function EvmCollectionPage({
           }
         : result));
     } else {
-      commitExecutionResults(prepared.parsedAccounts.accounts.map((account) => ({
+      commitExecutionResults(prepared.collectionAccounts.map((account) => ({
         chainId: selectedNetwork.chainId,
         sourceAddress: account.address,
         targetAddress: target,
@@ -1940,9 +1951,10 @@ export function EvmCollectionPage({
       await assertEvmRpcNetwork(publicClient, selectedNetwork);
       if (!retryOnly) {
         const ownershipPlan = await planEvmCollection({
-          accounts: prepared.parsedAccounts.accounts,
+          accounts: prepared.collectionAccounts,
           assets: prepared.parsedAssets.validAssets,
-          publicClient
+          publicClient,
+          targetAddress: target
         });
         executionPlan = fixedStandard === "erc20"
           ? applyEvmAmountPolicy(ownershipPlan, selectedNetwork.nativeCurrency.decimals, {
@@ -1956,7 +1968,7 @@ export function EvmCollectionPage({
             ? ownershipPlan
             : selectErc721CollectionPlan(
                 ownershipPlan,
-                prepared.parsedAccounts.accounts,
+                prepared.collectionAccounts,
                 nftAmountMode === "fixed" ? parseErc721CollectionLimit(nftFixedAmount) : null
               );
         planRef.current = executionPlan;
@@ -2070,7 +2082,7 @@ export function EvmCollectionPage({
   const executionSettingsValid = getExecutionSettings() !== null;
   const rpcEndpointValid = isRpcEndpoint(effectiveRpcEndpoint);
   const executableAssetCount = parsedAssetCount;
-  const canStart = targetIsValid && sourceKeyLineCount > 0 && executableAssetCount > 0
+  const canStart = targetIsValid && collectionSourceCount > 0 && executableAssetCount > 0
     && Boolean(gas.gasSettings) && maximumFeeAmount !== null && amountPolicyValid
     && executionSettingsValid && rpcEndpointValid && !running
     && !acknowledgementRequired;
@@ -2079,6 +2091,7 @@ export function EvmCollectionPage({
     : acknowledgementRequired ? { message: "请先在归集记录中核对已提交交易的链上状态" }
     : !sourceKeyLineCount ? { message: "请先导入并选择来源钱包", targetId: "source-wallet-import" }
     : !targetIsValid ? { message: targetAddress.trim() ? "请修正目标地址" : "请填写目标地址", targetId: "evm-collection-target" }
+    : !collectionSourceCount ? { message: "请至少选择一个与目标地址不同的来源钱包", targetId: "source-wallet-import" }
     : !executableAssetCount ? { message: "请添加或识别要归集的资产", targetId: fixedStandard === "nft" ? "nft-quick-contract" : "evm-collection-asset-0" }
     : !rpcEndpointValid ? { message: "请填写有效的 RPC 地址", targetId: "evm-collection-rpc" }
     : !amountPolicyValid ? { message: "请修正归集数量", targetId: "collection-amount" }
@@ -2119,11 +2132,11 @@ export function EvmCollectionPage({
           symbol: metadata?.symbol || "Token",
           label: `${metadata?.symbol || "Token"} · ${shorten(asset.contractAddress)}`,
           amount: metadata?.decimals === undefined ? "待识别代币精度后计算"
-            : tokenAmount === null ? "配置数量小于代币最小单位或无效" : formatUnits(tokenAmount * BigInt(sourceKeyLineCount), metadata.decimals)
+            : tokenAmount === null ? "配置数量小于代币最小单位或无效" : formatUnits(tokenAmount * BigInt(collectionSourceCount), metadata.decimals)
         };
       })
     : [];
-  const plannedTotal = !sourceKeyLineCount ? "—" : fixedStandard === "nft"
+  const plannedTotal = !collectionSourceCount ? "—" : fixedStandard === "nft"
     ? nftStandard === "erc721" && nftAmountMode === "fixed"
       ? parsedNftFixedAmount !== null ? `${parsedNftFixedAmount} 个 NFT` : "—"
       : "全部已识别持仓"
@@ -2131,7 +2144,7 @@ export function EvmCollectionPage({
       ? configuredTokenTotals.length === 1 ? `${configuredTokenTotals[0].amount} ${configuredTokenTotals[0].symbol}` : `${configuredTokenTotals.length} 种 Token，分别合计`
     : amountMode === "fixed"
       ? configuredFixedAmount !== null
-        ? `${formatUnits(configuredFixedAmount * BigInt(sourceKeyLineCount), selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
+        ? `${formatUnits(configuredFixedAmount * BigInt(collectionSourceCount), selectedNetwork.nativeCurrency.decimals)} ${selectedNetwork.nativeCurrency.symbol}`
         : "—"
       : "按实时余额计算";
   const manualDraft: EvmManualCollectionDraft = {
@@ -2228,7 +2241,7 @@ export function EvmCollectionPage({
                 <div className="collection-confirmation">
                   <dl className="collection-confirmation__context">
                     <div><dt>网络</dt><dd>{selectedNetwork.label}</dd></div>
-                    <div><dt>来源钱包</dt><dd>{sourceKeyLineCount} 个已选择</dd></div>
+                    <div><dt>来源钱包</dt><dd>{collectionSourceCount} 个{collectionSourceCount < sourceKeyLineCount ? "（已排除目标钱包）" : "已选择"}</dd></div>
                     <div className="collection-confirmation__target"><dt>目标地址</dt><dd><code>{targetAddress || "—"}</code>{targetAddress ? <CopyButton label="复制目标地址" value={targetAddress} /> : null}</dd></div>
                   </dl>
                   <div className="collection-confirmation__status" role="status">{confirmationPreview.message}</div>
@@ -2353,7 +2366,7 @@ export function EvmCollectionPage({
                     invalidatePlan();
                   }}
                   onImportingChange={handleKeyImportingChange}
-                  onLineCountChange={setSourceKeyLineCount}
+                  onSelectedAddressesChange={setSelectedSourceAddresses}
                   readInitialWallets={readInitialWallets}
                   ref={keyInputRef}
                   walletAssetOverviews={walletAssetOverviews}
@@ -2377,7 +2390,7 @@ export function EvmCollectionPage({
                     invalidatePlan();
                   }}
                   onImportingChange={handleKeyImportingChange}
-                  onLineCountChange={setSourceKeyLineCount}
+                  onSelectedAddressesChange={setSelectedSourceAddresses}
                   readInitialWallets={readInitialWallets}
                   ref={keyInputRef}
                   walletAssetOverviews={walletAssetOverviews}
@@ -2702,7 +2715,7 @@ export function EvmCollectionPage({
                     contractAddress={discoveryContract}
                     contractStatus={!discoveryContract.trim() ? "empty" : discoveryContractIsValid ? "valid" : "invalid"}
                     defaultMode="auto"
-                    disabled={controlsLocked || keyImporting}
+                    disabled={operationRunning || keyImporting}
                     onChange={(value) => {
                       setCurrentAssetInput(value);
                       invalidatePlan();

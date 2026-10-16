@@ -363,6 +363,8 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   onDirty?: (reason: SecretKeyInputChangeReason, addresses?: readonly string[]) => void;
   onImportingChange?: (importing: boolean) => void;
   onLineCountChange?: (lineCount: number) => void;
+  /** Public selected addresses only; EVM addresses are normalized to lowercase. */
+  onSelectedAddressesChange?: (addresses: string[]) => void;
   readInitialWallets?: () => SecretKeyInputSnapshot | null;
   walletAssetOverviews?: Readonly<Record<string, WalletAssetOverview>>;
   walletBalances?: Readonly<Record<string, readonly WalletBalanceItem[]>>;
@@ -374,6 +376,7 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
   onDirty,
   onImportingChange,
   onLineCountChange,
+  onSelectedAddressesChange,
   readInitialWallets,
   walletAssetOverviews = {},
   walletBalances = {},
@@ -427,7 +430,8 @@ export const SecretKeyInput = forwardRef<SecretKeyInputHandle, {
     selectedIdsRef.current = nextSelectedIds;
     setSelectedIds(nextSelectedIds);
     onLineCountChange?.(nextSelectedIds.size);
-  }, [onLineCountChange]);
+    onSelectedAddressesChange?.([...nextSelectedIds]);
+  }, [onLineCountChange, onSelectedAddressesChange]);
 
   const setImportActive = useCallback((active: boolean) => {
     if (importingRef.current === active) return;
