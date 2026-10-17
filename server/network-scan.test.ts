@@ -5,7 +5,7 @@ import type { RequestOptions } from "node:https";
 import { Duplex, PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchPublicDocument, handleNetworkScanRequest, isPublicIp, MAX_RESPONSE_BYTES, scanSubdomain, scanWebsitePath,
+  fetchPublicDocument, handleNetworkScanRequest, isPublicIp, MAX_RESPONSE_BYTES, publicDocumentPathResult, scanSubdomain, scanWebsitePath,
   validateScanPayload, type NetworkScanDependencies
 } from "./network-scan";
 import * as discovery from "./subdomain-discovery";
@@ -56,6 +56,15 @@ function endResponse(response: IncomingMessage & PassThrough, body: string | Buf
 afterEach(() => { vi.useRealTimers(); });
 
 describe("public-target validation", () => {
+  it("builds a reusable response from the same bounded decoded sample used by path probes", () => {
+    const body = Buffer.concat([Buffer.from("<title>Decoded page</title>"), Buffer.alloc(MAX_RESPONSE_BYTES, 65)]);
+    const result = publicDocumentPathResult({ url: "https://example.com/", statusCode: 200, body, truncated: false, contentLength: 900 },
+      { decodedBody: true, durationMs: 321 });
+    expect(result).toMatchObject({ status: "responded", statusCode: 200, title: "Decoded page", contentLength: 900,
+      decodedBodyLength: body.length, durationMs: 321, fingerprint: createHash("sha256").update(body.subarray(0, MAX_RESPONSE_BYTES)).digest("hex") });
+    expect(publicDocumentPathResult({ url: "https://example.com/", statusCode: 200, body, truncated: true }, { decodedBody: true }).decodedBodyLength).toBeUndefined();
+  });
+
   it.each([
     "0.0.0.0", "10.0.0.1", "100.64.0.1", "100.127.255.254", "127.0.0.1", "169.254.169.254", "172.16.0.1", "172.31.255.254",
     "192.0.0.1", "192.0.2.1", "192.88.99.1", "192.168.1.1", "198.18.0.1", "198.19.255.254", "198.51.100.1", "203.0.113.1",
@@ -105,9 +114,24 @@ describe("public-target validation", () => {
   });
   it("validates same-origin discovery documents and script owner context", () => {
     expect(validateScanPayload({ kind: "path-discovery", baseUrl: "https://example.com/start?tracking=1", url: "https://example.com/assets/app.js?version=2", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 20000 })).toEqual({ kind: "path-discovery", baseUrl: "https://example.com/start", url: "https://example.com/assets/app.js", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 20000 });
-    for (const override of [{ url: "https://evil.com/" }, { documentUrl: "http://example.com/" }, { source: "dictionary" }, { timeoutMs: 20001 }, { extra: 1 }]) {
+    expect(validateScanPayload({ kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/app.js", source: "scripts", scanId: "a-round-123" })).toHaveProperty("scanId", "a-round-123");
+    for (const override of [{ url: "https://evil.com/" }, { documentUrl: "http://example.com/" }, { source: "dictionary" }, { timeoutMs: 20001 }, { extra: 1 }, { scanId: "../another" }, { scanId: "x".repeat(65) }, { scanId: 1 }]) {
       expect(() => validateScanPayload({ kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/", source: "links", ...override })).toThrow();
     }
+  });
+
+  it("gives only script discovery the independent 45-second budget", () => {
+    const script = { kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/assets/app.js", source: "scripts" };
+    expect(validateScanPayload(script)).toHaveProperty("timeoutMs", 45000);
+    expect(validateScanPayload({ ...script, timeoutMs: 45000 })).toHaveProperty("timeoutMs", 45000);
+    expect(() => validateScanPayload({ ...script, timeoutMs: 45001 })).toThrow();
+    for (const source of ["links", "robots", "sitemap", "wayback"]) {
+      expect(validateScanPayload({ ...script, source })).toHaveProperty("timeoutMs", 20000);
+      expect(() => validateScanPayload({ ...script, source, timeoutMs: 21000 })).toThrow();
+    }
+    expect(() => validateScanPayload({ kind: "path", url: script.url, timeoutMs: 45000 })).toThrow();
+    expect(() => validateScanPayload({ kind: "subdomain", domain: "example.com", timeoutMs: 45000 })).toThrow();
+    expect(() => validateScanPayload({ kind: "subdomain-discovery", domain: "example.com", source: "certspotter", timeoutMs: 45000 })).toThrow();
   });
 });
 
@@ -317,6 +341,78 @@ describe("website path probes", () => {
     const adapter = transport(() => {}, resolver);
     expect(await scanWebsitePath("https://example.com/", 1000, adapter.dependencies)).toMatchObject({ status: "error", message: "目标未通过公网地址检查" });
     expect(adapter.request).not.toHaveBeenCalled();
+  });
+
+  it("pins a trusted proxy DNS answer after checking the original DNS result", async () => {
+    const adapter = transport(response => endResponse(response, "trusted"));
+    const resolveProxyAddresses = vi.fn(async () => ["1.1.1.1"]);
+    const dependencies = { ...adapter.dependencies, resolveProxyAddresses };
+    expect((await fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64 }, dependencies)).body.toString()).toBe("trusted");
+    expect(resolveProxyAddresses).toHaveBeenCalledWith("example.com", "https:", expect.any(Number), expect.any(AbortSignal));
+    expect(adapter.request.mock.calls[0][1].lookup).toBeTypeOf("function");
+    adapter.request.mock.calls[0][1].lookup!("example.com", {}, (error, address) => { expect(error).toBeNull(); expect(address).toBe("1.1.1.1"); });
+  });
+
+  it("never uses trusted DNS to bypass a private or mixed original answer", async () => {
+    const adapter = transport(() => {}, mockResolver({ resolve4: vi.fn(async () => ["93.184.216.34", "127.0.0.1"]) }));
+    const resolveProxyAddresses = vi.fn(async () => ["1.1.1.1"]);
+    await expect(fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64 }, { ...adapter.dependencies, resolveProxyAddresses })).rejects.toMatchObject({ reason: "private" });
+    expect(resolveProxyAddresses).not.toHaveBeenCalled();
+    expect(adapter.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mixed trusted DNS answer before connecting to any returned address", async () => {
+    const adapter = transport(() => {});
+    const resolveProxyAddresses = vi.fn(async () => ["1.1.1.1", "10.0.0.1"]);
+    await expect(fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64 }, { ...adapter.dependencies, resolveProxyAddresses })).rejects.toMatchObject({ reason: "private" });
+    expect(adapter.request).not.toHaveBeenCalled();
+  });
+
+  it("includes trusted DNS in the total request deadline and cancels a hanging resolver", async () => {
+    vi.useFakeTimers();
+    const adapter = transport(() => {});
+    let trustedSignal: AbortSignal | undefined;
+    const resolveProxyAddresses = vi.fn((_hostname: string, _protocol: "http:" | "https:", _timeoutMs: number, signal?: AbortSignal) => {
+      trustedSignal = signal;
+      return new Promise<string[]>(() => {});
+    });
+    const pending = fetchPublicDocument("https://example.com/", { timeoutMs: 1000, maxBytes: 64 }, { ...adapter.dependencies, resolveProxyAddresses });
+    const rejected = expect(pending).rejects.toMatchObject({ reason: "timeout" });
+    await vi.advanceTimersByTimeAsync(1000);
+    await rejected;
+    expect(trustedSignal?.aborted).toBe(true);
+    expect(adapter.request).not.toHaveBeenCalled();
+  });
+
+  it("reads a slow script body after 30 seconds within a bounded 45-second transport budget", async () => {
+    vi.useFakeTimers();
+    const adapter = transport(response => {
+      response.write("first-part;");
+      setTimeout(() => endResponse(response, "fetch('/api/complete');"), 30000);
+    });
+    const pending = fetchPublicDocument("https://example.com/assets/slow.js", { timeoutMs: 45000, maxBytes: 64 }, adapter.dependencies);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect((await pending).body.toString()).toBe("first-part;fetch('/api/complete');");
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+    await expect(fetchPublicDocument("https://example.com/assets/slow.js", { timeoutMs: 45001, maxBytes: 64 }, adapter.dependencies)).rejects.toThrow("读取限制无效");
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends a hanging document body at 45 seconds and includes DNS time in that budget", async () => {
+    vi.useFakeTimers();
+    const resolver = mockResolver({ resolve4: vi.fn(() => new Promise<string[]>(resolve => setTimeout(() => resolve(["93.184.216.34"]), 5000))) });
+    const adapter = transport(response => { response.write("partial;"); }, resolver);
+    let settled = false;
+    const outcome = fetchPublicDocument("https://example.com/assets/hanging.js", { timeoutMs: 45000, maxBytes: 64 }, adapter.dependencies)
+      .then(() => { settled = true; return "unexpected-success"; }, error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(44999);
+    expect(adapter.request).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await outcome).toMatchObject({ reason: "timeout" });
+    expect(adapter.requests[0].destroy).toHaveBeenCalled();
+    expect(adapter.responses[0].destroyed).toBe(true);
+    expect(resolver.cancel).toHaveBeenCalledTimes(1);
   });
 
   it("keeps shared discovery document requests public-only and bounds their raw bodies", async () => {
@@ -563,12 +659,12 @@ describe("Node HTTP handler", () => {
     const discover = vi.spyOn(pathDiscovery, "discoverWebsitePaths").mockResolvedValue(result);
     try {
       const request = mockHandlerRequest();
-      request.body = { kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/app.js", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 15000 };
+      request.body = { kind: "path-discovery", baseUrl: "https://example.com/", url: "https://example.com/app.js", documentUrl: "https://example.com/docs/page", source: "scripts", timeoutMs: 15000, scanId: "test-round" };
       const response = mockHandlerResponse();
       await handleNetworkScanRequest(request, response.response);
       expect(response.state.statusCode).toBe(200);
       expect(JSON.parse(response.state.end.mock.calls[0][0])).toEqual({ result });
-      expect(discover).toHaveBeenCalledWith("https://example.com/", "https://example.com/app.js", "scripts", 15000, undefined, expect.any(AbortSignal), "https://example.com/docs/page");
+      expect(discover).toHaveBeenCalledWith("https://example.com/", "https://example.com/app.js", "scripts", 15000, undefined, expect.any(AbortSignal), "https://example.com/docs/page", "test-round");
     } finally { discover.mockRestore(); }
   });
   it("dispatches passive discovery through the same validated and cancellable endpoint", async () => {

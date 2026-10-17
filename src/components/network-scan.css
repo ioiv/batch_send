@@ -267,6 +267,27 @@
   white-space: nowrap;
 }
 
+.website-path-discovery-issues {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+}
+
+.website-path-discovery-issues summary {
+  cursor: pointer;
+}
+
+.website-path-discovery-issues li {
+  margin-top: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.website-path-discovery-issues a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
 .website-path-discovery-table th:first-child {
   width: 32%;
 }

@@ -166,10 +166,12 @@ function tokenJob(holding: SolTokenAssetHolding, id = holding.id) {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
 beforeEach(() => {
+  // An interrupted test can leave one-shot responses queued. Reset those
+  // implementations as well as call history before installing each fixture.
+  Object.values(solMocks).forEach(mock => mock.mockReset());
   window.localStorage.clear();
   solMocks.assertNetwork.mockResolvedValue(undefined);
   solMocks.collect.mockResolvedValue([]);
@@ -195,10 +197,16 @@ async function importSolSecret(user: ReturnType<typeof userEvent.setup>, secret 
   await user.click(within(dialog).getByRole("button", { name: "确认导入" }));
 }
 
+async function pasteInput(user: ReturnType<typeof userEvent.setup>, input: HTMLElement, value: string) {
+  await user.click(input);
+  await user.paste(value);
+  expect(input).toHaveValue(value);
+}
+
 async function prepareSolPage(secret = firstSourceSecret) {
   const user = userEvent.setup();
   render(<SolCollectionPage />);
-  await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+  await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
   await importSolSecret(user, secret);
   expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
   return user;
@@ -243,8 +251,8 @@ describe("SolCollectionPage workbench", () => {
     const user = userEvent.setup();
     const first = render(<SolCollectionPage />);
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
-    if (mode === "spl") await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    if (mode === "spl") await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = screen.getByRole("alertdialog", { name: mode === "native" ? "确认 SOL 归集？" : "确认 SPL Token 归集？" });
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
@@ -253,7 +261,7 @@ describe("SolCollectionPage workbench", () => {
     first.unmount();
     render(<SolCollectionPage />);
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
     expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
     expect(screen.getByRole("button", { name: "继续查询交易状态" })).toBeEnabled();
@@ -348,7 +356,7 @@ describe("SolCollectionPage workbench", () => {
     expect(screen.queryByRole("tab", { name: "SOL" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "SPL Token" })).not.toBeInTheDocument();
 
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     await importSolSecret(user);
     await confirmExecution(user);
 
@@ -417,7 +425,7 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
     await waitFor(() => expect(solMocks.discoverHoldings).toHaveBeenCalledTimes(1));
@@ -431,7 +439,7 @@ describe("SolCollectionPage workbench", () => {
     expect(assets.querySelectorAll(".wallet-asset-cell__token")).toHaveLength(1);
     expect(assets).toHaveTextContent("1");
 
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = screen.getByRole("alertdialog", { name: "确认 SPL Token 归集？" });
@@ -465,10 +473,10 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
     await user.click(screen.getByRole("button", { name: "删除 Token 地址 1" }));
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
     resolveFirstQuery?.(holdingsResult([tokenHolding()], 50_000_000n));
 
     await waitFor(() => expect(screen.queryByLabelText(new RegExp(`来源一.*${firstSourceAddress}.*原生币余额$`)))
@@ -546,7 +554,7 @@ describe("SolCollectionPage workbench", () => {
 
     await importSolSecret(user);
     expect(screen.getByRole("textbox", { name: "目标钱包" })).toHaveValue("");
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
     const discover = screen.getByRole("button", { name: "查看地址余额" });
     expect(discover).toBeEnabled();
     await user.click(discover);
@@ -580,8 +588,8 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
 
     const start = screen.getByRole("button", { name: "确认并开始归集" });
     expect(start).toBeEnabled();
@@ -620,12 +628,12 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
     expect(await screen.findByText("不支持")).toBeVisible();
     expect(screen.getByText(/TransferHook Token 暂不支持归集/)).toBeVisible();
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
@@ -643,12 +651,12 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
     expect(await screen.findByText(/Token 持仓清单不完整，当前结果仅供展示/)).toBeVisible();
     expect(screen.getByText(/token-2022 Token 账户读取失败/)).toBeVisible();
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
   });
 
@@ -664,8 +672,8 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), classicMint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = screen.getByRole("alertdialog", { name: "确认 SPL Token 归集？" });
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
@@ -697,8 +705,8 @@ describe("SolCollectionPage workbench", () => {
     render(<SolCollectionPage />);
 
     await importSolSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
-    await user.type(screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), token2022Mint);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标钱包" }), targetAddress);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = screen.getByRole("alertdialog", { name: "确认 SPL Token 归集？" });
     await user.click(within(dialog).getByRole("button", { name: "确认并开始归集" }));
@@ -747,7 +755,7 @@ describe("SolCollectionPage workbench", () => {
     const target = screen.getByRole("textbox", { name: "目标钱包" });
     expect(target).toBeEnabled();
     await user.clear(target);
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     expect(target).toHaveValue(targetAddress);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
     expect(screen.getByText("归集记录")).toBeVisible();
@@ -818,7 +826,7 @@ describe("SolCollectionPage workbench", () => {
     const target = screen.getByRole("textbox", { name: "目标钱包" });
     expect(target).toBeEnabled();
     await user.clear(target);
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
@@ -855,7 +863,7 @@ describe("SolCollectionPage workbench", () => {
     expandSettings("修改 RPC");
     const rpc = screen.getByRole("textbox", { name: "RPC 地址" });
     await user.clear(rpc);
-    await user.type(rpc, "https://custom.sol.example/rpc");
+    await pasteInput(user, rpc, "https://custom.sol.example/rpc");
     await user.tab();
     firstRender.unmount();
 

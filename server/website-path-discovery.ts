@@ -1,6 +1,9 @@
-import { fetchPublicDocument, normalizeUrl, type PublicDocumentResult } from "./network-scan.js";
+import { extractWebsiteScriptPaths } from "./website-path-script-parser.js";
+import { extractPublishedClientRoutes } from "./website-path-client-manifests.js";
+import { websitePathDocumentCache } from "./website-path-document-cache.js";
+import { fetchPublicDocument, normalizeUrl, publicDocumentFailure, publicDocumentPathResult, type PathScanResult, type PublicDocumentResult } from "./network-scan.js";
 import { createBrotliDecompress, createGunzip, createInflate, constants } from "node:zlib";
-import { pathResourceKind } from "../src/lib/website-path-kind.js";
+import { MAX_PATH_SCRIPT_DOCUMENTS, pathResourceKind } from "../src/lib/website-path-kind.js";
 
 export type WebsitePathDiscoverySource = "links" | "scripts" | "robots" | "sitemap" | "wayback";
 export type WebsitePathCandidateKind = "page" | "script" | "sitemap" | "asset" | "probe";
@@ -13,6 +16,7 @@ export interface WebsitePathCandidate {
   sources?: WebsitePathDiscoverySource[];
   documentUrl?: string;
   clientRoute?: boolean;
+  evidence?: { kind: string; documentUrl: string; bytes?: number; truncated?: boolean; methods?: string[] };
 }
 export interface WebsitePathDiscoveryResult {
   source: WebsitePathDiscoverySource;
@@ -22,16 +26,22 @@ export interface WebsitePathDiscoveryResult {
   ignoredUrls?: string[];
   canonicalUrl?: string;
   message?: string;
+  retryable?: boolean;
+  document?: { url: string; bytes: number; truncated: boolean; cacheHit?: boolean };
+  /** The GET already performed to discover this document; no second probe is needed. */
+  response?: PathScanResult;
 }
 export interface WebsitePathDiscoveryDependencies {
-  fetchDocument(url: string, options: { timeoutMs: number; maxBytes: number; signal?: AbortSignal }): Promise<PublicDocumentResult>;
+  fetchDocument(url: string, options: { timeoutMs: number; maxBytes: number; signal?: AbortSignal; headers?: Readonly<Record<string, string>> }): Promise<PublicDocumentResult>;
 }
 const defaults: WebsitePathDiscoveryDependencies = { fetchDocument: fetchPublicDocument };
 export const MAX_PATH_DISCOVERY_CANDIDATES = 2000;
-export const MAX_PATH_DISCOVERY_BYTES = 1024 * 1024;
+export const MAX_PATH_DISCOVERY_BYTES = 4 * 1024 * 1024;
 const MAX_ARCHIVE_PAGES = 4;
 const SOURCES: WebsitePathDiscoverySource[] = ["links", "scripts", "robots", "sitemap", "wayback"];
-class SourceFailure extends Error {}
+class SourceFailure extends Error {
+  constructor(message: string, readonly retryable = false) { super(message); }
+}
 
 function decodeEntities(input: string): string {
   return input.replace(/&(?:#(x[0-9a-f]+|[0-9]+)|(amp|lt|gt|quot|apos|sol|colon|num|quest|equals));/gi, (entity, number: string | undefined, name: string | undefined) => {
@@ -63,8 +73,8 @@ class CandidateCollector {
   readonly counts = { page: 0, script: 0, sitemap: 0 };
   readonly cappedKinds = new Set<CountedKind>();
   capped = false;
-  constructor(readonly origin: string, readonly source: WebsitePathDiscoverySource) {}
-  add(value: string, documentUrl: URL, kind?: WebsitePathCandidateKind, ownerDocument?: URL, observedSource = this.source, clientRoute = false): void {
+  constructor(readonly origin: string, readonly source: WebsitePathDiscoverySource, readonly evidenceDocument?: string) {}
+  add(value: string, documentUrl: URL, kind?: WebsitePathCandidateKind, ownerDocument?: URL, observedSource = this.source, clientRoute = false, evidenceKind?: string, method?: string): void {
     // Queries and fragments are intentionally not scanned; their templates/tracking must not discard an observed concrete pathname.
     const raw = value.trim().split(/[?#]/, 1)[0];
     if (!concreteValue(raw)) return;
@@ -75,6 +85,7 @@ class CandidateCollector {
     url.hash = "";
     try { normalizeUrl(url.href); } catch { return; }
     const candidate: WebsitePathCandidate = { url: url.href, kind: kind === "page" || kind === undefined ? pathKind(url.href) : kind, source: observedSource };
+    candidate.evidence = { kind: evidenceKind ?? (candidate.kind === "script" ? "import" : observedSource), documentUrl: this.evidenceDocument ?? documentUrl.href, ...(method ? { methods: [method] } : {}) };
     if (clientRoute && candidate.kind === "page") candidate.clientRoute = true;
     if (candidate.kind === "script" && ownerDocument) {
       if (ownerDocument.origin !== this.origin || ownerDocument.username || ownerDocument.password || ownerDocument.port) candidate.kind = "asset";
@@ -100,6 +111,10 @@ class CandidateCollector {
     if (this.ignoredUrls.has(url.href)) return;
     const existing = this.candidates.get(url.href);
     if (existing) {
+      if (method && existing.evidence) existing.evidence.methods = [...new Set([...(existing.evidence.methods ?? []), method])].slice(0, 16);
+      if (evidenceKind === "navigation" || evidenceKind === "route") {
+        if (existing.evidence) existing.evidence.kind = evidenceKind;
+      }
       if (candidate.clientRoute && existing.kind === "page") existing.clientRoute = true;
       const sources = new Set(existing.sources ?? [existing.source]);
       sources.add(candidate.source);
@@ -107,7 +122,7 @@ class CandidateCollector {
       // Explicit script/sitemap clues should survive a less specific navigation link.
       if (candidate.kind === "sitemap" || (candidate.kind === "script" && existing.kind !== "sitemap")) {
         if (existing.kind !== candidate.kind) {
-          const limit = candidate.kind === "script" ? 40 : 20;
+          const limit = candidate.kind === "script" ? MAX_PATH_SCRIPT_DOCUMENTS : 20;
           const candidateKind = candidate.kind as CountedKind;
           if (this.counts[candidateKind] >= limit) {
             this.cappedKinds.add(candidateKind);
@@ -125,7 +140,7 @@ class CandidateCollector {
       return;
     }
     const candidateKind = candidate.kind as CountedKind;
-    const limit = candidateKind === "page" ? MAX_PATH_DISCOVERY_CANDIDATES : candidateKind === "script" ? 40 : 20;
+    const limit = candidateKind === "page" ? MAX_PATH_DISCOVERY_CANDIDATES : candidateKind === "script" ? MAX_PATH_SCRIPT_DOCUMENTS : 20;
     if (this.counts[candidateKind] >= limit) { this.cappedKinds.add(candidateKind); if (candidateKind === "page") this.capped = true; return; }
     this.candidates.set(url.href, candidate);
     this.counts[candidateKind]++;
@@ -150,14 +165,30 @@ interface Context {
   warnings: Set<string>;
   note?: string;
   canonicalUrl?: string;
+  scanId?: string;
+  document?: WebsitePathDiscoveryResult["document"];
+  response?: PathScanResult;
 }
 
 async function readDocument(context: Context, url: URL): Promise<PublicDocumentResult> {
+  const startedAt = Date.now();
   const remaining = context.deadline - Date.now();
   if (remaining <= 0 || context.signal.aborted) throw new SourceFailure("发现查询超时或已取消");
-  let response = await context.dependencies.fetchDocument(url.href, { timeoutMs: remaining, maxBytes: MAX_PATH_DISCOVERY_BYTES, signal: context.signal });
-  if ((!response.contentEncoding || response.contentEncoding === "identity") && response.body[0] === 0x1f && response.body[1] === 0x8b) response = { ...response, contentEncoding: "gzip" };
-  if (response.contentEncoding && response.contentEncoding.toLowerCase() !== "identity") response = await decodeDocument(context, response);
+  const load = async (signal: AbortSignal) => {
+    let response = await context.dependencies.fetchDocument(url.href, { timeoutMs: remaining, maxBytes: MAX_PATH_DISCOVERY_BYTES, signal,
+      headers: { "Accept-Encoding": "gzip, deflate, br" } });
+    if ((!response.contentEncoding || response.contentEncoding === "identity") && response.body[0] === 0x1f && response.body[1] === 0x8b) response = { ...response, contentEncoding: "gzip" };
+    if (response.contentEncoding && response.contentEncoding.toLowerCase() !== "identity") response = await decodeDocument({ ...context, signal }, response);
+    return response;
+  };
+  const loaded = context.scanId
+    ? await websitePathDocumentCache.read(`${context.scanId}:${url.href}`, load, context.signal)
+    : { document: await load(context.signal), cacheHit: false };
+  const response = loaded.document;
+  if (context.source !== "wayback") {
+    context.document = { url: url.href, bytes: response.body.length, truncated: response.truncated, cacheHit: loaded.cacheHit };
+    context.response = publicDocumentPathResult({ ...response, url: url.href }, { decodedBody: true, durationMs: Date.now() - startedAt });
+  }
   if (response.truncated) context.warnings.add("文档达到读取上限，已保留完整线索");
   return response;
 }
@@ -210,311 +241,92 @@ function attributes(tag: string): Map<string, string> {
   return values;
 }
 
-function decodeJsLiteral(literal: string): string | undefined {
-  const contents = literal.slice(1, -1);
-  if (literal[0] === "`" && contents.includes("${")) return;
-  try {
-    return contents.replace(/\\(?:u\{([0-9a-f]{1,6})\}|u([0-9a-f]{4})|x([0-9a-f]{2})|([\s\S]))/gi, (_whole, unicode: string | undefined, unit: string | undefined, byte: string | undefined, escape: string | undefined) => {
-      if (unicode || unit || byte) return String.fromCodePoint(Number.parseInt(unicode ?? unit ?? byte!, 16));
-      return ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0" } as Record<string, string>)[escape!] ?? escape!;
-    });
-  } catch { return; }
-}
-
-interface JavascriptToken { 0: string; index: number; comment: boolean }
-/** A static lexer keeps nested template literals from shifting every subsequent string boundary. */
-function javascriptTokens(text: string): JavascriptToken[] {
-  const tokens: JavascriptToken[] = [];
-  const commentEnd = (start: number) => text[start + 1] === "/" ? (() => {
-    const end = text.indexOf("\n", start + 2); return end < 0 ? text.length : end;
-  })() : (() => { const end = text.indexOf("*/", start + 2); return end < 0 ? text.length : end + 2; })();
-  const regexStart = (start: number) => {
-    const previous = text.slice(Math.max(0, start - 60), start).trimEnd();
-    return !previous || /[=(:,!&|?;\[{]$/.test(previous) || /\b(?:return|throw|case|yield|void|typeof|delete)\s*$/.test(previous);
-  };
-  const regexEnd = (start: number) => {
-    let characterClass = false;
-    for (let index = start + 1; index < text.length; index++) {
-      if (text[index] === "\\") { index++; continue; }
-      if (text[index] === "\n" || text[index] === "\r") return start + 1;
-      if (text[index] === "[") characterClass = true;
-      else if (text[index] === "]") characterClass = false;
-      else if (text[index] === "/" && !characterClass) {
-        index++;
-        while (/[a-z]/i.test(text[index] ?? "") && index < text.length) index++;
-        return index;
-      }
-    }
-    return start + 1;
-  };
-  const quotedEnd = (start: number, level: number): number => {
-    if (level > 32) return text.length;
-    const quote = text[start];
-    let index = start + 1;
-    while (index < text.length) {
-      if (text[index] === "\\") { index += 2; continue; }
-      if (text[index] === quote) return index + 1;
-      if (quote !== "`" && /[\r\n]/.test(text[index])) return index;
-      if (quote === "`" && text[index] === "$" && text[index + 1] === "{") {
-        index += 2;
-        let braces = 1;
-        while (index < text.length && braces) {
-          const current = text[index];
-          if (["'", '"', "`"].includes(current)) { index = quotedEnd(index, level + 1); continue; }
-          if (current === "/" && ["/", "*"].includes(text[index + 1])) { index = commentEnd(index); continue; }
-          if (current === "/" && regexStart(index)) { index = regexEnd(index); continue; }
-          if (current === "{") braces++;
-          else if (current === "}") braces--;
-          index++;
-        }
-        continue;
-      }
-      index++;
-    }
-    return index;
-  };
-  for (let index = 0; index < text.length;) {
-    const current = text[index];
-    const comment = current === "/" && ["/", "*"].includes(text[index + 1]);
-    const regex = current === "/" && !comment && regexStart(index);
-    if (comment || regex || ["'", '"', "`"].includes(current)) {
-      const end = comment ? commentEnd(index) : regex ? regexEnd(index) : quotedEnd(index, 0);
-      tokens.push({ 0: text.slice(index, end), index, comment: comment || regex });
-      index = Math.max(index + 1, end);
-    } else index++;
-  }
-  return tokens;
-}
-function maskJavascriptTokens(text: string, tokens: JavascriptToken[], commentsOnly = false): string {
-  const parts: string[] = [];
-  let offset = 0;
-  for (const token of tokens) {
-    if (commentsOnly && !token.comment) continue;
-    parts.push(text.slice(offset, token.index), token[0].replace(/[^\r\n]/g, " "));
-    offset = token.index + token[0].length;
-  }
-  parts.push(text.slice(offset));
-  return parts.join("");
-}
-const JS_IDENTIFIER = "[a-zA-Z_$][\\w$]*";
-function escapePattern(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
-function closingDelimiter(syntax: string, start: number, open: string, close: string): number {
-  let depth = 0;
-  for (let index = start; index < syntax.length; index++) {
-    if (syntax[index] === open) depth++;
-    else if (syntax[index] === close && --depth === 0) return index;
-  }
-  return -1;
-}
-
-/** Resolve only route templates backed by a literal prefix, a simple navigation helper and published parameter values. */
-function extractClientRouteManifests(context: Context, code: string, ownerBase: URL, tokens: JavascriptToken[]): void {
-  const deadline = Math.min(context.deadline, Date.now() + 300);
-  const withinBudget = () => {
-    if (Date.now() < deadline && !context.signal.aborted) return true;
-    context.warnings.add("达到静态前端路由解析时间上限，已保留解析结果");
-    return false;
-  };
-  const allLiterals = tokens.filter(match => !match.comment);
-  const literals = allLiterals.slice(0, 20000);
-  if (allLiterals.length > literals.length) context.warnings.add("达到静态前端路由字符串读取上限，已保留解析结果");
-  const syntax = maskJavascriptTokens(code, tokens);
-  const scopeDepth = new Uint16Array(syntax.length + 1);
-  let depth = 0;
-  for (let index = 0; index < syntax.length; index++) {
-    scopeDepth[index] = depth;
-    if (syntax[index] === "{") depth++;
-    else if (syntax[index] === "}") depth = Math.max(0, depth - 1);
-  }
-  const constants = new Map<string, Set<string>>();
-  for (const match of literals) {
-    if (!withinBudget()) return;
-    const value = decodeJsLiteral(match[0]);
-    if (value === undefined) continue;
-    const assignment = new RegExp(`(?:^|[;,{}]|\\b(?:const|let|var))\\s*(${JS_IDENTIFIER})\\s*=\\s*$`).exec(code.slice(Math.max(0, match.index! - 100), match.index));
-    if (!assignment || scopeDepth[match.index!] !== 0 || !/^\s*[,;})]/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
-    const values = constants.get(assignment[1]) ?? new Set<string>();
-    values.add(value);
-    constants.set(assignment[1], values);
-  }
-  const prefixValue = (binding: string) => {
-    const values = constants.get(binding);
-    if (values?.size !== 1) return;
-    const writes = [...syntax.matchAll(new RegExp(`\\b${escapePattern(binding)}\\s*=(?!=)`, "g"))].filter(match => scopeDepth[match.index!] === 0);
-    return writes.length === 1 ? [...values][0] : undefined;
-  };
-  const routes: { prefix: string; key: string }[] = [];
-  const routeKeys = new Set<string>();
-  for (const match of literals) {
-    if (!withinBudget()) return;
-    if (!/\bpath\s*:\s*$/.test(code.slice(Math.max(0, match.index! - 35), match.index))) continue;
-    const contents = match[0].slice(1, -1);
-    const template = /^\$\{([a-zA-Z_$][\w$]*)\}(\/[^${}]*)\/:([a-zA-Z_][\w]*)$/.exec(contents)
-      ?? /^\$\{([a-zA-Z_$][\w$]*)\}()\/:([a-zA-Z_][\w]*)$/.exec(contents);
-    const direct = /^([^${}]*)\/:([a-zA-Z_][\w]*)$/.exec(contents);
-    const prefix = template ? prefixValue(template[1]) : direct?.[1];
-    if (prefix === undefined) continue;
-    const resolved = `${prefix}${template?.[2] ?? ""}`.replace(/\/$/, "");
-    if (!resolved.startsWith("/") || !concreteValue(resolved || "/")) continue;
-    const key = template?.[3] ?? direct![2];
-    if (routeKeys.has(`${resolved}:${key}`)) continue;
-    if (routes.length === 20) { context.warnings.add("达到静态前端路由清单读取上限，已保留解析结果"); break; }
-    routeKeys.add(`${resolved}:${key}`);
-    routes.push({ prefix: resolved, key });
-  }
-  for (const route of routes) {
-    if (!withinBudget()) return;
-    let helper: string | undefined;
-    for (const match of literals) {
-      if (!withinBudget()) return;
-      if (match[0][0] !== "`") continue;
-      const before = code.slice(Math.max(0, match.index! - 160), match.index);
-      const declaration = new RegExp(`\\bfunction\\s+(${JS_IDENTIFIER})\\s*\\(\\s*(${JS_IDENTIFIER})\\s*\\)\\s*\\{\\s*return\\s*$`).exec(before);
-      if (!declaration || !/^\s*;?\s*}/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
-      const contents = match[0].slice(1, -1);
-      const variable = new RegExp(`^\\$\\{(${JS_IDENTIFIER})\\}/\\$\\{${escapePattern(declaration[2])}\\}$`).exec(contents);
-      const literal = contents.endsWith(`/\${${declaration[2]}}`) ? contents.slice(0, -(`/\${${declaration[2]}}`.length)) : undefined;
-      const helperPrefix = variable ? prefixValue(variable[1]) : literal;
-      if (helperPrefix?.replace(/\/$/, "") !== route.prefix) continue;
-      const navigation = new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(declaration[1])}\\s*\\(\\s*${JS_IDENTIFIER}\\.${escapePattern(route.key)}\\s*\\)`);
-      if (navigation.test(code)) { helper = declaration[1]; break; }
-    }
-    if (!helper) continue;
-    // Restrict values to an actual array consumed by the navigation map. Unrelated slug objects are not route declarations.
-    const arrayPattern = new RegExp(`(?:^|[;,{}]|\\b(?:const|let|var))\\s*(${JS_IDENTIFIER})\\s*=\\s*\\[`, "g");
-    let arrays = 0;
-    for (const array of syntax.matchAll(arrayPattern)) {
-      if (!withinBudget()) return;
-      const start = array.index! + array[0].lastIndexOf("[");
-      if (scopeDepth[start] !== 0) continue;
-      const end = closingDelimiter(syntax, start, "[", "]");
-      if (end < 0) continue;
-      let cursor = start + 1;
-      let braces = 0;
-      let arraysDepth = 0;
-      let parentheses = 0;
-      const keyPattern = new RegExp(`\\b${escapePattern(route.key)}\\s*:\\s*$`);
-      const values = literals.filter(match => {
-        if (match.index! <= start || match.index! >= end) return false;
-        for (; cursor < match.index!; cursor++) {
-          const character = syntax[cursor];
-          if (character === "{") braces++; else if (character === "}") braces--;
-          else if (character === "[") arraysDepth++; else if (character === "]") arraysDepth--;
-          else if (character === "(") parentheses++; else if (character === ")") parentheses--;
-        }
-        return braces === 1 && arraysDepth === 0 && parentheses === 0 && keyPattern.test(code.slice(Math.max(start, match.index! - 80), match.index));
-      });
-      if (!values.length) continue;
-      if (++arrays > 32) { context.warnings.add("达到静态前端路由数组读取上限，已保留解析结果"); break; }
-      const aliases = new Set([array[1]]);
-      const groupedAliases = new Set<string>();
-      for (let pass = 0; pass < 4; pass++) {
-        if (!withinBudget()) return;
-        const size = aliases.size;
-        for (const alias of [...aliases]) {
-          if (!withinBudget()) return;
-          const derived = new RegExp(`\\b(${JS_IDENTIFIER})\\s*=\\s*${escapePattern(alias)}\\.(filter|slice|reduce)\\s*\\(`, "g");
-          for (const match of syntax.matchAll(derived)) {
-            if (aliases.size >= 8) break;
-            if (match[2] === "reduce") {
-              const begin = match.index! + match[0].lastIndexOf("(");
-              const finish = closingDelimiter(syntax, begin, "(", ")");
-              const body = code.slice(begin + 1, finish);
-              const reducer = new RegExp(`^\\s*\\(\\s*${JS_IDENTIFIER}\\s*,\\s*(${JS_IDENTIFIER})\\s*\\)\\s*=>`).exec(body);
-              if (!reducer || !new RegExp(`\\bpages\\s*:\\s*\\[(?:\\.\\.\\.${JS_IDENTIFIER}\\.pages\\s*,\\s*)?${escapePattern(reducer[1])}\\s*\\]`).test(body)
-                || new RegExp(`\\b${escapePattern(reducer[1])}\\s*(?:\\.\\s*${escapePattern(route.key)}\\s*)?=(?!=)`).test(body)) continue;
-              groupedAliases.add(match[1]);
-            }
-            if (groupedAliases.has(alias)) groupedAliases.add(match[1]);
-            aliases.add(match[1]);
-          }
-        }
-        if (aliases.size === size) break;
-      }
-      const rendered = [...aliases].some(alias => {
-        if (!withinBudget()) return false;
-        for (const map of syntax.matchAll(new RegExp(`\\b${escapePattern(alias)}\\.map\\s*\\(`, "g"))) {
-          if (!withinBudget()) return false;
-          const begin = map.index! + map[0].lastIndexOf("(");
-          const finish = closingDelimiter(syntax, begin, "(", ")");
-          const body = code.slice(begin + 1, finish);
-          const callback = new RegExp(`^\\s*\\(?\\s*(${JS_IDENTIFIER})(?:\\s*,\\s*${JS_IDENTIFIER})?\\s*\\)?\\s*=>`).exec(body);
-          if (finish >= 0 && callback && new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(helper!)}\\s*\\(\\s*${escapePattern(callback[1])}\\.${escapePattern(route.key)}\\s*\\)`).test(body)) return true;
-          if (finish < 0 || !callback || !groupedAliases.has(alias)) continue;
-          const pagesMap = new RegExp(`\\b${escapePattern(callback[1])}\\.pages\\.map\\s*\\(\\s*\\(?\\s*(${JS_IDENTIFIER})(?:\\s*,\\s*${JS_IDENTIFIER})?\\s*\\)?\\s*=>`, "g");
-          for (const nested of body.matchAll(pagesMap)) {
-            const nestedBegin = begin + 1 + nested.index! + nested[0].indexOf("(");
-            const nestedEnd = closingDelimiter(syntax, nestedBegin, "(", ")");
-            if (nestedEnd >= 0 && new RegExp(`\\b(?:to|href)\\s*:\\s*${escapePattern(helper!)}\\s*\\(\\s*${escapePattern(nested[1])}\\.${escapePattern(route.key)}\\s*\\)`).test(code.slice(nestedBegin, nestedEnd + 1))) return true;
-          }
-        }
-        return false;
-      });
-      if (!rendered) continue;
-      for (const match of values) {
-        const value = decodeJsLiteral(match[0]);
-        if (!value || !concreteValue(value) || /[/?#]/.test(value)) continue;
-        if (!/^\s*[,}]/.test(code.slice(match.index! + match[0].length, match.index! + match[0].length + 12))) continue;
-        context.collector.add(`${route.prefix}/${value}`, ownerBase, "page", undefined, "scripts", true);
-      }
-    }
-  }
+const CLASSIC_SCRIPT_TYPES = new Set([
+  "application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript",
+  "text/ecmascript", "text/javascript", "text/javascript1.0", "text/javascript1.1", "text/javascript1.2",
+  "text/javascript1.3", "text/javascript1.4", "text/javascript1.5", "text/jscript", "text/livescript",
+  "text/x-ecmascript", "text/x-javascript"
+]);
+function scriptType(attrs: Map<string, string>): "javascript" | "importmap" | "data" {
+  const type = (attrs.get("type") ?? (attrs.get("language") ? `text/${attrs.get("language")}` : "")).trim().toLowerCase();
+  if (type === "importmap") return "importmap";
+  return !type || type === "module" || CLASSIC_SCRIPT_TYPES.has(type) ? "javascript" : "data";
 }
 
 function extractJavascript(context: Context, text: string, scriptBase: URL, ownerBase: URL): void {
-  const tokens = javascriptTokens(text);
-  const code = maskJavascriptTokens(text, tokens, true);
-  extractClientRouteManifests(context, code, ownerBase, tokens);
-  for (const match of tokens) {
-    if (match.comment) continue;
-    const value = decodeJsLiteral(match[0]);
-    if (!value) continue;
-    const prefix = code.slice(Math.max(0, match.index! - 140), match.index);
-    const suffix = code.slice(match.index! + match[0].length, match.index! + match[0].length + 140);
-    if (/\+\s*$/.test(prefix) || /^\s*(?:\+|\.concat\s*\()/.test(suffix)) continue;
-    const request = /(?:\bfetch|\baxios\.(?:get|post|put|patch|delete|head|options)|\b(?:get|post|put|patch|delete|head|options)|\bimport|\bimportScripts)\s*\(\s*$/.test(prefix)
-      || /\.open\s*\(\s*['"](?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['"]\s*,\s*$/i.test(prefix);
-    const moduleImport = /(?:\bimport\s*\(\s*|\bimport\s*(?:[^;\n]*?\bfrom\s*)?|\bexport\s+[^;\n]*?\bfrom\s*)$/.test(prefix);
-    const workerImport = /\bimportScripts\s*\(\s*$/.test(prefix);
-    const importMetaUrl = /\bnew\s+URL\s*\(\s*$/.test(prefix) && /^\s*,\s*import\.meta\.url\s*\)/.test(suffix);
-    // Bare module names need import-map resolution; resolving them as relative paths invents URLs.
-    if (moduleImport && !/^(?:https?:\/\/|\/\/|\/|\.\.?\/)/i.test(value)) continue;
-    if (!request && !moduleImport && !workerImport && !importMetaUrl && !/^(?:https?:\/\/|\/\/|\/(?!\/))/i.test(value)) continue;
-    const base = moduleImport || workerImport || importMetaUrl ? scriptBase : ownerBase;
-    context.collector.add(value, base, moduleImport || workerImport ? "script" : undefined, ownerBase, "scripts");
+  const result = extractWebsiteScriptPaths(text, { deadline: context.deadline, signal: context.signal, truncated: context.document?.truncated });
+  result.warnings.forEach(warning => context.warnings.add(warning));
+  for (const candidate of result.candidates) {
+    const module = candidate.kind === "import";
+    const resolutionBase = module && !candidate.documentRelative ? scriptBase : ownerBase;
+    let requestOwner = ownerBase;
+    if (candidate.workerContext) {
+      try { requestOwner = new URL(candidate.url, resolutionBase); } catch { continue; }
+    }
+    context.collector.add(candidate.url, resolutionBase, module ? "script" : "page", requestOwner,
+      "scripts", Boolean(candidate.clientRoute), candidate.kind, candidate.method);
+  }
+  if (!context.document?.truncated) {
+    const manifest = extractPublishedClientRoutes(text, { deadline: context.deadline, signal: context.signal });
+    manifest.warnings.forEach(warning => context.warnings.add(warning));
+    for (const url of manifest.urls) context.collector.add(url, ownerBase, "page", ownerBase, "scripts", true, "route");
   }
 }
 
 function extractHtml(context: Context, input: string): void {
-  const text = input.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
-  const markup = text.replace(/(<script\b(?:[^>"']|"[^"]*"|'[^']*')*>)[\s\S]*?<\/script\s*>/gi, "$1</script>");
+  const scripts: string[] = [];
+  const htmlUrl = (raw: string, reference: URL): string | undefined => {
+    // Browsers encode ordinary spaces in HTML URLs; controls and dynamic paths
+    // still pass through the collector's strict checks after normalization.
+    if (/[\u0000-\u001f\u007f\\]/.test(raw)) return;
+    const value = raw.trim();
+    if (!value || /^[#?]/.test(value)) return;
+    try {
+      const url = new URL(value, reference);
+      if (url.protocol === "http:" || url.protocol === "https:") return url.href;
+    } catch { /* Ignore malformed HTML URL attributes. */ }
+  };
+  // Read comments and raw-text elements together: <!-- inside a script is JavaScript
+  // text, while markup inside script/style/textarea/title is not a navigable link.
+  const markup = input.replace(/<!--[\s\S]*?(?:-->|$)|(<(script|style|textarea|title)\b(?:[^>"']|"[^"]*"|'[^']*')*>)([\s\S]*?)(?:<\/\2\s*>|$)|<[a-z][\w:-]*\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi,
+    (whole: string, opening: string | undefined, name: string | undefined, body: string | undefined) => {
+      if (!opening) return whole.startsWith("<!--") ? "" : whole;
+      if (name!.toLowerCase() === "script") {
+        const attrs = attributes(opening);
+        const type = scriptType(attrs);
+        if (type === "javascript" && !attrs.has("src")) scripts.push(body!);
+        else if (type === "importmap" && body?.trim()) context.warnings.add("网页包含尚未解析的 importmap 模块映射，模块覆盖可能不完整");
+      }
+      return opening;
+    });
   const tags = [...markup.matchAll(/<([a-z][\w:-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)];
   let base = context.documentUrl;
   const baseTag = tags.find((tag) => tag[1].toLowerCase() === "base" && attributes(tag[0]).has("href"));
   if (baseTag) {
     const href = attributes(baseTag[0]).get("href")!;
     try {
-      const value = href.trim().split(/[?#]/, 1)[0];
-      if (concreteValue(value)) { base = new URL(value, context.documentUrl); base.search = ""; base.hash = ""; }
+      const value = htmlUrl(href, context.documentUrl);
+      if (value && concreteValue(value.split(/[?#]/, 1)[0])) { base = new URL(value); base.search = ""; base.hash = ""; }
     } catch { /* Browser ignores a malformed base URL. */ }
   }
   for (const tag of tags) {
     const name = tag[1].toLowerCase();
     const attrs = attributes(tag[0]);
     if (name === "base" || name === "form") continue;
+    if (name === "script" && scriptType(attrs) !== "javascript") continue;
     if (["a", "area", "link"].includes(name) && attrs.has("href")) {
       const rel = (attrs.get("rel") ?? "").toLowerCase().split(/\s+/);
-      context.collector.add(attrs.get("href")!, base, rel.includes("sitemap") ? "sitemap" : rel.includes("modulepreload") || rel.includes("preload") && attrs.get("as")?.toLowerCase() === "script" ? "script" : rel.includes("stylesheet") || rel.includes("icon") ? "asset" : undefined, base);
+      context.collector.add(htmlUrl(attrs.get("href")!, base) ?? "", base, rel.includes("sitemap") ? "sitemap" : rel.includes("modulepreload") || rel.includes("preload") && attrs.get("as")?.toLowerCase() === "script" ? "script" : rel.includes("stylesheet") || rel.includes("icon") ? "asset" : undefined, base);
     }
     if (attrs.has("src") && ["script", "img", "iframe", "source", "audio", "video", "embed", "input"].includes(name)) {
-      context.collector.add(attrs.get("src")!, base, name === "script" ? base.origin === context.collector.origin ? "script" : "asset" : name === "iframe" ? "page" : "asset", base);
+      context.collector.add(htmlUrl(attrs.get("src")!, base) ?? "", base, name === "script" ? base.origin === context.collector.origin ? "script" : "asset" : name === "iframe" ? "page" : "asset", base);
     }
     if (["img", "source"].includes(name) && attrs.has("srcset")) {
-      for (const entry of attrs.get("srcset")!.split(",")) context.collector.add(entry.trim().split(/\s+/)[0] ?? "", base, "asset");
+      for (const entry of attrs.get("srcset")!.split(",")) context.collector.add(htmlUrl(entry.trim().split(/\s+/)[0] ?? "", base) ?? "", base, "asset");
     }
   }
   if (base.origin !== context.collector.origin || base.username || base.password || base.port) context.warnings.add("网页 base 指向站外或无效地址，部分相对脚本线索无法解析");
-  for (const script of text.matchAll(/<script\b(?:[^>"']|"[^"]*"|'[^']*')*>([\s\S]*?)<\/script\s*>/gi)) extractJavascript(context, script[1], base, base);
+  for (const script of scripts) extractJavascript(context, script, base, base);
 }
 
 function completeLines(text: string, truncated: boolean): string[] {
@@ -534,14 +346,66 @@ function extractRobots(context: Context, text: string, truncated: boolean): void
 }
 
 function extractSitemap(context: Context, text: string, truncated: boolean): void {
-  text = text.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
   if (/^\s*(?:<\?xml[^>]*>\s*)?</.test(text)) {
-    if (!/<(?:[\w.-]+:)?(?:sitemapindex|urlset)\b/i.test(text)) throw new SourceFailure("网站地图格式无效");
-    const sitemapIndex = /<(?:[\w.-]+:)?sitemapindex\b/i.test(text);
-    for (const match of text.matchAll(/<(?:[\w.-]+:)?loc\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?loc\s*>/gi)) {
-      const value = match[1].replace(/^\s*<!\[CDATA\[([\s\S]*)\]\]>\s*$/, "$1");
-      context.collector.add(decodeEntities(value.trim()), context.documentUrl, sitemapIndex ? "sitemap" : undefined);
+    if (/<!DOCTYPE\b|<!ENTITY\b/i.test(text)) throw new SourceFailure("网站地图不支持 DTD 或外部实体");
+    interface Element { name: string; local: string; namespace: string | undefined; namespaces: Map<string, string>; location: boolean; value: string; nested: boolean }
+    const stack: Element[] = [];
+    let root: Element | undefined;
+    let offset = 0;
+    let count = 0;
+    const tokens = /<!--[\s\S]*?(?:-->|$)|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<\/?[a-zA-Z_][\w.:-]*\b(?:[^>"']|"[^"]*"|'[^']*')*>|[^<]+/g;
+    for (const token of text.matchAll(tokens)) {
+      if (++count > 50000 || stack.length > 64 || count % 256 === 0 && (Date.now() >= context.deadline || context.signal.aborted)) {
+        context.warnings.add("达到站点地图解析上限，已保留完整路径");
+        return;
+      }
+      if (token.index !== offset) {
+        context.warnings.add("站点地图 XML 结构不完整，已保留完整路径");
+        return;
+      }
+      offset = token.index + token[0].length;
+      const raw = token[0];
+      const current = stack.at(-1);
+      if (raw.startsWith("<!--") || raw.startsWith("<?")) continue;
+      if (raw.startsWith("<![CDATA[")) {
+        if (current?.location && !current.nested) current.value += raw.slice(9, -3);
+        continue;
+      }
+      if (!raw.startsWith("<")) {
+        if (current?.location && !current.nested) current.value += decodeEntities(raw);
+        else if (!current && raw.trim()) throw new SourceFailure("网站地图格式无效");
+        continue;
+      }
+      const name = /^<\/?([a-zA-Z_][\w.:-]*)/.exec(raw)![1];
+      if (raw.startsWith("</")) {
+        if (!current || current.name !== name) {
+          context.warnings.add("站点地图 XML 结构不完整，已保留完整路径");
+          return;
+        }
+        if (current.location && !current.nested) context.collector.add(current.value.trim(), context.documentUrl, root?.local === "sitemapindex" ? "sitemap" : undefined);
+        stack.pop();
+        continue;
+      }
+      const namespaces = new Map(current?.namespaces);
+      for (const attribute of raw.matchAll(/\bxmlns(?::([a-zA-Z_][\w.-]*))?\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+        namespaces.set(attribute[1] ?? "", decodeEntities(attribute[2] ?? attribute[3]));
+      }
+      const parts = name.split(":");
+      const local = parts.at(-1)!;
+      const namespace = namespaces.get(parts.length > 1 ? parts[0] : "") ?? (parts.length > 1 ? undefined : "");
+      const element: Element = { name, local, namespace, namespaces, location: false, value: "", nested: false };
+      if (!current) {
+        if (root || !["sitemapindex", "urlset"].includes(local) || namespace !== "" && !/^https?:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9$/.test(namespace ?? "")) throw new SourceFailure("网站地图格式无效");
+        root = element;
+      } else {
+        if (current.location) current.nested = true;
+        element.location = local === "loc" && namespace === root?.namespace && current.namespace === root?.namespace
+          && current.local === (root?.local === "sitemapindex" ? "sitemap" : "url") && stack.length === 2;
+      }
+      if (!/\/\s*>$/.test(raw)) stack.push(element);
     }
+    if (!root) throw new SourceFailure("网站地图格式无效");
+    if (offset !== text.length || stack.length && !truncated) context.warnings.add("站点地图 XML 结构不完整，已保留完整路径");
   } else {
     const lines = completeLines(text, truncated).map((line) => line.trim()).filter(Boolean);
     if (lines.some((line) => !/^https?:\/\//i.test(line))) throw new SourceFailure("网站地图格式无效");
@@ -571,7 +435,7 @@ async function discoverDocument(context: Context): Promise<void> {
     return;
   }
   if ((response.statusCode === 404 || response.statusCode === 410) && ["robots", "sitemap"].includes(context.source)) { context.note = "网站未提供此文档"; return; }
-  if (response.statusCode < 200 || response.statusCode >= 300) throw new SourceFailure(response.statusCode === 429 ? "网站暂时限流，请稍后重试" : `文档返回 HTTP ${response.statusCode}`);
+  if (response.statusCode < 200 || response.statusCode >= 300) throw new SourceFailure(response.statusCode === 429 ? "网站暂时限流，请稍后重试" : `文档返回 HTTP ${response.statusCode}`, [408, 502, 503, 504].includes(response.statusCode));
   const text = response.body.toString("utf8");
   if (context.source === "links") {
     if (response.contentType && !/\b(?:html|xhtml)\b/i.test(response.contentType)) { context.note = "此响应不是网页文档"; return; }
@@ -627,7 +491,7 @@ async function discoverArchive(context: Context): Promise<void> {
 }
 
 /** Discover paths from actual documents and archived URLs; never execute scripts or invent route names. */
-export async function discoverWebsitePaths(baseInput: string, documentInput: string, source: WebsitePathDiscoverySource, timeoutMs = 20000, dependencies = defaults, signal?: AbortSignal, ownerDocumentInput?: string): Promise<WebsitePathDiscoveryResult> {
+export async function discoverWebsitePaths(baseInput: string, documentInput: string, source: WebsitePathDiscoverySource, timeoutMs = source === "scripts" ? 45000 : 20000, dependencies = defaults, signal?: AbortSignal, ownerDocumentInput?: string, scanId?: string): Promise<WebsitePathDiscoveryResult> {
   const base = normalizeUrl(baseInput);
   const documentUrl = normalizeUrl(documentInput);
   base.search = "";
@@ -637,29 +501,32 @@ export async function discoverWebsitePaths(baseInput: string, documentInput: str
   if (documentUrl.origin !== base.origin) throw new Error("发现文档必须与扫描网站同源");
   if (ownerDocument.origin !== base.origin) throw new Error("脚本所属网页必须与扫描网站同源");
   if (!SOURCES.includes(source)) throw new Error("不支持的发现来源");
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 20000) throw new Error("发现来源超时必须在 1000–20000 毫秒之间");
-  const collector = new CandidateCollector(base.origin, source);
+  const maximumTimeoutMs = source === "scripts" ? 45000 : 20000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > maximumTimeoutMs) throw new Error(`发现来源超时必须在 1000–${maximumTimeoutMs} 毫秒之间`);
+  if (scanId !== undefined && !/^[a-zA-Z0-9-]{1,64}$/.test(scanId)) throw new Error("扫描轮次标识无效");
+  const collector = new CandidateCollector(base.origin, source, documentUrl.href);
   const controller = new AbortController();
-  const context: Context = { documentUrl, ownerDocument, source, collector, deadline: Date.now() + timeoutMs, signal: controller.signal, dependencies, warnings: new Set() };
+  const context: Context = { documentUrl, ownerDocument, source, collector, deadline: Date.now() + timeoutMs, signal: controller.signal, dependencies, warnings: new Set(), ...(scanId ? { scanId } : {}) };
   let onAbort: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = (status: WebsitePathDiscoveryResult["status"], message?: string): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()], ...(collector.ignoredUrls.size ? { ignoredUrls: [...collector.ignoredUrls] } : {}), ...(context.canonicalUrl ? { canonicalUrl: context.canonicalUrl } : {}), ...(message ? { message } : {}) });
+  const result = (status: WebsitePathDiscoveryResult["status"], message?: string, retryable = false): WebsitePathDiscoveryResult => ({ source, url: documentUrl.href, status, candidates: [...collector.candidates.values()].map(candidate => candidate.evidence && context.document?.url === candidate.evidence.documentUrl ? { ...candidate, evidence: { ...candidate.evidence, bytes: context.document.bytes, truncated: context.document.truncated } } : candidate), ...(collector.ignoredUrls.size ? { ignoredUrls: [...collector.ignoredUrls] } : {}), ...(context.canonicalUrl ? { canonicalUrl: context.canonicalUrl } : {}), ...(context.document ? { document: context.document } : {}), ...(context.response ? { response: context.response } : {}), ...(message ? { message } : {}), ...(retryable ? { retryable: true } : {}) });
   if (signal?.aborted) return result("error", "发现查询已取消");
   const interruption = new Promise<never>((_, reject) => {
     onAbort = () => { controller.abort(); reject(new SourceFailure("发现查询已取消")); };
-    timer = setTimeout(() => { controller.abort(); reject(new SourceFailure("发现查询超时")); }, timeoutMs);
+    timer = setTimeout(() => { controller.abort(); reject(new SourceFailure("发现查询超时", true)); }, timeoutMs);
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
     await Promise.race([source === "wayback" ? discoverArchive(context) : discoverDocument(context), interruption]);
     if (collector.capped) context.warnings.add("达到每份文档 2000 个路径上限，结果可能不完整");
-    if (collector.cappedKinds.has("script")) context.warnings.add("达到每份文档 40 份脚本线索上限，已保留实际路径");
+    if (collector.cappedKinds.has("script")) context.warnings.add(`达到每份文档 ${MAX_PATH_SCRIPT_DOCUMENTS} 份脚本线索上限，已保留实际路径`);
     if (collector.cappedKinds.has("sitemap")) context.warnings.add("达到每份文档 20 份地图线索上限，已保留实际路径");
     if (collector.ignoredUrlsCapped) context.warnings.add("部分无扩展名资源超过 2000 项标记上限，筛选可能不完整");
     return result(context.warnings.size ? "partial" : "success", context.warnings.size ? [...context.warnings].join("；") : context.note);
   } catch (error) {
-    return result(collector.candidates.size ? "partial" : "error", error instanceof SourceFailure ? error.message : controller.signal.aborted ? "发现查询超时或已取消" : "文档查询失败，请稍后重试");
+    const failure = error instanceof SourceFailure ? error : publicDocumentFailure(error);
+    return result(collector.candidates.size ? "partial" : "error", signal?.aborted ? "发现查询已取消" : failure.message, !signal?.aborted && failure.retryable);
   } finally {
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);

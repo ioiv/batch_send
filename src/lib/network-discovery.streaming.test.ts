@@ -50,23 +50,34 @@ describe("discovery and verification over the API", () => {
     }));
     const onSource = vi.fn();
     const onResult = vi.fn();
+    const onProgress = vi.fn();
     const onExposureProgress = vi.fn();
     const controller = new AbortController();
     const pending = discoverWebsitePaths({ baseUrl: `${origin}/`, concurrency: 3, timeoutMs: 1000,
-      signal: controller.signal, onSource, onResult, onExposureProgress });
+      signal: controller.signal, onSource, onResult, onProgress, onExposureProgress });
     const envRequests = () => requests.filter(request => request.kind === "path" && request.url === `${origin}/.env`);
+    const waitForHomeBlockedValidation = () => vi.waitFor(() => expect(onProgress).toHaveBeenLastCalledWith(expect.objectContaining({
+      discovered: 1,
+      completed: 0,
+      diagnostics: expect.objectContaining({ activeValidations: 0, pendingValidations: 1,
+        activeDocuments: 1, pendingDocuments: 0 })
+    })));
     try {
       await vi.waitFor(() => expect(onSource).toHaveBeenCalledWith(expect.objectContaining({ source: "sitemap", status: "success" })));
       if (stage === "skipped") {
+        onProgress.mockClear();
         baseline.release();
-        await vi.waitFor(() => expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/` })));
-        await tick(); // Let the queued resource skip settle before admitting it again.
+        // The resource validation has skipped after its baseline. Only the
+        // homepage validation remains, waiting for its existing discovery read.
+        await waitForHomeBlockedValidation();
         expect(envRequests()).toHaveLength(0);
+        expect(requests.filter(request => request.kind === "path" && request.url === `${origin}/`)).toHaveLength(0);
       } else {
         expect(envRequests()).toHaveLength(1);
         if (stage === "hidden-response") {
+          onProgress.mockClear();
           envResponse.release();
-          await tick(); // The raw response is cached while the result remains hidden.
+          await waitForHomeBlockedValidation(); // Its completed response stays hidden until fixed-probe promotion.
         }
       }
       expect(onResult.mock.calls.some(([result]) => result.url === `${origin}/.env`)).toBe(false);

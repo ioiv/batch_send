@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWebsitePathValidator, requestNetworkScan, scanWebsitePaths } from "./network-scan";
 import { exposureProbeUrls } from "./exposure-path";
-import { discoverWebsitePaths, exportDiscoveredWebsitePathsCsv, PATH_DISCOVERY_DURATION_MS, PATH_DISCOVERY_SOURCES } from "./website-path-discovery";
+import { MAX_PATH_SCRIPT_DOCUMENTS } from "./website-path-kind";
+import { discoverWebsitePaths, exportDiscoveredWebsitePathsCsv, PATH_DISCOVERY_DURATION_MS, PATH_DISCOVERY_SOURCES, SCRIPT_DISCOVERY_TIMEOUT_MS } from "./website-path-discovery";
 
 vi.mock("./network-scan", async importOriginal => ({
   ...await importOriginal<typeof import("./network-scan")>(), requestNetworkScan: vi.fn(), scanWebsitePaths: vi.fn(), createWebsitePathValidator: vi.fn()
@@ -31,6 +32,641 @@ beforeEach(() => {
 afterEach(() => { vi.resetAllMocks(); vi.useRealTimers(); });
 
 describe("observed website path discovery", () => {
+  it("resolves a followed same-origin redirect chain while preserving every actual HTTP response", async () => {
+    let firstReads = 0;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source !== "links") return document(payload);
+      const path = new URL(String(payload.url)).pathname;
+      if (path === "/first" && ++firstReads === 1) return { ...document(payload, [], "error", "connection failed"), retryable: true };
+      const target = path === "/first" ? "/second" : path === "/second" ? "/final" : undefined;
+      const statusCode = path === "/first" ? 302 : path === "/second" ? 307 : 200;
+      return { ...document(payload, path === "/" ? [candidate("/first")] : target ? [candidate(target)] : [],
+        target ? "partial" : "success", target ? "文档返回重定向，已保留同源跳转地址" : undefined),
+        response: { url: String(payload.url), status: "responded", statusCode, ...(target ? { location: target } : {}) } };
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async (url, _signal, observed) => observed ?? { url, status: "responded", statusCode: 200 });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary.sources.find(source => source.source === "links")).toMatchObject({ status: "success", issueCount: 3, unresolvedIssueCount: 0,
+      issues: [expect.objectContaining({ url: `${origin}/first`, kind: "request", message: "connection failed", resolved: true }),
+        expect.objectContaining({ url: `${origin}/first`, kind: "request", statusCode: 302, resolved: true }),
+        expect.objectContaining({ url: `${origin}/second`, kind: "request", statusCode: 307, resolved: true })] });
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 0, failedAttempts: 1, recoveredDocuments: 1 });
+    expect(summary.sources.find(source => source.source === "links")?.message).toBeUndefined();
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/first`, statusCode: 302 }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/final`, statusCode: 200 }));
+  });
+
+  it.each(["failed", "cross-origin", "cycle", "unfollowed"])("retains an unresolved redirect when its target is %s", async reason => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source !== "links") return document(payload);
+      const path = new URL(String(payload.url)).pathname;
+      const target = path === "/first" ? reason === "cross-origin" ? "https://other.com/target" : "/second" : path === "/second" && reason === "cycle" ? "/first" : undefined;
+      const missing = path === "/second" && reason === "failed";
+      const start = reason === "unfollowed" ? "/level-1" : "/first";
+      const candidates = path === "/" ? [candidate(start)] : path === "/level-1" ? [candidate("/level-2")]
+        : path === "/level-2" ? [candidate("/first")] : target && reason !== "cross-origin" ? [candidate(target)] : [];
+      return { ...document(payload, candidates, missing || target && reason === "cross-origin" ? "error" : target ? "partial" : "success",
+        missing ? "文档返回 HTTP 403" : target ? "文档返回重定向" : undefined),
+        response: { url: String(payload.url), status: "responded", statusCode: missing ? 403 : target ? 302 : 200,
+          ...(target ? { location: target } : {}) } };
+    });
+    const summary = await discoverWebsitePaths(settings());
+    expect(summary.sources.find(source => source.source === "links")?.status).toBe("partial");
+    expect(summary.sources.find(source => source.source === "links")?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: `${origin}/first`, kind: "request", resolved: false })
+    ]));
+    if (reason === "unfollowed") expect(vi.mocked(requestNetworkScan).mock.calls.some(([payload]) => payload.url === `${origin}/second`)).toBe(false);
+    if (reason === "cross-origin") expect(vi.mocked(requestNetworkScan).mock.calls.some(([payload]) => String(payload.url).startsWith("https://other.com"))).toBe(false);
+  });
+
+  it("traverses a complete 188-import module closure, including shared dependencies and the final feature module", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, [candidate("/assets/main.js", "links", "script")]);
+      if (payload.url === `${origin}/assets/main.js`) return document(payload,
+        Array.from({ length: 188 }, (_, index) => candidate(`/assets/chunk-${index}.js`, "scripts", "script")));
+      const index = String(payload.url).match(/\/chunk-(\d+)\.js$/)?.[1];
+      if (index !== undefined) return document(payload, [candidate("/assets/shared.js", "scripts", "script"),
+        { ...candidate(`/service/chunk-${index}`, "scripts"), evidence: { kind: "request", documentUrl: String(payload.url) } },
+        ...(index === "187" ? [candidate("/assets/final-feature.js", "scripts", "script")] : [])]);
+      return document(payload, payload.url === `${origin}/assets/final-feature.js`
+        ? [{ ...candidate("/service/final-feature", "scripts"), evidence: { kind: "request", documentUrl: String(payload.url) } }] : []);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    const scriptReads = vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "scripts");
+    expect(scriptReads).toHaveLength(191);
+    expect(scriptReads.filter(([payload]) => payload.url === `${origin}/assets/shared.js`)).toHaveLength(1);
+    expect(summary).toMatchObject({ discovered: 190, validated: 190, diagnostics: { scriptDocuments: 191 } });
+    expect(summary.sources.find(source => source.source === "scripts")?.status).toBe("success");
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/service/chunk-187` }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/service/final-feature` }));
+  });
+
+  it("bounds an oversized module closure at the shared distinct-script limit and identifies the omitted URL", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/main.js", "links", "script")]
+        : payload.url === `${origin}/main.js` ? Array.from({ length: MAX_PATH_SCRIPT_DOCUMENTS }, (_, index) => candidate(`/chunk-${index}.js`, "scripts", "script"))
+          : payload.url === `${origin}/chunk-${MAX_PATH_SCRIPT_DOCUMENTS - 2}.js` ? [{ ...candidate("/last-retained-path", "scripts"),
+            evidence: { kind: "request", documentUrl: String(payload.url) } }] : []));
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "scripts")).toHaveLength(MAX_PATH_SCRIPT_DOCUMENTS);
+    expect(summary.diagnostics).toMatchObject({ scriptDocuments: MAX_PATH_SCRIPT_DOCUMENTS, skippedDocuments: 1 });
+    expect(summary.sources.find(source => source.source === "scripts")).toMatchObject({ status: "partial", unresolvedIssueCount: 1,
+      issues: [expect.objectContaining({ url: `${origin}/chunk-${MAX_PATH_SCRIPT_DOCUMENTS - 1}.js`, kind: "limit", message: expect.stringContaining(`${MAX_PATH_SCRIPT_DOCUMENTS} 份不同脚本文档上限`) })] });
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/last-retained-path` }));
+  });
+
+  it("accepts a source response containing the full independent page, module and sitemap budgets", async () => {
+    const controller = new AbortController();
+    let accepted!: () => void;
+    const entryAccepted = new Promise<void>(resolve => { accepted = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async (payload, signal) => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload,
+        [...Array.from({ length: 2000 }, (_, index) => candidate(`/page-${index}`)),
+          ...Array.from({ length: MAX_PATH_SCRIPT_DOCUMENTS }, (_, index) => candidate(`/chunk-${index}.js`, "links", "script")),
+          ...Array.from({ length: 20 }, (_, index) => candidate(`/map-${index}.xml`, "links", "sitemap"))]);
+      return await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    const options = { ...settings(), signal: controller.signal };
+    options.onSource.mockImplementation(source => { if (source.source === "links") accepted(); });
+    const pending = discoverWebsitePaths(options);
+    const stopped = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await entryAccepted;
+    controller.abort();
+    await stopped;
+    const pages = options.onSource.mock.calls.find(([source]) => source.source === "links")![0];
+    expect(pages.urls).toHaveLength(2000);
+    expect(pages.message).not.toContain("无效或范围外");
+    expect(options.onProgress.mock.calls.some(([progress]) => progress.diagnostics?.scriptDocuments === MAX_PATH_SCRIPT_DOCUMENTS)).toBe(true);
+  });
+
+  it("gives large script downloads an independent budget while keeping page and probe timeouts unchanged", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/app.js", "links", "script")] : []));
+    await discoverWebsitePaths({ ...settings(), timeoutMs: 3000 });
+    const reads = vi.mocked(requestNetworkScan).mock.calls.map(([payload]) => payload);
+    expect(reads.find(payload => payload.source === "scripts")).toMatchObject({ timeoutMs: SCRIPT_DISCOVERY_TIMEOUT_MS });
+    expect(reads.filter(payload => payload.source === "links" || payload.source === "robots" || payload.source === "sitemap")
+      .every(payload => payload.timeoutMs === 3000)).toBe(true);
+    expect(reads.find(payload => payload.source === "wayback")).toHaveProperty("timeoutMs", 20000);
+    expect(createWebsitePathValidator).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 3000 }));
+  });
+
+  it("dispatches newly discovered scripts immediately while a slower page is still reading", async () => {
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>(resolve => { releaseSlow = resolve; });
+    const reads: string[] = [];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      reads.push(String(payload.url));
+      if (payload.url === `${origin}/slow`) await slowGate;
+      return document(payload, payload.url === `${origin}/` && payload.source === "links"
+        ? [candidate("/slow"), candidate("/fast"), candidate("/later-page")]
+        : payload.url === `${origin}/fast` ? [candidate("/runtime.js", "links", "script")]
+          : payload.url === `${origin}/runtime.js` ? [candidate("/api/mint/config", "scripts")] : []);
+    });
+    const options = { ...settings(), concurrency: 2 };
+    const pending = discoverWebsitePaths(options);
+    await vi.waitFor(() => expect(reads).toContain(`${origin}/runtime.js`));
+    expect(reads.indexOf(`${origin}/runtime.js`)).toBeLessThan(reads.indexOf(`${origin}/later-page`));
+    releaseSlow();
+    await pending;
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/api/mint/config` }));
+  });
+
+  it("prioritizes script dependencies and nested sitemaps before ordinary pages while yielding for response feedback", async () => {
+    const events: string[] = [];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      events.push(`read:${payload.url}`);
+      return document(payload, payload.url === `${origin}/` && payload.source === "links"
+        ? [candidate("/first-page"), candidate("/app.js", "links", "script")]
+        : payload.url === `${origin}/app.js` ? [candidate("/chunk.js", "scripts", "script")]
+          : payload.url === `${origin}/sitemap.xml` ? [candidate("/nested.xml", "sitemap", "sitemap")] : []);
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async url => {
+      events.push(`validate:${url}`);
+      return { url, status: "responded", statusCode: 200 };
+    });
+    await discoverWebsitePaths({ ...settings(), concurrency: 1 });
+    const position = (value: string) => events.indexOf(`read:${origin}${value}`);
+    expect(position("/app.js")).toBeLessThan(position("/first-page"));
+    expect(position("/chunk.js")).toBeLessThan(position("/first-page"));
+    expect(position("/nested.xml")).toBeLessThan(position("/first-page"));
+    const firstValidation = events.findIndex(event => event.startsWith("validate:"));
+    expect(firstValidation).toBeGreaterThan(position("/chunk.js"));
+    expect(firstValidation).toBeLessThan(position("/first-page"));
+  });
+
+  it("validates request-only paths without reading each endpoint again as an HTML document", async () => {
+    const endpoints = ["/actions/submit", "/report", "/data/items.json"];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/app.js", "links", "script"), candidate("/guide")]
+        : payload.source === "scripts" ? endpoints.map(path => ({ ...candidate(path, "scripts"),
+          evidence: { kind: "request", documentUrl: `${origin}/app.js`, methods: ["POST"] } })) : []));
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary).toMatchObject({ discovered: 5, validated: 5 });
+    const htmlReads = vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "links").map(([payload]) => payload.url);
+    expect(htmlReads).toEqual([`${origin}/`, `${origin}/guide`]);
+    for (const path of endpoints) expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}${path}`, sources: ["scripts"] }));
+    expect(vi.mocked(scanWebsitePaths).mock.calls.flatMap(([call]) => call.candidates).filter(url => endpoints.some(path => url === `${origin}${path}`))).toHaveLength(3);
+  });
+
+  it("promotes an already validated request URL when a later navigation supplies page evidence", async () => {
+    let releaseNavigation!: () => void;
+    const navigationGate = new Promise<void>(resolve => { releaseNavigation = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.url === `${origin}/navigation.js`) await navigationGate;
+      return document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/requests.js", "links", "script"), candidate("/navigation.js", "links", "script")]
+        : payload.url === `${origin}/requests.js` ? [{ ...candidate("/report", "scripts"), evidence: { kind: "request", documentUrl: `${origin}/requests.js` } }]
+          : payload.url === `${origin}/navigation.js` ? [{ ...candidate("/report", "scripts"), evidence: { kind: "navigation", documentUrl: `${origin}/navigation.js` } }]
+            : payload.url === `${origin}/report` && payload.source === "links" ? [candidate("/report/details")] : []);
+    });
+    const options = settings();
+    const pending = discoverWebsitePaths(options);
+    await vi.waitFor(() => expect(options.onResult.mock.calls.some(([result]) => result.url === `${origin}/report`)).toBe(true));
+    expect(vi.mocked(requestNetworkScan).mock.calls.some(([payload]) => payload.source === "links" && payload.url === `${origin}/report`)).toBe(false);
+    releaseNavigation();
+    await pending;
+    expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "links" && payload.url === `${origin}/report`)).toHaveLength(1);
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/report/details` }));
+    expect(vi.mocked(scanWebsitePaths).mock.calls.flatMap(([call]) => call.candidates).filter(url => url === `${origin}/report`)).toHaveLength(1);
+  });
+
+  it.each([2, 4])("keeps response feedback flowing with %i workers while ordinary documents remain queued", async concurrency => {
+    const events: string[] = [];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      events.push(`read:${payload.url}`);
+      return document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/app.js", "links", "script"), ...Array.from({ length: 30 }, (_, index) => candidate(`/page-${index}`))] : []);
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async url => {
+      events.push(`validate:${url}`);
+      return { url, status: "responded", statusCode: 200 };
+    });
+    const summary = await discoverWebsitePaths({ ...settings(), concurrency });
+    const firstValidation = events.findIndex(event => event.startsWith("validate:"));
+    expect(firstValidation).toBeLessThan(events.indexOf(`read:${origin}/page-29`));
+    expect(events.indexOf(`read:${origin}/app.js`)).toBeLessThan(events.indexOf(`read:${origin}/page-0`));
+    expect(summary.validated).toBe(summary.discovered);
+  });
+
+  it("yields a single worker for validation within a four-document quantum even with a continuous script chain", async () => {
+    const events: string[] = [];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      events.push(`read:${payload.url}`);
+      const index = Number(String(payload.url).match(/chunk-(\d+)\.js$/)?.[1]);
+      return document(payload, payload.source === "links" && payload.url === `${origin}/` ? [candidate("/chunk-0.js", "links", "script")]
+        : payload.source === "scripts" && index < 12 ? [candidate(`/chunk-${index + 1}.js`, "scripts", "script")] : []);
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async url => {
+      events.push(`validate:${url}`);
+      return { url, status: "responded", statusCode: 200 };
+    });
+    await discoverWebsitePaths({ ...settings(), concurrency: 1 });
+    const firstValidation = events.findIndex(event => event.startsWith("validate:"));
+    expect(events.slice(0, firstValidation).filter(event => event.startsWith("read:"))).toHaveLength(4);
+    expect(firstValidation).toBeLessThan(events.indexOf(`read:${origin}/chunk-12.js`));
+  });
+
+  it("replays a parsed page and script graph when a later sitemap gives the page a shorter route", async () => {
+    let releaseMap!: () => void;
+    const mapGate = new Promise<void>(resolve => { releaseMap = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "sitemap") { await mapGate; return document(payload, [candidate("/shared.html", "sitemap")]); }
+      const graph: Record<string, unknown[]> = {
+        "links:/": [candidate("/level-1")], "links:/level-1": [candidate("/level-2")],
+        "links:/level-2": [candidate("/shared.html")], "links:/shared.html": [candidate("/app.js", "links", "script")],
+        "scripts:/app.js": [candidate("/chunk.js", "scripts", "script")], "scripts:/chunk.js": [candidate("/child", "scripts")],
+        "links:/child": [candidate("/grandchild")]
+      };
+      return document(payload, graph[`${payload.source}:${new URL(String(payload.url)).pathname}`] ?? []);
+    });
+    const options = settings();
+    const pending = discoverWebsitePaths(options);
+    await vi.waitFor(() => expect(options.onSource.mock.calls.some(([source]) => source.urls.includes(`${origin}/child`))).toBe(true));
+    expect(vi.mocked(requestNetworkScan).mock.calls.some(([payload]) => payload.source === "links" && payload.url === `${origin}/child`)).toBe(false);
+    releaseMap();
+    const summary = await pending;
+    for (const url of ["/shared.html", "/app.js", "/chunk.js", "/child", "/grandchild"]) {
+      expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.url === `${origin}${url}`)).toHaveLength(1);
+    }
+    expect(summary.diagnostics?.scriptDocuments).toBe(2);
+    expect(summary.sources.find(source => source.source === "links")?.status).toBe("success");
+    expect(summary.sources.flatMap(source => source.issues ?? []).some(issue => !issue.resolved && issue.kind === "limit")).toBe(false);
+    expect(summary.diagnostics?.skippedDocuments).toBe(0);
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/grandchild` }));
+  });
+
+  it("reuses completed public document responses, including HTTP 404, without extra validation GETs", async () => {
+    const validated: { url: string; observed?: unknown }[] = [];
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      const missing = payload.url === `${origin}/missing`;
+      return { ...document(payload, payload.source === "links" && payload.url === `${origin}/` ? [candidate("/missing")] : [], missing ? "error" : "success"),
+        ...(payload.source === "links" ? { response: { url: String(payload.url), status: "responded", statusCode: missing ? 404 : 200,
+          fingerprint: missing ? "missing" : "actual", contentLength: missing ? 77 : 123, durationMs: missing ? 31 : 62 } } : {}) };
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async (url, _signal, observed) => {
+      validated.push({ url, observed });
+      return observed ? { ...observed, responseReused: true } : { url, status: "responded", statusCode: 200 };
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary).toMatchObject({ discovered: 2, validated: 2, diagnostics: { reusedResponses: 2 } });
+    for (const url of [`${origin}/`, `${origin}/missing`]) expect(validated.find(result => result.url === url)?.observed).toEqual(expect.objectContaining({ url, status: "responded" }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/missing`, statusCode: 404, durationMs: 31, responseReused: true }));
+  });
+
+  it("retains a real upstream response when a later transient document retry loses its connection", async () => {
+    let attempts = 0;
+    let observedCode: number | undefined;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, [candidate("/upstream")]);
+      if (payload.url === `${origin}/upstream`) {
+        attempts++;
+        return { ...document(payload, [], "error"), retryable: true, ...(attempts === 1 ? { response: { url: String(payload.url), status: "responded", statusCode: 503 } } : {}) };
+      }
+      return document(payload);
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async (url, _signal, observed) => {
+      if (url === `${origin}/upstream`) observedCode = observed?.statusCode;
+      return observed ? { ...observed, responseReused: true } : { url, status: "responded", statusCode: 200 };
+    });
+    const options = settings();
+    await discoverWebsitePaths(options);
+    expect(attempts).toBe(2);
+    expect(observedCode).toBe(503);
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/upstream`, statusCode: 503, responseReused: true }));
+  });
+
+  it.each(["get", "BAD METHOD"])("rejects a mismatched reused response and invalid declared method %s before accepting source candidates", async method => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => payload.source === "links" && payload.url === `${origin}/`
+      ? { ...document(payload, [candidate("/untrusted")]), response: { url: `${origin}/other`, status: "responded", statusCode: 200 } }
+      : payload.source === "wayback" ? document(payload, [{ ...candidate("/bad-method", "wayback"), evidence: { kind: "request", documentUrl: `${origin}/archive`, methods: [method] } }])
+        : document(payload));
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary.sources.find(source => source.source === "links")?.status).toBe("error");
+    expect(summary.sources.find(source => source.source === "wayback")?.status).toBe("error");
+    expect(options.onResult.mock.calls.some(([result]) => ["/untrusted", "/bad-method"].some(path => result.url === `${origin}${path}`))).toBe(false);
+  });
+
+  it.each(["M-SEARCH", "PURGE"])("accepts a valid declared HTTP token %s without issuing that method", async method => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/app.js", "links", "script")]
+        : payload.source === "scripts" ? [{ ...candidate("/custom-method", "scripts"), evidence: { kind: "request", documentUrl: `${origin}/app.js`, methods: [method] } }] : []));
+    const options = settings();
+    await discoverWebsitePaths(options);
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/custom-method`, evidence: [{ kind: "request", documentUrl: `${origin}/app.js`, methods: [method] }] }));
+    expect(vi.mocked(requestNetworkScan).mock.calls.every(([payload]) => payload.method === undefined)).toBe(true);
+  });
+
+  it("merges declared methods for one source document without duplicate evidence and exports all methods", async () => {
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const sharedEvidence = { kind: "request", documentUrl: `${origin}/shared.js` };
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.url === `${origin}/second.js`) await secondGate;
+      return document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/first.js", "links", "script"), candidate("/second.js", "links", "script")]
+        : payload.source === "scripts" ? [{ ...candidate("/action", "scripts"), evidence: { ...sharedEvidence,
+          methods: payload.url === `${origin}/first.js` ? ["POST"] : ["GET", "POST"], bytes: 1024, truncated: false } }] : []);
+    });
+    const options = settings();
+    const pending = discoverWebsitePaths(options);
+    await vi.waitFor(() => expect(options.onResult.mock.calls.some(([result]) => result.url === `${origin}/action`)).toBe(true));
+    const firstResult = options.onResult.mock.calls.find(([result]) => result.url === `${origin}/action`)![0];
+    releaseSecond();
+    await pending;
+    const result = options.onResult.mock.calls.map(([result]) => result).filter(result => result.url === `${origin}/action`).at(-1)!;
+    expect(result.evidence).toEqual([{ ...sharedEvidence, methods: ["POST", "GET"], bytes: 1024, truncated: false }]);
+    expect(firstResult.evidence?.[0].methods).toEqual(["POST"]);
+    const csv = exportDiscoveredWebsitePathsCsv([result]);
+    expect(csv.split(/\r?\n/u)[0].split(",")).toContain("declared_methods");
+    expect(csv).toContain('"POST; GET"');
+  });
+
+  it("charges shared script URLs once while parsing distinct owner directories and retaining later chunks", async () => {
+    const owners = Array.from({ length: 49 }, (_, index) => `/owner-${index}/index.html`);
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, owners.map(path => candidate(path)));
+      if (payload.source === "links" && owners.some(path => payload.url === `${origin}${path}`)) return document(payload,
+        [candidate("/shared.js", "links", "script"), ...(payload.url === `${origin}${owners.at(-1)}` ? [candidate("/last-chunk.js", "links", "script")] : [])]);
+      if (payload.source === "scripts" && payload.url === `${origin}/shared.js`) return document(payload,
+        [{ url: new URL("api/owner", String(payload.documentUrl)).href, source: "scripts", kind: "page" }]);
+      return document(payload, payload.url === `${origin}/last-chunk.js` ? [candidate("/api/mint/config", "scripts")] : []);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary.diagnostics?.scriptDocuments).toBe(2);
+    const shared = vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.url === `${origin}/shared.js`);
+    expect(shared).toHaveLength(49);
+    expect(new Set(shared.map(([payload]) => payload.scanId)).size).toBe(1);
+    expect(shared[0][0].scanId).toEqual(expect.any(String));
+    for (const index of [0, 48]) expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/owner-${index}/api/owner` }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/api/mint/config` }));
+  });
+
+  it("shares the parsing context for scripts whose owners have the same directory", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/docs/first.html"), candidate("/docs/second.html")]
+        : payload.source === "links" && String(payload.url).includes("/docs/") ? [candidate("/shared.js", "links", "script")] : []));
+    await discoverWebsitePaths(settings());
+    expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.url === `${origin}/shared.js`)).toHaveLength(1);
+  });
+
+  it.each([1, 2, 4, 8])("shares a strict %i-request cap across documents, archive, baseline and validation", async concurrency => {
+    let active = 0;
+    let peak = 0;
+    const track = async () => { peak = Math.max(peak, ++active); await Promise.resolve(); await Promise.resolve(); active--; };
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      await track();
+      return document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [...Array.from({ length: 12 }, (_, index) => candidate(`/page-${index}`)), candidate("/app.js", "links", "script")] : []);
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => {
+      await track();
+      return async url => { await track(); return { url, status: "responded", statusCode: 200 }; };
+    });
+    const summary = await discoverWebsitePaths({ ...settings(), concurrency });
+    expect(summary.validated).toBe(summary.discovered);
+    expect(peak).toBeLessThanOrEqual(concurrency);
+    expect(active).toBe(0);
+  });
+
+  it.each(["error", "partial"])("retries a transient %s document once and preserves paths found by either attempt", async status => {
+    let attempts = 0;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, [candidate("/app.js", "links", "script")]);
+      if (payload.source === "scripts") {
+        attempts++;
+        if (attempts === 1) return { ...document(payload, status === "partial" ? [candidate("/partial-path", "scripts")] : [], status, "temporary upstream failure"), retryable: true };
+        return document(payload, [candidate("/api/mint/config", "scripts")]);
+      }
+      return document(payload);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(attempts).toBe(2);
+    expect(summary.diagnostics).toMatchObject({ retryAttempts: 1, scriptDocuments: 1 });
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 0, failedAttempts: 1, recoveredDocuments: 1 });
+    const source = summary.sources.find(source => source.source === "scripts")!;
+    expect(source).toMatchObject({ status: "success", unresolvedIssueCount: 0,
+      issues: [{ url: `${origin}/app.js`, source: "scripts", kind: "request", message: "temporary upstream failure", resolved: true, attempts: 2 }] });
+    expect(source.message).toBeUndefined();
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/api/mint/config` }));
+    if (status === "partial") expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/partial-path` }));
+  });
+
+  it("keeps repeated partial transport failures unresolved without reporting a false recovery", async () => {
+    let attempts = 0;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, [candidate("/app.js", "links", "script")]);
+      if (payload.source === "scripts") {
+        attempts++;
+        return { ...document(payload, [{ ...candidate(`/attempt-${attempts}`, "scripts"),
+          evidence: { kind: "request", documentUrl: String(payload.url) } }], "partial", "temporary connection failure"), retryable: true };
+      }
+      return document(payload);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    expect(summary.sources.find(source => source.source === "scripts")).toMatchObject({ status: "partial", issueCount: 1, unresolvedIssueCount: 1,
+      issues: [{ url: `${origin}/app.js`, kind: "request", message: "temporary connection failure", resolved: false, attempts: 2 }] });
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 1, failedAttempts: 2, recoveredDocuments: 0 });
+    for (const path of ["/attempt-1", "/attempt-2"]) expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}${path}` }));
+  });
+
+  it("retains an unresolved read failure when its queued retry is cancelled by the discovery deadline", async () => {
+    vi.useFakeTimers();
+    let retryReads = 0;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload,
+        [candidate("/retry.js", "links", "script"), ...Array.from({ length: 4 }, (_, index) => candidate(`/slow-${index}.js`, "links", "script"))]);
+      if (payload.url === `${origin}/retry.js`) {
+        retryReads++;
+        return { ...document(payload, [], "error", "connection failed"), retryable: true };
+      }
+      if (payload.source === "scripts") return new Promise(() => {});
+      return document(payload);
+    });
+    const pending = discoverWebsitePaths({ ...settings(), concurrency: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(retryReads).toBe(1);
+    await vi.advanceTimersByTimeAsync(PATH_DISCOVERY_DURATION_MS + 1);
+    const summary = await pending;
+    expect(retryReads).toBe(1);
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 1, failedAttempts: 1, recoveredDocuments: 0, deadlineReached: true });
+    expect(summary.sources.find(source => source.source === "scripts")?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: `${origin}/retry.js`, kind: "request", resolved: false, attempts: 1 }),
+      expect.objectContaining({ url: `${origin}/retry.js`, kind: "limit" })
+    ]));
+    expect(summary.validated).toBe(summary.discovered);
+  });
+
+  it("does not retry permanent failures, and bounds repeated transient failures at two attempts", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload,
+        [candidate("/missing.js", "links", "script"), candidate("/broken.js", "links", "script")]);
+      if (payload.source === "scripts") return { ...document(payload, [], "error", "upstream failure"), retryable: payload.url === `${origin}/broken.js` };
+      return document(payload);
+    });
+    const summary = await discoverWebsitePaths(settings());
+    const calls = vi.mocked(requestNetworkScan).mock.calls;
+    expect(calls.filter(([payload]) => payload.url === `${origin}/missing.js`)).toHaveLength(1);
+    expect(calls.filter(([payload]) => payload.url === `${origin}/broken.js`)).toHaveLength(2);
+    expect(summary.sources.find(source => source.source === "scripts")?.status).toBe("error");
+    expect(summary.diagnostics?.retryAttempts).toBe(1);
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 2, failedAttempts: 3, recoveredDocuments: 0 });
+    expect(summary.sources.find(source => source.source === "scripts")?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: `${origin}/broken.js`, resolved: false, attempts: 2 }),
+      expect.objectContaining({ url: `${origin}/missing.js`, resolved: false, attempts: 1 })
+    ]));
+  });
+
+  it.each([404, 410])("keeps a non-entry HTTP %i as a verified absence without marking page discovery incomplete", async statusCode => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      const missing = payload.url === `${origin}/absent`;
+      return { ...document(payload, payload.source === "links" && payload.url === `${origin}/` ? [candidate("/absent")] : [], missing ? "error" : "success",
+        missing ? `文档返回 HTTP ${statusCode}` : undefined),
+        ...(payload.source === "links" ? { response: { url: String(payload.url), status: "responded", statusCode: missing ? statusCode : 200 } } : {}) };
+    });
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async (url, _signal, observed) => observed ?? { url, status: "responded", statusCode: 200 });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    const pages = summary.sources.find(source => source.source === "links")!;
+    expect(pages).toMatchObject({ status: "success", issueCount: 1, unresolvedIssueCount: 0,
+      issues: [{ url: `${origin}/absent`, source: "links", kind: "missing", statusCode, resolved: true, attempts: 1 }] });
+    expect(pages.message).toBeUndefined();
+    expect(summary.diagnostics?.documentsFailed).toBe(0);
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/absent`, statusCode }));
+  });
+
+  it("keeps a missing entry and a missing required script as separate unresolved document issues", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      const missing = payload.source === "links" && payload.url === `${origin}/entry` || payload.source === "scripts" && payload.url === `${origin}/missing.js`;
+      return { ...document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/missing.js", "links", "script")] : [], missing ? "error" : "success", missing ? "文档返回 HTTP 404" : undefined),
+        ...(missing ? { response: { url: String(payload.url), status: "responded", statusCode: 404 } } : {}) };
+    });
+    const summary = await discoverWebsitePaths(settings(`${origin}/entry`));
+    expect(summary.sources.find(source => source.source === "links")).toMatchObject({ status: "partial", unresolvedIssueCount: 1,
+      issues: [expect.objectContaining({ url: `${origin}/entry`, kind: "missing", statusCode: 404, resolved: false })] });
+    expect(summary.sources.find(source => source.source === "scripts")).toMatchObject({ status: "error", unresolvedIssueCount: 1,
+      issues: [expect.objectContaining({ url: `${origin}/missing.js`, kind: "missing", statusCode: 404, resolved: false })] });
+    expect(summary.diagnostics?.documentsFailed).toBe(2);
+  });
+
+  it("reports exact parser and archive failure documents without hiding genuine remaining limits", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/app.js", "links", "script")] : [],
+      payload.source === "scripts" ? "partial" : payload.source === "wayback" ? "error" : "success",
+      payload.source === "scripts" ? "脚本语法不完整，仅恢复独立完整导入" : payload.source === "wayback" ? "Wayback 返回 HTTP 429" : undefined));
+    const summary = await discoverWebsitePaths(settings());
+    expect(summary.sources.find(source => source.source === "scripts")).toMatchObject({ status: "partial", unresolvedIssueCount: 1,
+      issues: [{ url: `${origin}/app.js`, source: "scripts", kind: "parse", message: "脚本语法不完整，仅恢复独立完整导入", resolved: false, attempts: 1 }] });
+    expect(summary.sources.find(source => source.source === "wayback")).toMatchObject({ status: "error", unresolvedIssueCount: 1,
+      issues: [{ url: `${origin}/`, source: "wayback", kind: "request", message: "Wayback 返回 HTTP 429", resolved: false, attempts: 1 }] });
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 1, failedAttempts: 1, recoveredDocuments: 0 });
+  });
+
+  it("bounds issue details to forty while retaining exact totals and prioritizing unresolved documents", async () => {
+    let recoveredAttempts = 0;
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload,
+        [candidate("/recovered"), ...Array.from({ length: 50 }, (_, index) => candidate(`/broken-${index}`))]);
+      if (payload.url === `${origin}/recovered` && ++recoveredAttempts === 1) return { ...document(payload, [], "error", "temporary failure"), retryable: true };
+      if (String(payload.url).includes("/broken-")) return document(payload, [], "error", "connection failed");
+      return document(payload);
+    });
+    const summary = await discoverWebsitePaths(settings());
+    const pages = summary.sources.find(source => source.source === "links")!;
+    expect(pages).toMatchObject({ status: "partial", issueCount: 51, unresolvedIssueCount: 50 });
+    expect(pages.issues).toHaveLength(40);
+    expect(pages.issues?.every(issue => !issue.resolved && issue.url.includes("/broken-"))).toBe(true);
+    expect(summary.diagnostics).toMatchObject({ documentsFailed: 50, failedAttempts: 51, recoveredDocuments: 1 });
+  });
+
+  it("isolates a validation transport failure and continues every accepted candidate", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => document(payload,
+      payload.source === "links" && payload.url === `${origin}/` ? [candidate("/broken"), candidate("/survives")] : []));
+    vi.mocked(createWebsitePathValidator).mockImplementation(async () => async url => {
+      if (url === `${origin}/broken`) throw new TypeError("Failed to fetch");
+      return { url, status: "responded", statusCode: 200 };
+    });
+    const options = settings();
+    expect(await discoverWebsitePaths(options)).toMatchObject({ discovered: 3, validated: 3 });
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/broken`, status: "error", message: "Failed to fetch" }));
+    expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/survives`, statusCode: 200 }));
+  });
+
+  it("merges concrete discovery evidence without losing earlier results and exports the source documents", async () => {
+    let releaseOther!: () => void;
+    const otherGate = new Promise<void>(resolve => { releaseOther = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.url === `${origin}/other.js`) await otherGate;
+      return document(payload, payload.source === "links" && payload.url === `${origin}/`
+        ? [candidate("/app.js", "links", "script"), candidate("/other.js", "links", "script")]
+        : payload.source === "scripts" ? [{ ...candidate("/api/mint/config", "scripts"), evidence: { kind: "request", documentUrl: String(payload.url) } }] : []);
+    });
+    const options = settings();
+    const pending = discoverWebsitePaths(options);
+    await vi.waitFor(() => expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/api/mint/config`, evidence: [{ kind: "request", documentUrl: `${origin}/app.js` }] })));
+    releaseOther();
+    await pending;
+    const result = options.onResult.mock.calls.map(([result]) => result).filter(result => result.url === `${origin}/api/mint/config`).at(-1)!;
+    expect(result.evidence).toEqual(expect.arrayContaining([
+      { kind: "request", documentUrl: `${origin}/app.js` }, { kind: "request", documentUrl: `${origin}/other.js` }
+    ]));
+    expect(exportDiscoveredWebsitePathsCsv([result])).toContain(`${origin}/app.js; ${origin}/other.js`);
+    expect(vi.mocked(scanWebsitePaths).mock.calls.flatMap(([call]) => call.candidates).filter(url => url === `${origin}/api/mint/config`)).toHaveLength(1);
+  });
+
+  it("bounds repeated evidence to eight unique entries and rejects out-of-scope document metadata", async () => {
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, Array.from({ length: 10 }, (_, index) => candidate(`/chunk-${index}.js`, "links", "script")));
+      if (payload.source === "scripts") return document(payload, [{ ...candidate("/shared-path", "scripts"), evidence: { kind: "request", documentUrl: String(payload.url) } }]);
+      if (payload.source === "wayback") return { ...document(payload, [candidate("/untrusted", "wayback")]), document: { url: "https://other.com/source.js", bytes: 20, truncated: false } };
+      return document(payload);
+    });
+    const options = settings();
+    const summary = await discoverWebsitePaths(options);
+    const result = options.onResult.mock.calls.map(([result]) => result).filter(result => result.url === `${origin}/shared-path`).at(-1)!;
+    expect(result.evidence).toHaveLength(8);
+    expect(summary.sources.find(source => source.source === "wayback")?.status).toBe("error");
+    expect(options.onResult).not.toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/untrusted` }));
+  });
+
+  it("does not retry or emit evidence from a document that resolves after cancellation", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let scriptStarted!: () => void;
+    const started = new Promise<void>(resolve => { scriptStarted = resolve; });
+    vi.mocked(requestNetworkScan).mockImplementation(async payload => {
+      if (payload.source === "links" && payload.url === `${origin}/`) return document(payload, [candidate("/app.js", "links", "script")]);
+      if (payload.source === "scripts") {
+        scriptStarted();
+        await gate;
+        return { ...document(payload, [candidate("/late-path", "scripts")], "partial"), retryable: true };
+      }
+      return document(payload);
+    });
+    const controller = new AbortController();
+    const options = { ...settings(), signal: controller.signal };
+    const pending = discoverWebsitePaths(options);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await started;
+    controller.abort();
+    await rejected;
+    release();
+    await Promise.resolve();
+    expect(vi.mocked(requestNetworkScan).mock.calls.filter(([payload]) => payload.source === "scripts")).toHaveLength(1);
+    expect(options.onResult).not.toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/late-path` }));
+  });
+
   it("cancels slow discovery immediately when validation initialization fails", async () => {
     let archiveStarted = false;
     let archiveAborted = false;
@@ -61,7 +697,9 @@ describe("observed website path discovery", () => {
     });
     const options = settings();
     const pending = discoverWebsitePaths(options);
-    await vi.waitFor(() => expect(options.onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "discovering", completed: 2000 })));
+    // The pending homepage read is reused once it completes; historical paths
+    // can all validate first without duplicating that in-flight HTML request.
+    await vi.waitFor(() => expect(options.onProgress.mock.calls.some(([progress]) => progress.phase === "discovering" && progress.completed === 1999)).toBe(true));
     releasePage();
     expect(await pending).toMatchObject({ discovered: 1, validated: 1, truncated: true });
     const probes = new Set(exposureProbeUrls(origin));
@@ -593,7 +1231,7 @@ describe("observed website path discovery", () => {
     await vi.advanceTimersByTimeAsync(PATH_DISCOVERY_DURATION_MS + 1);
     const summary = await job;
     expect(summary).toMatchObject({ discovered: 2, validated: 2 });
-    expect(summary.sources.find(source => source.source === "links")).toMatchObject({ status: "partial", message: expect.stringContaining("90 秒") });
+    expect(summary.sources.find(source => source.source === "links")).toMatchObject({ status: "partial", message: expect.stringContaining(`${PATH_DISCOVERY_DURATION_MS / 1000} 秒`) });
     expect(options.onResult).toHaveBeenCalledWith(expect.objectContaining({ url: `${origin}/archived` }));
   });
 

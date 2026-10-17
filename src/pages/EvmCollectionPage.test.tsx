@@ -135,6 +135,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  // Clearing call history does not discard unconsumed one-shot responses.
+  for (const mock of Object.values(evmMocks)) mock.mockReset();
   window.localStorage.clear();
   evmMocks.assertNetwork.mockResolvedValue(undefined);
   evmMocks.createPublicClient.mockReturnValue({
@@ -219,6 +221,15 @@ beforeEach(() => {
   });
 });
 
+async function pasteInput(
+  user: ReturnType<typeof userEvent.setup>,
+  input: HTMLElement,
+  value: string
+) {
+  await user.click(input);
+  await user.paste(value);
+}
+
 async function fillTokenList(
   user: ReturnType<typeof userEvent.setup>,
   assetInput: string
@@ -228,18 +239,18 @@ async function fillTokenList(
     .map((value) => value.trim())
     .filter(Boolean);
   if (firstToken) {
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), firstToken);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), firstToken);
   }
   for (const [index, address] of additionalTokens.entries()) {
     await user.click(screen.getByRole("button", { name: "添加 Token" }));
-    await user.type(screen.getByRole("textbox", { name: `Token 地址 ${index + 2}` }), address);
+    await pasteInput(user, screen.getByRole("textbox", { name: `Token 地址 ${index + 2}` }), address);
   }
 }
 
 async function prepareReadyErc20Page(assetInput: string = tokenAddress) {
   const user = userEvent.setup();
   render(<EvmCollectionPage fixedStandard="erc20" />);
-  await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+  await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
   await fillTokenList(user, assetInput);
   await importEvmSecret(user);
   expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
@@ -268,7 +279,7 @@ async function discoverNft() {
   const user = userEvent.setup();
   render(<EvmCollectionPage fixedStandard="nft" />);
   await importEvmSecret(user);
-  await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+  await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
   await user.click(screen.getByRole("button", { name: "识别持仓" }));
   return user;
 }
@@ -297,7 +308,7 @@ describe("manual collection target exclusion and NFT inventory", () => {
     await importEvmSecret(user, `${privateKey}\n${secondPrivateKey}`);
     await fillTokenList(user, assetInput);
     const target = screen.getByRole("textbox", { name: "目标地址" });
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     await user.click(screen.getByRole("tab", { name: "固定数量" }));
     fireEvent.change(screen.getByRole("spinbutton", { name: "每钱包每资产固定归集数量" }), { target: { value: "0.25" } });
     expect(await screen.findByText(`0.5 ${symbol}`)).toBeVisible();
@@ -327,11 +338,11 @@ describe("manual collection target exclusion and NFT inventory", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user, `${privateKey}\n${secondPrivateKey}`);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "7,8");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), signerAccount.address);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), signerAccount.address);
     await user.click(screen.getByRole("tab", { name: "指定总数量" }));
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = within(screen.getByRole("alertdialog", { name: "确认 NFT 归集？" }));
@@ -354,12 +365,12 @@ describe("manual collection target exclusion and NFT inventory", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user, `${privateKey}\n${secondPrivateKey}`);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.click(screen.getByRole("tab", { name: "ERC1155" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "9");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), signerAccount.address);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), signerAccount.address);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = within(screen.getByRole("alertdialog", { name: "确认 NFT 归集？" }));
     expect(await dialog.findByText("Token ID 9 · 估计数量 4")).toBeVisible();
@@ -386,7 +397,7 @@ describe("manual collection target exclusion and NFT inventory", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "7,8");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
@@ -395,7 +406,7 @@ describe("manual collection target exclusion and NFT inventory", () => {
     await user.click(within(inventory).getByRole("button", { name: "移除第 2 行 NFT" }));
     expect(within(inventory).queryByText("8")).not.toBeInTheDocument();
     expect(within(inventory).getByText("7")).toBeVisible();
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = within(screen.getByRole("alertdialog", { name: "确认 NFT 归集？" }));
     expect(await dialog.findByText("Token ID 7 · 估计数量 1")).toBeVisible();
@@ -411,7 +422,7 @@ describe("manual collection target exclusion and NFT inventory", () => {
   it("keeps a slow NFT file import active while locking inventory edits", async () => {
     const user = userEvent.setup();
     const { container } = render(<EvmCollectionPage fixedStandard="nft" />);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "7");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
@@ -466,7 +477,7 @@ describe("EvmCollectionPage workbench", () => {
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledOnce());
     cleanup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await importEvmSecret(user);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
     expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
@@ -503,7 +514,7 @@ describe("EvmCollectionPage workbench", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" onAutomatic={automatic} />);
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.click(screen.getByRole("tab", { name: "一键归集" }));
     expect(automatic).toHaveBeenCalledOnce();
     const [snapshot, config, rounds] = automatic.mock.calls[0];
@@ -635,13 +646,13 @@ describe("EvmCollectionPage workbench", () => {
     for (const contractAddress of [tokenAddress, secondTokenAddress]) {
       const contract = screen.getByRole("textbox", { name: "NFT 合约" });
       await user.clear(contract);
-      await user.type(contract, contractAddress);
+      await pasteInput(user, contract, contractAddress);
       const ids = screen.getByLabelText("Token ID / 区间");
       await user.clear(ids);
       await user.type(ids, "7");
       await user.click(screen.getByRole("button", { name: "加入清单" }));
     }
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = within(screen.getByRole("alertdialog", { name: "确认 NFT 归集？" }));
     expect(await dialog.findByText("First Collection · FIRST")).toBeVisible();
@@ -680,11 +691,11 @@ describe("EvmCollectionPage workbench", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "7,8");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await user.click(screen.getByRole("button", { name: "确认并开始归集" }));
     const dialog = within(screen.getByRole("alertdialog", { name: /确认(?:代币| NFT )归集？/ }));
     expect(await dialog.findByText("Token ID 8 · 估计数量 读取失败")).toBeVisible();
@@ -720,7 +731,7 @@ describe("EvmCollectionPage workbench", () => {
       results: [{ address: sourceAddress, asset: "ETH", hash: `0x${"ab".repeat(32)}`, status: "confirming", message: "等待确认" }] });
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="erc20" />);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await importEvmSecret(user);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
     expect(screen.getByText("请先在可恢复任务记录中核对上次交易的链上状态")).toBeVisible();
@@ -743,7 +754,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.queryByText("Token 识别")).not.toBeInTheDocument();
     expect(screen.queryByText(/留空则归集 ETH，填写后归集/)).not.toBeInTheDocument();
 
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await importEvmSecret(user);
     await confirmEvmExecution(user);
     await waitFor(() => expect(evmMocks.plan).toHaveBeenCalled());
@@ -804,7 +815,10 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    const tokenInput = screen.getByRole("textbox", { name: "Token 清单" });
+    await pasteInput(user, tokenInput, tokenAddress.slice(0, -1));
+    expect(evmMocks.readMetadata).not.toHaveBeenCalled();
+    await user.type(tokenInput, tokenAddress.slice(-1));
 
     await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalledWith(
       expect.anything(),
@@ -833,7 +847,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
     evmMocks.getBalance.mockRejectedValueOnce(new Error("native balance unavailable"));
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
@@ -855,7 +869,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
 
     const firstTokenInput = screen.getByRole("textbox", { name: "Token 清单" });
-    await user.type(firstTokenInput, tokenAddress);
+    await pasteInput(user, firstTokenInput, tokenAddress);
     await screen.findByText("TOK", {}, { timeout: 1_500 });
 
     expect(firstTokenInput).toHaveAttribute("readonly");
@@ -868,7 +882,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(secondTokenInput).not.toHaveAttribute("readonly");
     expect(evmMocks.readMetadata).toHaveBeenCalledTimes(1);
 
-    await user.type(secondTokenInput, secondTokenAddress);
+    await pasteInput(user, secondTokenInput, secondTokenAddress);
     await screen.findByText("TOK2", {}, { timeout: 1_500 });
     expect(secondTokenInput).toHaveAttribute("readonly");
     expect(evmMocks.readMetadata).toHaveBeenCalledTimes(2);
@@ -891,7 +905,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
     await importEvmSecret(user);
     await importEvmSecret(user, secondPrivateKey);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
@@ -943,7 +957,7 @@ describe("EvmCollectionPage workbench", () => {
 
     await importEvmSecret(user);
     await importEvmSecret(user, secondPrivateKey);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await waitFor(() => expect(evmMocks.readMetadata).toHaveBeenCalled(), { timeout: 1_500 });
     await user.click(screen.getByRole("button", { name: "查看地址余额" }));
 
@@ -965,8 +979,8 @@ describe("EvmCollectionPage workbench", () => {
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "4.5");
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await importEvmSecret(user);
     await confirmEvmExecution(user);
 
@@ -986,8 +1000,8 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="erc20" />);
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
-    await user.type(screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 清单" }), tokenAddress);
     await importEvmSecret(user);
 
     expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
@@ -1091,7 +1105,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.getBalance).toHaveBeenCalledWith({ address: signerAccount.address });
     expect(screen.getByRole("tab", { name: "指定总数量" })).toBeEnabled();
 
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "再次识别" }));
     await waitFor(() => expect(evmMocks.discoverEnumerable).toHaveBeenCalledTimes(2));
@@ -1141,7 +1155,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user);
     await importEvmSecret(user, secondPrivateKey);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("button", { name: "识别持仓" }));
 
     const walletList = screen.getByLabelText("已导入来源钱包");
@@ -1210,7 +1224,7 @@ describe("EvmCollectionPage workbench", () => {
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user);
     await importEvmSecret(user, secondPrivateKey);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("button", { name: "识别持仓" }));
 
     const walletList = screen.getByLabelText("已导入来源钱包");
@@ -1269,7 +1283,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(openSeaKeyInput).not.toHaveAttribute("data-masked");
     expect(screen.getByRole("button", { name: "隐藏 OpenSea Key" })).toHaveAttribute("aria-pressed", "true");
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.type(openSeaKeyInput, "temporary-opensea-key");
     await user.click(screen.getByRole("button", { name: "识别持仓" }));
 
@@ -1383,12 +1397,12 @@ describe("EvmCollectionPage workbench", () => {
     const user = userEvent.setup();
     render(<EvmCollectionPage fixedStandard="nft" />);
     await importEvmSecret(user);
-    await user.type(screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "NFT 合约" }), tokenAddress);
     await user.click(screen.getByRole("tab", { name: "手工 / 文件" }));
     await user.click(screen.getByRole("tab", { name: "ERC1155" }));
     await user.type(screen.getByLabelText("Token ID / 区间"), "9,10");
     await user.click(screen.getByRole("button", { name: "加入清单" }));
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
 
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
@@ -1623,7 +1637,7 @@ describe("EvmCollectionPage workbench", () => {
     const target = screen.getByRole("textbox", { name: "目标地址" });
     await user.clear(target);
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     expect(screen.getByText("编辑中")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "清空工作台" })).not.toBeInTheDocument();
@@ -1659,7 +1673,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(evmMocks.assertNetwork).toHaveBeenCalled();
 
     await user.clear(target);
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     expect(screen.getByText("归集记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "已核对，开始新任务" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
@@ -1728,7 +1742,7 @@ describe("EvmCollectionPage workbench", () => {
     const target = screen.getByRole("textbox", { name: "目标地址" });
     expect(target).toBeEnabled();
     await user.clear(target);
-    await user.type(target, targetAddress);
+    await pasteInput(user, target, targetAddress);
     expect(target).toHaveValue(targetAddress);
     expect(screen.getByRole("textbox", { name: "Token 清单" })).toHaveValue(tokenAddress);
     expect(screen.getByLabelText("已导入来源钱包")).toBeVisible();
@@ -1804,7 +1818,7 @@ describe("EvmCollectionPage workbench", () => {
     const nftTotal = screen.getByRole("spinbutton", { name: "ERC721 归集总数量" });
     await user.clear(nftTotal);
     await user.type(nftTotal, "2");
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
 
     const walletList = screen.getByLabelText("已导入来源钱包");
@@ -1884,7 +1898,7 @@ describe("EvmCollectionPage workbench", () => {
     expect(screen.getByRole("button", { name: "确认并开始归集" })).toBeDisabled();
     await user.clear(totalInput);
     await user.type(totalInput, "2");
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
 
     await waitFor(() => expect(evmMocks.execute).toHaveBeenCalledTimes(1));
@@ -2033,7 +2047,7 @@ describe("EvmCollectionPage workbench", () => {
 
     const user = await discoverNft();
     await screen.findByText(/识别到 2 个 ERC721/);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
     await screen.findByText(/归集完成：1 项确认成功，1 项失败/);
 
@@ -2092,7 +2106,7 @@ describe("EvmCollectionPage workbench", () => {
 
     const user = await discoverNft();
     await screen.findByText(/识别到 1 个 ERC721/);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
     await confirmEvmExecution(user);
     await screen.findByText(/归集完成：1 项确认成功/);
 
@@ -2109,7 +2123,7 @@ describe("EvmCollectionPage workbench", () => {
   it("keeps identified Token ID when only the RPC endpoint changes", async () => {
     const user = await discoverNft();
     await screen.findByText(/识别到 1 个 ERC721/);
-    await user.type(screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "目标地址" }), targetAddress);
 
     expandSettings("修改 RPC");
     const rpc = screen.getByRole("textbox", { name: "RPC" });

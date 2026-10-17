@@ -39,6 +39,86 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Automatic website path discovery workbench", () => {
+  it("shows the exact unresolved documents separately from recovered and confirmed missing documents", async () => {
+    const user = userEvent.setup();
+    const sources = completedSources().map(source => source.source === "scripts" ? { ...source, status: "partial" as const,
+      issueCount: 2, unresolvedIssueCount: 1, issues: [
+        { source: "scripts" as const, url: "https://example.com/assets/large.js", kind: "limit" as const, message: "达到脚本语法节点上限", statusCode: 200, attempts: 1, resolved: false },
+        { source: "scripts" as const, url: "https://example.com/assets/recovered.js", kind: "request" as const, message: "读取超时", attempts: 2, resolved: true }
+      ] } : source.source === "links" ? { ...source, issueCount: 1, unresolvedIssueCount: 0, issues: [
+        { source: "links" as const, url: "https://example.com/api/", kind: "missing" as const, message: "文档返回 HTTP 404", statusCode: 404, resolved: true }
+      ] } : source);
+    vi.mocked(discoverWebsitePaths).mockResolvedValue({ ...summary(sources), diagnostics: {
+      documentsQueued: 4, documentsRead: 5, documentsFailed: 0, retryAttempts: 1, failedAttempts: 1, recoveredDocuments: 1,
+      scriptDocuments: 2, pendingDocuments: 0, activeDocuments: 0, pendingValidations: 0, activeValidations: 0, deadlineReached: false, skippedDocuments: 0
+    } });
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    expect(screen.getByText("发现问题明细 · 未解决 1 项 · 已处理 2 项")).toBeVisible();
+    expect(screen.getByRole("link", { name: "https://example.com/assets/large.js" })).toBeVisible();
+    expect(screen.getByText("达到脚本语法节点上限")).toBeVisible();
+    expect(screen.getByText("已恢复")).toBeVisible();
+    expect(screen.getByText("已核对 GET 响应")).toBeVisible();
+    expect(screen.getByText(/失败尝试 1 次 · 重试恢复 1 份/u)).toBeVisible();
+    expect(screen.getByRole("status", { name: "扫描完成 · 数据不完整" })).toBeVisible();
+  });
+
+  it("finishes normally when all historical issues recovered, retaining their expandable details", async () => {
+    const user = userEvent.setup();
+    const sources = completedSources().map(source => source.source === "wayback" ? { ...source, issueCount: 1, unresolvedIssueCount: 0, issues: [
+      { source: "wayback" as const, url: "https://example.com/", kind: "request" as const, message: "读取超时", attempts: 2, resolved: true }
+    ] } : source);
+    vi.mocked(discoverWebsitePaths).mockResolvedValue(summary(sources));
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    expect(screen.getByRole("status", { name: "扫描完成" })).toBeVisible();
+    const details = screen.getByText("发现问题明细 · 未解决 0 项 · 已处理 1 项").closest("details");
+    expect(details).not.toHaveAttribute("open");
+    await user.click(screen.getByText("发现问题明细 · 未解决 0 项 · 已处理 1 项"));
+    expect(screen.getByText("已恢复")).toBeVisible();
+  });
+
+  it("retains declared POST endpoints separately from missing GET pages and exports their methods", async () => {
+    const user = userEvent.setup();
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      options.onResult({ url: "https://example.com/api/create", status: "responded", statusCode: 404, sources: ["scripts"],
+        evidence: [{ kind: "request", documentUrl: "https://example.com/app.js", methods: ["POST"] }] });
+      options.onResult({ url: "https://example.com/gone", status: "responded", statusCode: 404, sources: ["links"] });
+      options.onResult({ url: "https://example.com/docs", status: "responded", statusCode: 200, sources: ["links"], responseReused: true });
+      return { ...summary(), discovered: 3, validated: 3 };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput();
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    await user.click(screen.getByRole("tab", { name: "待确认接口" }));
+    expect(screen.getByRole("link", { name: "/api/create" })).toBeVisible();
+    expect(screen.getByText("待确认接口 · GET 404")).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/gone" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "POST" } });
+    expect(screen.getByRole("link", { name: "/api/create" })).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "" } });
+    await user.click(screen.getByRole("button", { name: "说明：https://example.com/api/create 的响应详情" }));
+    expect(screen.getByText("POST")).toBeVisible();
+    expect(screen.getByText(/未执行其他方法/u)).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("tab", { name: "未找到" }));
+    expect(screen.getByRole("link", { name: "/gone" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/api/create" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "有响应" }));
+    await user.click(screen.getByRole("button", { name: "说明：https://example.com/docs 的响应详情" }));
+    expect(screen.getByText(/已复用本轮发现时读取的 GET 响应/u)).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    const csv = vi.mocked(downloadScanCsv).mock.calls.at(-1)![1];
+    expect(csv).toContain("declared_methods");
+    expect(csv).toContain("POST");
+  });
+
   it("extracts an entered website on blur, preserving its entry path and removing query and fragment", async () => {
     const user = userEvent.setup();
     render(<WebsitePathScanPage />);
@@ -83,14 +163,99 @@ describe("Automatic website path discovery workbench", () => {
     expect(screen.queryByRole("textbox", { name: /字典/u })).not.toBeInTheDocument();
     expect(document.querySelector("textarea")).toBeNull();
     expect(within(screen.getByRole("list", { name: "路径发现来源" })).getAllByRole("listitem")).toHaveLength(5);
+    expect(screen.getByRole("spinbutton", { name: "页面与验证超时（秒）" })).toHaveValue(10);
     targetInput();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "响应验证并发数" }), { target: { value: "2" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "站点请求超时（秒）" }), { target: { value: "3" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "扫描并发数" }), { target: { value: "2" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "页面与验证超时（秒）" }), { target: { value: "3" } });
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
     expect(discoverWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://example.com/docs/", concurrency: 2, timeoutMs: 3000 }));
     expect(screen.getByRole("textbox", { name: "网站地址" })).toHaveValue("https://example.com/docs/");
-    expect(screen.getByRole("spinbutton", { name: "响应验证并发数" })).toHaveValue(2);
+    expect(screen.getByRole("spinbutton", { name: "扫描并发数" })).toHaveValue(2);
+  });
+
+  it("keeps the observed mint endpoint visible with its concrete script evidence, searchable provenance and CSV export", async () => {
+    const user = userEvent.setup();
+    const endpoint = "https://next.overload.build/api/mint/config";
+    const sourceScript = "https://next.overload.build/assets/live-BBH9rgPf.js";
+    const sources = completedSources().map(source => ({ ...source,
+      urls: source.source === "scripts" ? [endpoint] : source.source === "links" ? ["https://next.overload.build/docs"] : [] }));
+    const diagnostics = { documentsQueued: 58, documentsRead: 59, documentsFailed: 1, retryAttempts: 1,
+      scriptDocuments: 17, pendingDocuments: 0, activeDocuments: 0, pendingValidations: 0,
+      activeValidations: 0, deadlineReached: false, skippedDocuments: 0 };
+    vi.mocked(discoverWebsitePaths).mockImplementation(async options => {
+      sources.forEach(options.onSource);
+      options.onResult({ url: endpoint, status: "responded", statusCode: 200, contentLength: 132, durationMs: 84, sources: ["scripts"],
+        evidence: [{ kind: "request", documentUrl: sourceScript, bytes: 851719, truncated: false }] });
+      options.onResult({ url: "https://next.overload.build/docs", status: "responded", statusCode: 200, sources: ["links"] });
+      return { discovered: 2, validated: 2, truncated: false, sources, diagnostics };
+    });
+    render(<WebsitePathScanPage />);
+    targetInput("https://next.overload.build/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled());
+    expect(discoverWebsitePaths).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://next.overload.build/", concurrency: 4, timeoutMs: 10000 }));
+    expect(screen.getByRole("status", { name: "扫描完成" })).toBeVisible();
+    expect(screen.getByText("文档读取 59 次 · 不同脚本 17 份 · 自动重试 1 次 · 读取失败 1 次")).toBeVisible();
+    const table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    const row = table.getByRole("link", { name: "/api/mint/config" }).closest("tr")!;
+    expect(within(row).getByText("有响应 · 200")).toBeVisible();
+    expect(within(row).getByText("脚本")).toBeVisible();
+    expect(screen.queryByText("发现依据")).not.toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: `说明：${endpoint} 的响应详情` }));
+    expect(await screen.findByText("发现依据")).toBeVisible();
+    expect(screen.getByRole("link", { name: sourceScript })).toHaveAttribute("href", sourceScript);
+    expect(screen.getByText(/已读取 851,719 B（完整文档）/u)).toBeVisible();
+    expect(screen.getByText("132 B")).toBeVisible();
+    await user.keyboard("{Escape}");
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "LIVE-bbh9rgpf.JS" } });
+    expect(screen.getByRole("link", { name: "/api/mint/config" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "/docs" })).not.toBeInTheDocument();
+    expect(screen.getByText("匹配 1 / 2 条 · CSV 导出本轮全部已验证结果")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    const csv = vi.mocked(downloadScanCsv).mock.calls.at(-1)![1];
+    for (const value of [endpoint, sourceScript, "https://next.overload.build/docs", "evidence_documents", "evidence_kinds", "request"]) expect(csv).toContain(value);
+  });
+
+  it("updates live retry diagnostics and later evidence for the same row, retaining final document diagnostics", async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    let options!: DiscoveryOptions;
+    vi.mocked(discoverWebsitePaths).mockImplementation(value => { options = value; return pending.promise; });
+    render(<WebsitePathScanPage />);
+    targetInput("https://next.overload.build/");
+    await user.click(screen.getByRole("button", { name: "开始扫描" }));
+    const url = "https://next.overload.build/api/mint/config";
+    const sourceScript = "https://next.overload.build/assets/live-BBH9rgPf.js";
+    const diagnostics = { documentsQueued: 12, documentsRead: 5, documentsFailed: 1, retryAttempts: 1,
+      scriptDocuments: 4, pendingDocuments: 5, activeDocuments: 3, pendingValidations: 1,
+      activeValidations: 1, deadlineReached: false, skippedDocuments: 0 };
+    await act(async () => {
+      options.onResult({ url, status: "responded", statusCode: 200, sources: ["scripts"] });
+      options.onProgress?.({ phase: "discovering", completed: 1, total: 1, discovered: 1,
+        discoveryCompleted: 5, discoveryTotal: 13, diagnostics });
+    });
+    expect(screen.getByText("文档读取 5 次 · 不同脚本 4 份 · 自动重试 1 次 · 读取失败 1 次")).toBeVisible();
+    await act(async () => {
+      options.onResult({ url, status: "responded", statusCode: 200, sources: ["scripts", "links"],
+        evidence: [{ kind: "request", documentUrl: sourceScript, bytes: 851719, truncated: false }] });
+    });
+    const table = within(screen.getByRole("table", { name: "网站路径扫描结果" }));
+    expect(table.getAllByRole("row")).toHaveLength(2);
+    await user.click(table.getByRole("button", { name: `说明：${url} 的响应详情` }));
+    expect(await screen.findByRole("link", { name: sourceScript })).toBeVisible();
+    expect(screen.getByText(/已读取 851,719 B（完整文档）/u)).toBeVisible();
+    await user.keyboard("{Escape}");
+    await act(async () => {
+      pending.resolve({ discovered: 1, validated: 1, truncated: false, sources: completedSources(),
+        diagnostics: { ...diagnostics, documentsRead: 13, pendingDocuments: 0, activeDocuments: 0,
+          pendingValidations: 0, activeValidations: 0 } });
+      await pending.promise;
+    });
+    expect(screen.getByRole("status", { name: "扫描完成" })).toBeVisible();
+    expect(screen.getByText("文档读取 13 次 · 不同脚本 4 份 · 自动重试 1 次 · 读取失败 1 次")).toBeVisible();
+    expect(screen.queryByText("文档读取 5 次 · 不同脚本 4 份 · 自动重试 1 次 · 读取失败 1 次")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "/api/mint/config" })).toBeVisible();
   });
 
   it("streams discovery and validation, keeps sources compact, exposes response details and exports all filtered-out rows", async () => {
@@ -367,11 +532,11 @@ describe("Automatic website path discovery workbench", () => {
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     expect(screen.getByRole("alert")).toBeVisible();
     targetInput();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "响应验证并发数" }), { target: { value: "9" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "扫描并发数" }), { target: { value: "9" } });
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     expect(screen.getByRole("alert")).toHaveTextContent("并发数需要是 1–8 的整数");
-    fireEvent.change(screen.getByRole("spinbutton", { name: "响应验证并发数" }), { target: { value: "4" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "站点请求超时（秒）" }), { target: { value: "0" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "扫描并发数" }), { target: { value: "4" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "页面与验证超时（秒）" }), { target: { value: "0" } });
     await user.click(screen.getByRole("button", { name: "开始扫描" }));
     expect(screen.getByRole("alert")).toHaveTextContent("超时需要是 1–10 秒的整数");
     expect(discoverWebsitePaths).not.toHaveBeenCalled();
@@ -419,7 +584,7 @@ describe("Automatic website path discovery workbench", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索扫描结果" }), { target: { value: "/path0" } });
     expect(screen.getByRole("link", { name: "/path0" })).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "路径结果分页" })).not.toBeInTheDocument();
-  });
+  }, 10_000);
 
   it("retains partial results on a service failure", async () => {
     const user = userEvent.setup();

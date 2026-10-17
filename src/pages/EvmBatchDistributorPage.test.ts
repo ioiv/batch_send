@@ -134,6 +134,12 @@ function getRecipientEditor(name = "收款地址") {
   return screen.getByRole("textbox", { name });
 }
 
+async function pasteInput(user: ReturnType<typeof userEvent.setup>, input: HTMLElement, value: string) {
+  await user.click(input);
+  await user.paste(value);
+  expect(input).toHaveValue(value);
+}
+
 async function prepareReadyDistributionPage() {
   const user = userEvent.setup();
   const { rerender } = render(createElement(EvmBatchDistributorPage));
@@ -269,7 +275,7 @@ describe("EvmBatchDistributorPage safety", () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
     await user.click(screen.getByRole("tab", { name: "Token" }));
-    await user.type(screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
     const tokenInfo = await screen.findByLabelText("Token 信息");
     const balance = await within(tokenInfo).findByTitle(`${exact} WETH`);
     expect(balance).toHaveTextContent(display);
@@ -288,11 +294,11 @@ describe("EvmBatchDistributorPage safety", () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
     await user.click(screen.getByRole("tab", { name: "Token" }));
-    await user.type(screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
+    await pasteInput(user, screen.getByRole("textbox", { name: "Token 合约地址" }), tokenAddress);
     const tokenInfo = await screen.findByLabelText("Token 信息");
     expect(await within(tokenInfo).findByTitle("0.000010000000000001 WETH")).toHaveTextContent("0.00001");
     fireEvent.change(screen.getByRole("spinbutton", { name: "每个地址的金额（WETH）" }), { target: { value: "0.000002" } });
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
     const confirmationBalance = within(dialog).getByTitle("0.000010000000000001 WETH");
@@ -435,7 +441,7 @@ describe("EvmBatchDistributorPage safety", () => {
   it("opens confirmation after one start action and retains automatic checks before signing", async () => {
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     expect(screen.queryByRole("button", { name: /运行预检|重新预检|确认分发/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
@@ -454,7 +460,7 @@ describe("EvmBatchDistributorPage safety", () => {
     pageMocks.preflight.mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     expect(screen.getByRole("button", { name: "检查中" })).toBeDisabled();
     expect(screen.queryByRole("alertdialog", { name: "确认 EVM 分发" })).not.toBeInTheDocument();
@@ -545,7 +551,7 @@ describe("EvmBatchDistributorPage safety", () => {
     });
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
     expect(await screen.findByText("请先在可恢复任务记录中核对之前提交的交易")).toBeVisible();
     expect(screen.queryByRole("alertdialog", { name: "确认 EVM 分发" })).not.toBeInTheDocument();
@@ -584,7 +590,7 @@ describe("EvmBatchDistributorPage safety", () => {
     });
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     expect(screen.getByRole("button", { name: "开始分发" })).toBeDisabled();
     expect(pageMocks.preflight).not.toHaveBeenCalled();
     const historyToggle = screen.queryByRole("button", { name: "展开可恢复任务记录" });
@@ -607,7 +613,7 @@ describe("EvmBatchDistributorPage safety", () => {
 
     const input = getRecipientEditor() as HTMLTextAreaElement;
     const list = `${recipient}\n\nbad\n${recipient}`;
-    await user.type(input, list);
+    await pasteInput(user, input, list);
     await user.click(await screen.findByRole("button", { name: "定位需修正：1" }));
     await waitFor(() => expect(input).toHaveFocus());
     expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe("bad");
@@ -647,7 +653,7 @@ describe("EvmBatchDistributorPage safety", () => {
     expect(gasSettings.compareDocumentPosition(preflightButton) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
     await user.type(within(gasSettings).getByRole("spinbutton", { name: "Gas Price（Gwei）" }), "3.25");
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     await user.click(preflightButton);
 
     await screen.findByRole("alertdialog", { name: "确认 EVM 分发" });
@@ -667,7 +673,7 @@ describe("EvmBatchDistributorPage safety", () => {
     render(createElement(EvmBatchDistributorPage));
     const gasSettings = screen.getByLabelText("Gas 设置");
     await user.click(within(gasSettings).getByRole("tab", { name: "自定义" }));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
 
     expect(within(gasSettings).queryByText(/请输入大于 0/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始分发" })).toBeDisabled();
@@ -734,7 +740,7 @@ describe("EvmBatchDistributorPage safety", () => {
     pageMocks.preflight.mockRejectedValueOnce(new Error("资产余额不足"));
     const user = userEvent.setup();
     render(createElement(EvmBatchDistributorPage));
-    await user.type(getRecipientEditor(), recipient);
+    await pasteInput(user, getRecipientEditor(), recipient);
     await user.click(screen.getByRole("button", { name: "开始分发" }));
 
     expect((await screen.findAllByText("检查未通过")).length).toBeGreaterThan(0);

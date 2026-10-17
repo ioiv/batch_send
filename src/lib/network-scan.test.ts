@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { confirmedExposure } from "./exposure-path";
 import {
   exportPathResultsCsv, normalizeDomain, normalizeWebsiteUrl,
-  scanSubdomains, scanWebsitePaths
+  createWebsitePathValidator, scanSubdomains, scanWebsitePaths
 } from "./network-scan";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -62,6 +62,24 @@ describe("network scan targets", () => {
 });
 
 describe("network scan execution", () => {
+  it("reuses the already fetched GET while comparing decoded lengths against an identity baseline", async () => {
+    const baseUrl = "https://example.com/";
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const { url } = JSON.parse(String(init.body));
+      return json({ url, status: "responded", statusCode: 200, fingerprint: "same-body", contentLength: 8000 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const signal = new AbortController().signal;
+    const validate = await createWebsitePathValidator({ baseUrl, timeoutMs: 5000, signal });
+    const result = await validate(`${baseUrl}docs`, signal, { url: `${baseUrl}docs`, status: "responded", statusCode: 200,
+      fingerprint: "same-body", contentLength: 1400, decodedBodyLength: 8000, durationMs: 123 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ responseReused: true, soft404: true, durationMs: 123, contentLength: 1400 });
+    await expect(validate(`${baseUrl}docs`, signal, { url: `${baseUrl}other`, status: "responded", statusCode: 200 })).rejects.toThrow("复用");
+    await expect(validate(`${baseUrl}docs`, signal, { url: `${baseUrl}docs`, status: "error" })).rejects.toThrow("复用");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("flags matches against two wildcard probes without including probes in results", async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const { domain } = JSON.parse(String(init.body));

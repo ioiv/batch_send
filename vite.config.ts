@@ -52,6 +52,8 @@ export default defineConfig(({ mode }) => ({
   },
   test: {
     environment: "node",
+    // Wallet UI suites load both DOM and crypto SDKs; keep their workers bounded.
+    maxWorkers: 2,
     setupFiles: [resolve(projectRoot, "src/test/setup.ts")]
   }
 }));

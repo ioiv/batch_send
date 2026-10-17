@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { Resolver } from "node:dns/promises";
-import { request as httpRequest, type ClientRequest, type IncomingMessage, type ServerResponse } from "node:http";
-import { request as httpsRequest, type RequestOptions } from "node:https";
+import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
+import type { RequestOptions } from "node:https";
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
 import type { SubdomainDiscoveryOptions, SubdomainDiscoveryResult, SubdomainDiscoverySource } from "./subdomain-discovery.js";
 import type { WebsitePathDiscoveryResult, WebsitePathDiscoverySource } from "./website-path-discovery.js";
+import { requestWithConfiguredProxy } from "./network-scan-proxy.js";
+import { ProxyDnsFailure, resolveConfiguredProxyAddresses } from "./network-scan-proxy-dns.js";
 
 export interface SubdomainScanResult {
   domain: string;
@@ -24,13 +26,15 @@ export interface PathScanResult {
   location?: string;
   fingerprint?: string;
   message?: string;
+  decodedBodyLength?: number;
+  durationMs?: number;
 }
 
 export type NetworkScanResult = SubdomainScanResult | PathScanResult | SubdomainDiscoveryResult | WebsitePathDiscoveryResult;
 export type NetworkScanPayload =
   | { kind: "subdomain"; domain: string; timeoutMs: number }
   | { kind: "subdomain-discovery"; domain: string; source: SubdomainDiscoverySource; timeoutMs: number }
-  | { kind: "path-discovery"; baseUrl: string; url: string; documentUrl?: string; source: WebsitePathDiscoverySource; timeoutMs: number }
+  | { kind: "path-discovery"; baseUrl: string; url: string; documentUrl?: string; scanId?: string; source: WebsitePathDiscoverySource; timeoutMs: number }
   | { kind: "path"; url: string; timeoutMs: number };
 
 interface DnsResolver {
@@ -43,12 +47,14 @@ interface DnsResolver {
 /** Injectable transport keeps security and response tests independent of live targets. */
 export interface NetworkScanDependencies {
   createResolver(): DnsResolver;
-  request(protocol: "http:" | "https:", options: RequestOptions, callback: (response: IncomingMessage) => void): ClientRequest;
+  request(protocol: "http:" | "https:", options: RequestOptions, callback: (response: IncomingMessage) => void, address?: string): ClientRequest;
+  resolveProxyAddresses?(hostname: string, protocol: "http:" | "https:", timeoutMs: number, signal?: AbortSignal): Promise<string[] | undefined>;
 }
 
 const defaults: NetworkScanDependencies = {
   createResolver: () => new Resolver(),
-  request: (protocol, options, callback) => protocol === "https:" ? httpsRequest(options, callback) : httpRequest(options, callback)
+  request: (protocol, options, callback, address) => requestWithConfiguredProxy(protocol, options, callback, address ?? ""),
+  resolveProxyAddresses: resolveConfiguredProxyAddresses
 };
 
 const MAX_PAYLOAD_BYTES = 8192;
@@ -64,7 +70,7 @@ class ValidationError extends Error {
 }
 
 class ScanFailure extends Error {
-  constructor(readonly reason: "timeout" | "dns" | "private" | "request") { super(reason); }
+  constructor(readonly reason: "timeout" | "dns" | "private" | "request", readonly retryable = reason !== "private") { super(reason); }
 }
 
 /** Only failures before HTTP headers arrive may switch to another already vetted address. */
@@ -81,6 +87,11 @@ function failureMessage(error: unknown): string {
   if (error instanceof ScanFailure && error.reason === "private") return "目标未通过公网地址检查";
   if (error instanceof ScanFailure && error.reason === "dns") return "DNS 查询失败";
   return "请求失败";
+}
+
+/** Public discovery diagnostics never expose transport internals or credentials. */
+export function publicDocumentFailure(error: unknown) {
+  return { message: failureMessage(error), retryable: error instanceof ScanFailure && error.retryable };
 }
 
 function ipv4Number(address: string): number {
@@ -171,12 +182,14 @@ export function validateScanPayload(payload: unknown): NetworkScanPayload {
   const input = payload as Record<string, unknown>;
   const discovery = input.kind === "subdomain-discovery" || input.kind === "path-discovery";
   const pentesttools = input.kind === "subdomain-discovery" && input.source === "pentesttools";
-  const discoveryTimeoutMs = pentesttools ? 120000 : 20000;
+  const scriptDiscovery = input.kind === "path-discovery" && input.source === "scripts";
+  const discoveryTimeoutMs = pentesttools ? 120000 : scriptDiscovery ? 45000 : 20000;
   const timeoutMs = discovery ? (input.timeoutMs === undefined ? discoveryTimeoutMs : input.timeoutMs) : timeoutValue(input.timeoutMs);
   if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > (discovery ? discoveryTimeoutMs : 10000)) throw new ValidationError(`发现来源超时必须在 1000–${discoveryTimeoutMs} 毫秒之间`);
-  const allowed = input.kind === "path-discovery" ? ["kind", "baseUrl", "url", "documentUrl", "source", "timeoutMs"] : discovery ? ["kind", "domain", "source", "timeoutMs"] : input.kind === "subdomain" ? ["kind", "domain", "timeoutMs"] : ["kind", "url", "timeoutMs"];
+  const allowed = input.kind === "path-discovery" ? ["kind", "baseUrl", "url", "documentUrl", "scanId", "source", "timeoutMs"] : discovery ? ["kind", "domain", "source", "timeoutMs"] : input.kind === "subdomain" ? ["kind", "domain", "timeoutMs"] : ["kind", "url", "timeoutMs"];
   if (Object.keys(input).some((key) => !allowed.includes(key))) throw new ValidationError("请求包含不支持的字段");
   if (input.kind === "path-discovery" && typeof input.baseUrl === "string" && typeof input.url === "string" && typeof input.source === "string" && ["links", "scripts", "robots", "sitemap", "wayback"].includes(input.source)) {
+    if (input.scanId !== undefined && (typeof input.scanId !== "string" || !/^[a-zA-Z0-9-]{1,64}$/.test(input.scanId))) throw new ValidationError("扫描轮次标识无效");
     const baseUrl = normalizeUrl(input.baseUrl);
     const url = normalizeUrl(input.url);
     if (url.origin !== baseUrl.origin) throw new ValidationError("发现文档必须与扫描网站同源");
@@ -189,7 +202,7 @@ export function validateScanPayload(payload: unknown): NetworkScanPayload {
     }
     baseUrl.search = "";
     url.search = "";
-    return { kind: "path-discovery", baseUrl: baseUrl.href, url: url.href, ...(documentUrl ? { documentUrl: documentUrl.href } : {}), source: input.source as WebsitePathDiscoverySource, timeoutMs };
+    return { kind: "path-discovery", baseUrl: baseUrl.href, url: url.href, ...(documentUrl ? { documentUrl: documentUrl.href } : {}), ...(input.scanId ? { scanId: input.scanId } : {}), source: input.source as WebsitePathDiscoverySource, timeoutMs };
   }
   if (input.kind === "subdomain-discovery" && typeof input.domain === "string" && typeof input.source === "string" && ["subdomaincenter", "certspotter", "hackertarget", "common", "pentesttools", "certkit"].includes(input.source)) {
     return { kind: "subdomain-discovery", domain: normalizeDomain(input.domain), source: input.source as SubdomainDiscoverySource, timeoutMs };
@@ -214,7 +227,8 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, cancel: 
   }
 }
 
-async function resolvePublicAddresses(hostname: string, timeoutMs: number, dependencies: NetworkScanDependencies, includeCname: boolean, signal?: AbortSignal, enforcePublic = true): Promise<{ addresses: string[]; cname?: string; privateRecords?: boolean }> {
+async function resolvePublicAddresses(hostname: string, timeoutMs: number, dependencies: NetworkScanDependencies, includeCname: boolean, signal?: AbortSignal, enforcePublic = true, protocol?: "http:" | "https:"): Promise<{ addresses: string[]; cname?: string; privateRecords?: boolean }> {
+  const startedAt = Date.now();
   if (signal?.aborted) throw new ScanFailure("request");
   if (isIP(hostname)) {
     if (!isPublicIp(hostname)) throw new ScanFailure("private");
@@ -237,6 +251,20 @@ async function resolvePublicAddresses(hostname: string, timeoutMs: number, depen
     if (addresses.length > 64 || addresses.some((address) => !isIP(address))) throw new ScanFailure("dns");
     let privateRecords = addresses.some((address) => !isPublicIp(address));
     if (enforcePublic && privateRecords) throw new ScanFailure("private");
+    if (enforcePublic && protocol && dependencies.resolveProxyAddresses) {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) throw new ScanFailure("timeout");
+      let trusted: string[] | undefined;
+      const trustedController = new AbortController();
+      try { trusted = await withTimeout(dependencies.resolveProxyAddresses(hostname, protocol, remaining, trustedController.signal), remaining, () => trustedController.abort(), signal); }
+      catch (error) { throw error instanceof ScanFailure ? error : new ScanFailure(error instanceof ProxyDnsFailure ? error.reason : "dns"); }
+      finally { trustedController.abort(); }
+      if (trusted) {
+        if (trusted.length > 64 || trusted.some(address => !isIP(address))) throw new ScanFailure("dns");
+        if (trusted.some(address => !isPublicIp(address))) throw new ScanFailure("private");
+        return { addresses: [...new Set(trusted)] };
+      }
+    }
     if (answers.some((answer) => answer.status === "rejected" && !NOT_FOUND_CODES.has(errorCode(answer.reason) ?? ""))) throw new ScanFailure("dns");
     if (!addresses.length && answers.slice(0, 2).some((answer) => answer.status === "fulfilled")) throw new ScanFailure("dns");
     const cnameAnswer = answers[2];
@@ -295,6 +323,18 @@ export interface PublicDocumentResult {
   setCookies?: string[];
 }
 
+/** Use the same bounded fingerprint for a discovered document and a standalone probe. */
+export function publicDocumentPathResult(response: PublicDocumentResult, options: { decodedBody?: boolean; durationMs?: number } = {}): PathScanResult {
+  const sample = response.body.subarray(0, MAX_RESPONSE_BYTES);
+  const title = responseTitle(sample);
+  return { url: response.url, status: "responded", statusCode: response.statusCode,
+    ...(title ? { title } : {}), ...(response.contentLength === undefined ? {} : { contentLength: response.contentLength }),
+    ...(response.location ? { location: response.location } : {}),
+    ...(options.decodedBody && !response.truncated ? { decodedBodyLength: response.body.length } : {}),
+    ...(options.durationMs === undefined ? {} : { durationMs: options.durationMs }),
+    fingerprint: createHash("sha256").update(sample).digest("hex") };
+}
+
 function getResponseAtAddress(url: URL, address: string, timeoutMs: number, dependencies: NetworkScanDependencies, signal?: AbortSignal, maxBytes = MAX_RESPONSE_BYTES, headers?: Readonly<Record<string, string>>, method: "GET" | "POST" = "GET", requestBody?: string): Promise<PublicDocumentResult> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   return new Promise((resolve, reject) => {
@@ -351,9 +391,9 @@ function getResponseAtAddress(url: URL, address: string, timeoutMs: number, depe
       if (byteLength === maxBytes) finish(true);
     };
     const onAborted = () => fail(new ScanFailure("request"));
-    onAbort = () => fail(new ScanFailure("request"));
+    onAbort = () => fail(new ScanFailure("request", false));
     const onClose = () => { if (!response?.complete) fail(new ScanFailure("request")); };
-    const onRequestError = (error: unknown) => fail(!response && CONNECTION_FAILURE_CODES.has(errorCode(error) ?? "") ? new ConnectionFailure() : new ScanFailure("request"));
+    const onRequestError = (error: unknown) => fail(!response && CONNECTION_FAILURE_CODES.has(errorCode(error) ?? "") ? new ConnectionFailure() : new ScanFailure("request", CONNECTION_FAILURE_CODES.has(errorCode(error) ?? "")));
     try {
       if (signal?.aborted) { onAbort(); return; }
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -375,10 +415,10 @@ function getResponseAtAddress(url: URL, address: string, timeoutMs: number, depe
         response.once("aborted", onAborted);
         response.once("close", onClose);
         response.on("error", () => fail(new ScanFailure("request")));
-      });
+      }, address);
       request.on("error", onRequestError);
       request.end(requestBody);
-    } catch { fail(new ScanFailure("request")); }
+    } catch { fail(new ScanFailure("request", false)); }
   });
 }
 
@@ -409,7 +449,7 @@ async function getResponse(url: URL, addresses: string[], deadline: number, depe
 /** Public-only pinned transport shared by path probes and discovery sources. */
 export async function fetchPublicDocument(urlInput: string, options: PublicDocumentOptions, dependencies = defaults): Promise<PublicDocumentResult> {
   const url = normalizeUrl(urlInput);
-  if (!Number.isInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 4 * 1024 * 1024 || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 20000) throw new ValidationError("读取限制无效");
+  if (!Number.isInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 4 * 1024 * 1024 || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 45000) throw new ValidationError("读取限制无效");
   const method = options.method ?? "GET";
   if ((method !== "GET" && method !== "POST") || (options.body !== undefined && (method !== "POST" || typeof options.body !== "string" || Buffer.byteLength(options.body) > MAX_PAYLOAD_BYTES))) throw new ValidationError("请求方法或正文无效");
   const headers = method === "POST" ? {
@@ -417,7 +457,7 @@ export async function fetchPublicDocument(urlInput: string, options: PublicDocum
     "Content-Length": String(Buffer.byteLength(options.body ?? ""))
   } : options.headers;
   const deadline = Date.now() + options.timeoutMs;
-  const { addresses } = await resolvePublicAddresses(url.hostname.replace(/^\[|\]$/g, ""), options.timeoutMs, dependencies, false, options.signal);
+  const { addresses } = await resolvePublicAddresses(url.hostname.replace(/^\[|\]$/g, ""), options.timeoutMs, dependencies, false, options.signal, true, url.protocol as "http:" | "https:");
   if (!addresses.length) throw new ScanFailure("dns");
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new ScanFailure("timeout");
@@ -429,15 +469,12 @@ export async function scanWebsitePath(urlInput: string, timeoutMs = DEFAULT_TIME
   timeoutValue(timeoutMs);
   const deadline = Date.now() + timeoutMs;
   try {
-    const { addresses } = await resolvePublicAddresses(url.hostname.replace(/^\[|\]$/g, ""), timeoutMs, dependencies, false, signal);
+    const { addresses } = await resolvePublicAddresses(url.hostname.replace(/^\[|\]$/g, ""), timeoutMs, dependencies, false, signal, true, url.protocol as "http:" | "https:");
     if (!addresses.length) throw new ScanFailure("dns");
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScanFailure("timeout");
     const response = await getResponse(url, addresses, deadline, dependencies, signal);
-    const title = responseTitle(response.body);
-    return { url: response.url, status: "responded", statusCode: response.statusCode,
-      ...(title ? { title } : {}), ...(response.contentLength === undefined ? {} : { contentLength: response.contentLength }),
-      ...(response.location ? { location: response.location } : {}), fingerprint: createHash("sha256").update(response.body).digest("hex") };
+    return publicDocumentPathResult(response);
   } catch (error) {
     return { url: url.href, status: "error", message: failureMessage(error) };
   }
@@ -543,7 +580,7 @@ export async function handleNetworkScanRequest(request: ScanRequest, response: S
     const payload = validateScanPayload(await readBody(request, controller.signal));
     const result = payload.kind === "subdomain-discovery"
       ? await (await import("./subdomain-discovery.js")).discoverSubdomains(payload.domain, payload.source, payload.timeoutMs, undefined, controller.signal, options)
-      : payload.kind === "path-discovery" ? await (await import("./website-path-discovery.js")).discoverWebsitePaths(payload.baseUrl, payload.url, payload.source, payload.timeoutMs, undefined, controller.signal, payload.documentUrl)
+      : payload.kind === "path-discovery" ? await (await import("./website-path-discovery.js")).discoverWebsitePaths(payload.baseUrl, payload.url, payload.source, payload.timeoutMs, undefined, controller.signal, payload.documentUrl, payload.scanId)
       : payload.kind === "subdomain" ? await scanSubdomain(payload.domain, payload.timeoutMs, defaults, controller.signal) : await scanWebsitePath(payload.url, payload.timeoutMs, defaults, controller.signal);
     sendJson(response, 200, { result });
   } catch (error) {

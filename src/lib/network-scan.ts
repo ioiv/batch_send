@@ -21,6 +21,9 @@ export interface WebsitePathScanResult {
   soft404?: boolean;
   missingPathBaseline?: { statusCode: number; fingerprint: string };
   durationMs?: number;
+  /** Full decoded length when a previously fetched compressed document is reused. */
+  decodedBodyLength?: number;
+  responseReused?: boolean;
 }
 
 function domainFromHostname(hostname: string) {
@@ -165,15 +168,25 @@ async function pathRequest(url: string, timeoutMs: number, signal: AbortSignal) 
     if (error instanceof ScanRequestTimeout) return { url, status: "error", message: error.message } satisfies WebsitePathScanResult;
     throw error;
   }
-  if (result.url !== url || !["responded", "error"].includes(result.status)
-    || (result.status === "responded" && (!Number.isInteger(result.statusCode) || result.statusCode! < 100 || result.statusCode! > 599))
-    || (result.title !== undefined && typeof result.title !== "string")
-    || (result.location !== undefined && typeof result.location !== "string")
-    || (result.fingerprint !== undefined && typeof result.fingerprint !== "string")
-    || (result.contentLength !== undefined && (!Number.isFinite(result.contentLength) || result.contentLength < 0))) {
+  if (!isWebsitePathScanResult(result, url)) {
     throw new Error("扫描服务返回了无效网站结果。");
   }
   return result;
+}
+
+export function isWebsitePathScanResult(value: unknown, url: string): value is WebsitePathScanResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as WebsitePathScanResult;
+  return result.url === url && ["responded", "error"].includes(result.status)
+    && (result.status !== "responded" || Number.isInteger(result.statusCode) && result.statusCode! >= 100 && result.statusCode! <= 599)
+    && (result.title === undefined || typeof result.title === "string")
+    && (result.location === undefined || typeof result.location === "string")
+    && (result.fingerprint === undefined || typeof result.fingerprint === "string")
+    && (result.message === undefined || typeof result.message === "string")
+    && (result.contentLength === undefined || Number.isSafeInteger(result.contentLength) && result.contentLength >= 0)
+    && (result.decodedBodyLength === undefined || Number.isSafeInteger(result.decodedBodyLength) && result.decodedBodyLength >= 0)
+    && (result.durationMs === undefined || Number.isFinite(result.durationMs) && result.durationMs >= 0)
+    && (result.responseReused === undefined || typeof result.responseReused === "boolean");
 }
 
 async function runQueue<T>(options: ScanOptions<T>, signal: AbortSignal, scan: (candidate: string, requestSignal: AbortSignal) => Promise<T>) {
@@ -243,17 +256,22 @@ export async function createWebsitePathValidator(options: { baseUrl: string; tim
     try { return new URL(result.location, result.url).href; }
     catch { return result.location; }
   };
-  return async (candidate: string, signal: AbortSignal): Promise<WebsitePathScanResult> => {
+  return async (candidate: string, signal: AbortSignal, observed?: WebsitePathScanResult): Promise<WebsitePathScanResult> => {
     if (!validPathCandidate(candidate, base)) throw new Error("扫描范围必须是当前网站的路径。");
+    signal.throwIfAborted();
+    if (observed && (!isWebsitePathScanResult(observed, candidate) || observed.status !== "responded")) throw new Error("复用的网站响应无效。");
     const startedAt = Date.now();
-    const result = await pathRequest(candidate, options.timeoutMs, signal);
-    return { ...result, durationMs: Date.now() - startedAt,
+    const result = observed ?? await pathRequest(candidate, options.timeoutMs, signal);
+    const resultLength = result.decodedBodyLength ?? result.contentLength;
+    const missingLength = missing.decodedBodyLength ?? missing.contentLength;
+    return { ...result, durationMs: observed ? observed.durationMs ?? 0 : Date.now() - startedAt,
+      ...(observed ? { responseReused: true } : {}),
       ...(missing.status === "responded" && missing.fingerprint ? {
         missingPathBaseline: { statusCode: missing.statusCode!, fingerprint: missing.fingerprint }
       } : {}), soft404: Boolean(result.status === "responded" && missing.status === "responded"
       && result.statusCode === missing.statusCode && result.statusCode !== 404 && result.statusCode !== 410
       && result.fingerprint && result.fingerprint === missing.fingerprint
-      && (result.contentLength === undefined || missing.contentLength === undefined || result.contentLength === missing.contentLength)
+      && (resultLength === undefined || missingLength === undefined || resultLength === missingLength)
       && (!(result.statusCode! >= 300 && result.statusCode! < 400) || redirectKey(result) === redirectKey(missing))) };
   };
 }
